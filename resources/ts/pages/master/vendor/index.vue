@@ -589,6 +589,7 @@ onMounted(async () => {
       <VTable class="text-no-wrap">
         <thead>
           <tr>
+            <th scope="col">NO</th>
             <th scope="col">KODE</th>
             <th scope="col">NAMA VENDOR</th>
             <th scope="col">INISIAL</th>
@@ -600,7 +601,8 @@ onMounted(async () => {
         </thead>
 
         <tbody>
-          <tr v-for="v in rows" :key="v.id">
+          <tr v-for="(v, index) in rows" :key="v.id">
+            <td class="text-medium-emphasis">{{ index + 1 }}</td>
             <td class="text-medium-emphasis">{{ v.kode_vendor }}</td>
             <td class="text-medium-emphasis">{{ v.nama_vendor }}</td>
             <td class="text-medium-emphasis">{{ v.inisial_vendor ?? '-' }}</td>
@@ -681,7 +683,7 @@ onMounted(async () => {
 
         <tfoot v-show="!rows.length && !loading">
           <tr>
-            <td colspan="6" class="text-center">
+            <td colspan="8" class="text-center">
               No data available
             </td>
           </tr>
@@ -1008,7 +1010,7 @@ onMounted(async () => {
                       </div>
 
                       <div class="detail-item">
-                        <div class="detail-label">Same as NPWP</div>
+                        <div class="detail-label">Alamat sama seperti NPWP</div>
                         <div class="detail-value">{{ detailVendor.same_as_npwp ? 'Ya' : 'Tidak' }}</div>
                       </div>
 
@@ -1129,6 +1131,7 @@ onMounted(async () => {
                 <VTable v-if="detailVendor.banks?.length" class="text-no-wrap">
                   <thead>
                     <tr>
+                      <th>No</th>
                       <th>Nama Bank</th>
                       <th>Atas Nama</th>
                       <th>No. Rekening</th>
@@ -1139,9 +1142,10 @@ onMounted(async () => {
                   </thead>
                   <tbody>
                     <tr
-                      v-for="bank in detailVendor.banks"
-                      :key="bank.id || `${bank.nama_bank}-${bank.nomor_rekening}`"
+                      v-for="(bank, index) in detailVendor.banks"
+                      :key="bank.id || `${bank.bank_id}-${bank.nomor_rekening}`"
                     >
+                      <td>{{ Number(index) + 1 }}</td>
                       <td>{{ bank.nama_bank || '-' }}</td>
                       <td>{{ bank.atas_nama || '-' }}</td>
                       <td>{{ bank.nomor_rekening || '-' }}</td>

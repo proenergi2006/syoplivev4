@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch, nextTick, toRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useNativeDatePicker } from '@core/composable/useNativeDatePicker'
 import { toUpper, toLower, onlyNumber, formatEmail, validateEmail, emailValidationMessage } from '@/utils/textFormatter'
 import {
   showConfirmAlert,
@@ -20,8 +21,8 @@ interface VendorForm {
   telepon: string
   fax: string
   email: string
-  jenis_perusahaan: string
-  kategori_vendor: string
+  jenis_perusahaan: string | null
+  kategori_vendor: string | null
   nomor_ktp: string
   contact_nama: string
   contact_jabatan: string
@@ -41,12 +42,24 @@ interface VendorForm {
 }
 
 interface BankForm {
+  bank_id: number | null
   nama_bank: string
+  nama_bank_pendek: string
+  kode_bank: string
+  swift_code: string
   atas_nama: string
   nomor_rekening: string
   cabang: string
   alamat_bank: string
-  swift_code: string
+}
+
+interface MasterBankItem {
+  id: number
+  kode_bank: string | null
+  nama_bank: string
+  nama_bank_pendek: string | null
+  swift_code: string | null
+  is_active: boolean
 }
 
 interface MasterDokumenItem {
@@ -91,6 +104,7 @@ const showTopInput = ref(false)
 const showEktp = ref(false)
 const loadingTransaksi = ref(false)
 const loadingDokumen = ref(false)
+const showInfoNamaVendor = ref(false)
 
 const transaksiError = ref<string | null>(null)
 const dokumenError = ref<string | null>(null)
@@ -102,14 +116,19 @@ const selectedDokumen = ref<number[]>([])
 const dokumenFiles = reactive<Record<number, File[]>>({})
 const fileInputModels = reactive<Record<number, File[]>>({})
 
+const loadingBanks = ref(false)
+const bankError = ref<string | null>(null)
+const masterBanks = ref<MasterBankItem[]>([])
+
+
 const form = reactive<VendorForm>({
   nama_vendor: '',
   inisial_vendor: '',
   telepon: '',
   fax: '',
   email: '',
-  jenis_perusahaan: '',
-  kategori_vendor: '',
+  jenis_perusahaan: null,
+  kategori_vendor: null,
   nomor_ktp: '',
   contact_nama: '',
   contact_jabatan: '',
@@ -130,32 +149,120 @@ const form = reactive<VendorForm>({
 
 const banks = ref<BankForm[]>([
   {
+    bank_id: null,
     nama_bank: '',
+    nama_bank_pendek: '',
+    kode_bank: '',
+    swift_code: '',
     atas_nama: '',
     nomor_rekening: '',
     cabang: '',
     alamat_bank: '',
-    swift_code: '',
   },
 ])
 
+const sppkpDate = useNativeDatePicker(toRef(form, 'sppkp_tanggal'))
 const isPKP = computed<boolean>(() => form.status_pkp === 'PKP')
 
+const createEmptyBank = (): BankForm => ({
+  bank_id: null,
+  nama_bank: '',
+  nama_bank_pendek: '',
+  kode_bank: '',
+  swift_code: '',
+  atas_nama: '',
+  nomor_rekening: '',
+  cabang: '',
+  alamat_bank: '',
+})
+
 const addBank = (): void => {
-  banks.value.push({
-    nama_bank: '',
-    atas_nama: '',
-    nomor_rekening: '',
-    cabang: '',
-    alamat_bank: '',
-    swift_code: '',
-  })
+  banks.value.push(createEmptyBank())
 }
 
 const removeBank = (index: number): void => {
   if (banks.value.length > 1) {
     banks.value.splice(index, 1)
   }
+}
+
+const loadMasterBanks = async (): Promise<void> => {
+  loadingBanks.value = true
+  bankError.value = null
+
+  try {
+    const res = await axios.get('/master/banks', {
+      params: {
+        is_active: 1,
+      },
+    })
+
+    const data = Array.isArray(res.data?.data)
+      ? res.data.data
+      : Array.isArray(res.data)
+        ? res.data
+        : []
+
+    masterBanks.value = data
+  } catch (error: any) {
+    bankError.value = 'Data master bank gagal dimuat'
+
+    await showErrorAlert({
+      title: 'Error',
+      text: getApiErrorMessage(error, 'Gagal memuat master bank.'),
+    })
+
+    masterBanks.value = []
+  } finally {
+    loadingBanks.value = false
+  }
+}
+
+const handleSelectBank = (index: number): void => {
+  const selectedId = banks.value[index].bank_id
+
+  if (!selectedId) {
+    banks.value[index].nama_bank = ''
+    banks.value[index].nama_bank_pendek = ''
+    banks.value[index].kode_bank = ''
+    banks.value[index].swift_code = ''
+    return
+  }
+
+  const selectedBank = masterBanks.value.find(
+    item => item.id === Number(selectedId),
+  )
+
+  if (!selectedBank) {
+    banks.value[index].nama_bank = ''
+    banks.value[index].nama_bank_pendek = ''
+    banks.value[index].kode_bank = ''
+    banks.value[index].swift_code = ''
+    return
+  }
+
+  banks.value[index].nama_bank = selectedBank.nama_bank || ''
+  banks.value[index].nama_bank_pendek = selectedBank.nama_bank_pendek || ''
+  banks.value[index].kode_bank = selectedBank.kode_bank || ''
+  banks.value[index].swift_code = selectedBank.swift_code || ''
+}
+
+const filterMasterBank = (
+  itemTitle: string,
+  queryText: string,
+  item: any,
+): boolean => {
+  const searchText = String(queryText || '').toLowerCase()
+  const raw = item?.raw || {}
+
+  return [
+    raw.nama_bank,
+    raw.nama_bank_pendek,
+    raw.kode_bank,
+    raw.swift_code,
+  ]
+    .filter(Boolean)
+    .some(value => String(value).toLowerCase().includes(searchText))
 }
 
 const loadTransaksi = async (): Promise<void> => {
@@ -358,31 +465,26 @@ const validateBanks = async (): Promise<boolean> => {
   for (let i = 0; i < bankList.length; i++) {
     const bank = bankList[i]
 
-    const namaBank = String(bank.nama_bank || '').trim()
+    const bankId = bank.bank_id
     const atasNama = String(bank.atas_nama || '').trim()
     const nomorRekening = String(bank.nomor_rekening || '').trim()
     const cabang = String(bank.cabang || '').trim()
     const alamatBank = String(bank.alamat_bank || '').trim()
-    const swiftCode = String(bank.swift_code || '').trim()
 
     const allEmpty =
-      namaBank === '' &&
+      !bankId &&
       atasNama === '' &&
       nomorRekening === '' &&
       cabang === '' &&
-      alamatBank === '' &&
-      swiftCode === ''
+      alamatBank === ''
 
     if (allEmpty) continue
 
     const missingFields: string[] = []
 
-    if (!namaBank) missingFields.push('Nama Bank')
+    if (!bankId) missingFields.push('Nama Bank')
     if (!atasNama) missingFields.push('Atas Nama')
     if (!nomorRekening) missingFields.push('Nomor Rekening')
-    if (!cabang) missingFields.push('Cabang')
-    if (!alamatBank) missingFields.push('Alamat Bank')
-    if (!swiftCode) missingFields.push('Swift Code')
 
     if (missingFields.length) {
       await showErrorAlert({
@@ -408,6 +510,14 @@ const validateDokumen = async (): Promise<boolean> => {
   return true
 }
 
+const isValidNPWP = (value: string | null | undefined): boolean => {
+  if (!value) return true // boleh kosong
+
+  const digits = value.replace(/\D/g, '')
+
+  return digits.length === 15
+}
+
 const formatNPWP = (): void => {
   const raw = form.npwp.replace(/\D/g, '')
   let formatted = ''
@@ -424,25 +534,30 @@ const formatNPWP = (): void => {
 
 const handleNamaVendor = (event: InputEvent): void => {
   const inputEl = event.target as HTMLInputElement
-  const lastValue = inputEl.value
+  let value = inputEl.value
 
+  // 🔥 paksa hapus semua titik
+  value = value.replace(/\./g, '')
+
+  // uppercase semua
+  value = value.toUpperCase()
+
+  // handle delete tetap normal
   if (
     event.inputType === 'deleteContentBackward'
     || event.inputType === 'deleteContentForward'
   ) {
-    form.nama_vendor = lastValue.toUpperCase()
+    form.nama_vendor = value
     return
   }
 
-  form.nama_vendor = lastValue.toUpperCase()
+  form.nama_vendor = value
 
-  if (/^(PT|CV|UD|PD)\s(?!\.)/.test(form.nama_vendor)) {
-    form.nama_vendor = form.nama_vendor.replace(/^(PT|CV|UD|PD)\s/, '$1. ')
+  // pastikan format PT / CV / UD / PD tanpa titik
+  if (/^(PT|CV|UD|PD)\s(?!\s)/.test(form.nama_vendor)) {
+    form.nama_vendor = form.nama_vendor.replace(/^(PT|CV|UD|PD)\s+/, '$1 ')
   }
 
-  if (/^(PT|CV|UD|PD)$/.test(form.nama_vendor)) {
-    form.nama_vendor += '. '
-  }
 }
 
 const confirmCancel = async (): Promise<void> => {
@@ -459,6 +574,7 @@ const confirmCancel = async (): Promise<void> => {
 }
 
 const validateForm = async (): Promise<boolean> => {
+  let isValid = true
   if (!form.nama_vendor || !form.jenis_perusahaan || !form.status_pkp || !form.kategori_vendor) {
     await showWarningAlert({
         title: 'Warning',
@@ -476,12 +592,12 @@ const validateForm = async (): Promise<boolean> => {
   }
 
   if (form.contact_email && !validateEmail(form.contact_email)) {
-        await showWarningAlert({
-            title: 'Warning',
-            text: emailValidationMessage,
-        })
-        return false
-    }
+      await showWarningAlert({
+          title: 'Warning',
+          text: emailValidationMessage,
+      })
+      return false
+  }
 
   if (!form.jenis_pembayaran) {
     await showWarningAlert({
@@ -500,31 +616,47 @@ const validateForm = async (): Promise<boolean> => {
   }
 
   if (form.email && !validateEmail(form.email)) {
-        await showWarningAlert({
-            title: 'Warning',
-            text: emailValidationMessage,
-        })
-        return false
-    }
+    await showWarningAlert({
+        title: 'Warning',
+        text: emailValidationMessage,
+    })
+    return false
+  }
+
+  if (!isValidNPWP(form.npwp)) {
+    await showErrorAlert({
+      title: 'NPWP Tidak Valid',
+      text: 'NPWP harus terdiri dari 15 digit angka',
+    })
+    isValid = false
+  }
 
   if (!(await validateDokumen())) {
     return false
   }
 
-  return true
+  return isValid
 }
 
-const getCleanBanks = (): BankForm[] => {
-  return (banks.value || []).filter(bank => {
-    return [
-      bank.nama_bank,
-      bank.atas_nama,
-      bank.nomor_rekening,
-      bank.cabang,
-      bank.alamat_bank,
-      bank.swift_code,
-    ].some(value => String(value || '').trim() !== '')
-  })
+const getCleanBanks = () => {
+  return (banks.value || [])
+    .filter(bank => {
+      return [
+        bank.bank_id,
+        bank.atas_nama,
+        bank.nomor_rekening,
+        bank.cabang,
+        bank.alamat_bank,
+      ].some(value => String(value || '').trim() !== '')
+    })
+    .map(bank => ({
+      bank_id: bank.bank_id,
+      atas_nama: String(bank.atas_nama || '').trim(),
+      nomor_rekening: String(bank.nomor_rekening || '').trim(),
+      cabang: String(bank.cabang || '').trim() || null,
+      alamat_bank: String(bank.alamat_bank || '').trim() || null,
+      swift_code_snapshot: bank.swift_code || null,
+    }))
 }
 
 const buildFormData = (): FormData => {
@@ -601,7 +733,6 @@ const saveVendor = async (): Promise<void> => {
 
     const response = await axios.post('/master/vendor', formData, {
       headers: {
-        'Content-Type': 'multipart/form-data',
         Accept: 'application/json',
       },
     })
@@ -619,12 +750,26 @@ const saveVendor = async (): Promise<void> => {
 
     const err = error as AxiosErrorShape
 
+    console.error('[Vendor] SAVE ERROR:', err)
+
+    if (err?.response?.status === 401) {
+      await showErrorAlert({
+        title: 'Sesi Login Berakhir',
+        text: 'Silakan login ulang terlebih dahulu.',
+      })
+
+      localStorage.removeItem('accessToken')
+      localStorage.removeItem('userData')
+      localStorage.removeItem('navItems')
+
+      await router.replace('/login')
+      return
+    }
+
     await showErrorAlert({
       title: 'Error',
       text: err?.response?.data?.message || 'Vendor gagal disimpan',
     })
-
-    console.error('[Vendor] SAVE ERROR:', err)
   } finally {
     isSaving.value = false
   }
@@ -657,6 +802,7 @@ const toggleDokumen = (id: number) => {
 onMounted(async () => {
   await loadTransaksi()
   await loadMasterDokumen()
+  await loadMasterBanks()
 })
 </script>
 
@@ -697,12 +843,26 @@ onMounted(async () => {
                 <VTextField
                   :model-value="form.nama_vendor"
                   label="Nama Perusahaan *"
-                  placeholder="Nama perusahaan/vendor"
+                  placeholder="Contoh: PT MAJU JAYA ABADI"
+                  hint="Gunakan format PT/CV/UD/PD tanpa tanda titik."
+                  persistent-hint
                   :error="isSubmitted && !form.nama_vendor"
                   :error-messages="isSubmitted && !form.nama_vendor ? ['Nama perusahaan wajib diisi'] : []"
                   @update:model-value="form.nama_vendor = $event"
                   @input="handleNamaVendor($event as InputEvent)"
-                />
+                >
+                  <template #append-inner>
+                    <VBtn
+                      icon
+                      size="x-small"
+                      variant="text"
+                      color="primary"
+                      @click.stop="showInfoNamaVendor = true"
+                    >
+                      <VIcon icon="tabler-help-circle" size="20" />
+                    </VBtn>
+                  </template>
+                </VTextField>
               </VCol>
 
               <VCol
@@ -766,7 +926,7 @@ onMounted(async () => {
                 cols="12"
                 md="4"
               >
-                <VSelect
+                <VAutocomplete
                   v-model="form.jenis_perusahaan"
                   label="Jenis Perusahaan *"
                   :items="[
@@ -776,8 +936,13 @@ onMounted(async () => {
                   ]"
                   item-title="title"
                   item-value="value"
+                  clearable
+                  density="comfortable"
+                  :menu-props="{ maxHeight: 300 }"
                   :error="isSubmitted && !form.jenis_perusahaan"
                   :error-messages="isSubmitted && !form.jenis_perusahaan ? ['Jenis perusahaan wajib dipilih'] : []"
+                  no-data-text="Jenis perusahaan tidak ditemukan"
+                  placeholder="Pilih jenis perusahaan"
                 />
               </VCol>
 
@@ -786,7 +951,7 @@ onMounted(async () => {
                 cols="12"
                 md="4"
               >
-                <VSelect
+                <VAutocomplete
                   v-model="form.kategori_vendor"
                   label="Kategori Vendor *"
                   :items="[
@@ -795,8 +960,13 @@ onMounted(async () => {
                   ]"
                   item-title="title"
                   item-value="value"
+                  clearable
+                  density="comfortable"
+                  :menu-props="{ maxHeight: 300 }"
                   :error="isSubmitted && !form.kategori_vendor"
                   :error-messages="isSubmitted && !form.kategori_vendor ? ['Kategori vendor wajib dipilih'] : []"
+                  no-data-text="Kategori vendor tidak ditemukan"
+                  placeholder="Pilih kategori vendor"
                 />
               </VCol>
 
@@ -934,11 +1104,16 @@ onMounted(async () => {
                                 md="6"
                             >
                                 <VTextField
-                                v-model="form.npwp"
-                                label="Nomor NPWP"
-                                placeholder="Masukkan nomor NPWP"
-                                maxlength="20"
-                                @input="formatNPWP"
+                                  v-model="form.npwp"
+                                  label="NPWP"
+                                  placeholder="00.000.000.0-000.000"
+                                  :error="isSubmitted && !isValidNPWP(form.npwp)"
+                                  :error-messages="
+                                    isSubmitted && !isValidNPWP(form.npwp)
+                                      ? ['NPWP harus 15 digit']
+                                      : []
+                                  "
+                                  @input="formatNPWP"
                                 />
                             </VCol>
 
@@ -975,16 +1150,29 @@ onMounted(async () => {
                                 />
                             </VCol>
 
-                            <VCol
-                                cols="12"
-                                md="6"
-                            >
-                                <VTextField
-                                v-model="form.sppkp_tanggal"
+                            <VCol cols="12" md="6">
+                            <div class="position-relative">
+                              <VTextField
+                                :model-value="sppkpDate.displayValue.value"
                                 label="Tanggal SPPKP"
+                                placeholder="DD-MM-YYYY"
+                                readonly
+                                append-inner-icon="tabler-calendar"
+                                @click="sppkpDate.openPicker"
+                                @click:append-inner="sppkpDate.openPicker"
+                              />
+
+                              <input
+                                :ref="(el) => {
+                                  sppkpDate.nativeDateRef.value = el as HTMLInputElement | null
+                                }"
                                 type="date"
-                                />
-                            </VCol>
+                                :value="form.sppkp_tanggal"
+                                class="native-date-hidden"
+                                @change="sppkpDate.onDateChange"
+                              >
+                            </div>
+                          </VCol>
 
                             <VCol cols="12">
                                 <div class="d-flex align-center justify-space-between flex-wrap gap-3 mb-2">
@@ -1109,127 +1297,191 @@ onMounted(async () => {
                 </VCol>
                 <!-- Data Pembayaran -->
                 <VCol cols="12">
-                    <div class="mt-4">
-                        <div class="d-flex align-center justify-space-between flex-wrap gap-3 mb-2">
-                        <div class="text-subtitle-1 font-weight-bold">
-                            Data Pembayaran
-                        </div>
+                  <div class="mt-4">
+                    <div class="d-flex align-center justify-space-between flex-wrap gap-3 mb-2">
+                      <div class="text-subtitle-1 font-weight-bold">
+                        Data Pembayaran
+                      </div>
 
-                            <VBtn
-                                type="button"
-                                color="primary"
-                                variant="outlined"
-                                size="small"
-                                @click="addBank"
-                            >
-                                + Tambah Bank
-                            </VBtn>
-                        </div>
-
-                        <VDivider class="mb-4" />
-
-                        <div
-                        v-for="(bank, index) in banks"
-                        :key="index"
-                        class="mb-4"
-                        >
-                            <VCard variant="outlined">
-                                <VCardTitle class="d-flex align-center justify-space-between py-3">
-                                <div class="text-subtitle-2 font-weight-bold">
-                                    {{ index + 1 }}. Bank
-                                </div>
-
-                                <VBtn
-                                    type="button"
-                                    v-if="banks.length > 1"
-                                    color="error"
-                                    variant="text"
-                                    size="small"
-                                    @click="removeBank(index)"
-                                >
-                                    Hapus
-                                </VBtn>
-                                </VCardTitle>
-
-                                <VDivider />
-
-                                <VCardText>
-                                <VRow>
-                                    <VCol
-                                    cols="12"
-                                    md="6"
-                                    >
-                                    <VTextField
-                                        v-model="bank.nama_bank"
-                                        label="Nama Bank"
-                                        placeholder="Nama Bank"
-                                        @update:model-value="value => bank.nama_bank = toUpper(value)"
-                                    />
-                                    </VCol>
-
-                                    <VCol
-                                    cols="12"
-                                    md="6"
-                                    >
-                                    <VTextField
-                                        v-model="bank.atas_nama"
-                                        label="Atas Nama"
-                                        placeholder="Atas Nama Rekening"
-                                        @update:model-value="value => bank.atas_nama = toUpper(value)"
-                                    />
-                                    </VCol>
-
-                                    <VCol
-                                    cols="12"
-                                    md="6"
-                                    >
-                                    <VTextField
-                                        v-model="bank.nomor_rekening"
-                                        label="Nomor Rekening"
-                                        placeholder="Nomor Rekening"
-                                        @update:model-value="value => bank.nomor_rekening = onlyNumber(value)"
-                                    />
-                                    </VCol>
-
-                                    <VCol
-                                    cols="12"
-                                    md="6"
-                                    >
-                                    <VTextField
-                                        v-model="bank.cabang"
-                                        label="Cabang"
-                                        placeholder="Cabang Bank"
-                                    />
-                                    </VCol>
-
-                                    <VCol
-                                    cols="12"
-                                    md="6"
-                                    >
-                                    <VTextarea
-                                        v-model="bank.alamat_bank"
-                                        label="Alamat Bank"
-                                        placeholder="Alamat lengkap bank"
-                                        rows="2"
-                                        auto-grow
-                                    />
-                                    </VCol>
-
-                                    <VCol
-                                    cols="12"
-                                    md="6"
-                                    >
-                                    <VTextField
-                                        v-model="bank.swift_code"
-                                        label="Swift Code"
-                                        placeholder="SWIFT Code"
-                                    />
-                                    </VCol>
-                                </VRow>
-                                </VCardText>
-                            </VCard>
-                        </div>
+                      <VBtn
+                        type="button"
+                        color="primary"
+                        variant="outlined"
+                        size="small"
+                        @click="addBank"
+                      >
+                        + Tambah Bank
+                      </VBtn>
                     </div>
+
+                    <VDivider class="mb-4" />
+
+                    <div
+                      v-if="loadingBanks"
+                      class="d-flex flex-column align-center justify-center py-8 text-medium-emphasis"
+                    >
+                      <VProgressCircular
+                        indeterminate
+                        color="primary"
+                        size="24"
+                        width="3"
+                        class="mb-2"
+                      />
+                      <span>Sedang memuat master bank...</span>
+                    </div>
+
+                    <VAlert
+                      v-else-if="bankError"
+                      type="error"
+                      variant="tonal"
+                      prominent
+                      icon="mdi-alert-circle"
+                      class="mb-4"
+                    >
+                      <div class="d-flex justify-space-between align-center">
+                        <div>
+                          <div class="font-weight-medium">
+                            Gagal Memuat Data
+                          </div>
+
+                          <div class="text-body-2">
+                            {{ bankError }}
+                          </div>
+                        </div>
+
+                        <VBtn
+                          type="button"
+                          size="small"
+                          variant="outlined"
+                          color="error"
+                          @click="loadMasterBanks"
+                        >
+                          Coba Lagi
+                        </VBtn>
+                      </div>
+                    </VAlert>
+
+                    <div
+                      v-for="(bank, index) in banks"
+                      :key="index"
+                      class="mb-4"
+                    >
+                      <VCard variant="outlined">
+                        <VCardTitle class="d-flex align-center justify-space-between py-3">
+                          <div class="text-subtitle-2 font-weight-bold">
+                            {{ index + 1 }}. Bank
+                          </div>
+
+                          <VBtn
+                            type="button"
+                            v-if="banks.length > 1"
+                            color="error"
+                            variant="text"
+                            size="small"
+                            @click="removeBank(index)"
+                          >
+                            Hapus
+                          </VBtn>
+                        </VCardTitle>
+
+                        <VDivider />
+
+                        <VCardText>
+                          <VRow>
+                            <VCol cols="12" md="6">
+                              <VAutocomplete
+                                v-model="bank.bank_id"
+                                label="Nama Bank *"
+                                :items="masterBanks"
+                                item-title="nama_bank"
+                                item-value="id"
+                                clearable
+                                density="comfortable"
+                                :menu-props="{ maxHeight: 300 }"
+                                :custom-filter="filterMasterBank"
+                                :error="isSubmitted && !bank.bank_id"
+                                :error-messages="isSubmitted && !bank.bank_id ? ['Nama bank wajib dipilih'] : []"
+                                no-data-text="Data bank tidak ditemukan"
+                                placeholder="Cari nama bank..."
+                                @update:model-value="handleSelectBank(index)"
+                              >
+                                <template #item="{ props, item }">
+                                  <VListItem
+                                    v-bind="props"
+                                    :title="item.raw.nama_bank"
+                                    :subtitle="`${item.raw.nama_bank_pendek || '-'} • Kode: ${item.raw.kode_bank || '-'} • Swift: ${item.raw.swift_code || '-'}`"
+                                  />
+                                </template>
+                              </VAutocomplete>
+                            </VCol>
+
+                            <VCol cols="12">
+                              <VAlert
+                                v-if="bank.bank_id"
+                                type="info"
+                                variant="tonal"
+                              >
+                                <div class="d-flex flex-column ga-1">
+                                  <div>
+                                    <strong>Kode Bank :</strong>
+                                    {{ bank.kode_bank || '-' }}
+                                  </div>
+                                  <div>
+                                    <strong>Nama Bank :</strong>
+                                    {{ bank.nama_bank_pendek || '-' }}
+                                  </div>
+                                  <div>
+                                    <strong>Swift Code :</strong>
+                                    {{ bank.swift_code || '-' }}
+                                  </div>
+                                </div>
+                              </VAlert>
+                            </VCol>
+
+                            <VCol cols="12" md="6">
+                              <VTextField
+                                v-model="bank.atas_nama"
+                                label="Atas Nama *"
+                                placeholder="Atas Nama Rekening"
+                                :error="isSubmitted && !bank.atas_nama"
+                                :error-messages="isSubmitted && !bank.atas_nama ? ['Atas nama wajib diisi'] : []"
+                                @update:model-value="value => bank.atas_nama = toUpper(value)"
+                              />
+                            </VCol>
+
+                            <VCol cols="12" md="6">
+                              <VTextField
+                                v-model="bank.nomor_rekening"
+                                label="Nomor Rekening *"
+                                placeholder="Nomor Rekening"
+                                :error="isSubmitted && !bank.nomor_rekening"
+                                :error-messages="isSubmitted && !bank.nomor_rekening ? ['Nomor rekening wajib diisi'] : []"
+                                @update:model-value="value => bank.nomor_rekening = onlyNumber(value)"
+                              />
+                            </VCol>
+
+                            <VCol cols="12" md="6">
+                              <VTextField
+                                v-model="bank.cabang"
+                                label="Cabang"
+                                placeholder="Cabang Bank"
+                              />
+                            </VCol>
+
+                            <VCol cols="12" md="6">
+                              <VTextarea
+                                v-model="bank.alamat_bank"
+                                label="Alamat Bank"
+                                placeholder="Alamat bank"
+                                rows="2"
+                                auto-grow
+                              />
+                            </VCol>
+                          </VRow>
+                        </VCardText>
+                      </VCard>
+                    </div>
+                  </div>
                 </VCol>
                 <!-- Sistem Pembayaran -->
                 <VCol cols="12">
@@ -1420,6 +1672,83 @@ onMounted(async () => {
               </VCol>
             </VRow>
           </div>
+
+          <!-- MODAL -->
+          <VDialog
+            v-model="showInfoNamaVendor"
+            max-width="620"
+          >
+            <VCard>
+              <VCardTitle class="d-flex align-center justify-space-between">
+                <span>Ketentuan Penulisan Nama Perusahaan</span>
+
+                <VBtn
+                  icon
+                  variant="text"
+                  size="small"
+                  @click="showInfoNamaVendor = false"
+                >
+                  <VIcon icon="tabler-x" />
+                </VBtn>
+              </VCardTitle>
+
+              <VDivider />
+
+              <VCardText class="text-body-2">
+                <p class="mb-3">
+                  Untuk menjaga konsistensi data master vendor, penulisan bentuk badan usaha seperti
+                  <strong>PT</strong>, <strong>CV</strong>, <strong>UD</strong>, dan <strong>PD</strong>
+                  wajib ditulis <strong>tanpa titik</strong>.
+                </p>
+
+                <p class="mb-3">
+                  Contoh penulisan yang benar:
+                </p>
+
+                <ul class="mb-3 ps-5">
+                  <li><strong>PT MAJU JAYA ABADI</strong></li>
+                  <li><strong>CV SUMBER REJEKI</strong></li>
+                  <li><strong>UD SENTOSA MAKMUR</strong></li>
+                  <li><strong>PD BERKAH USAHA</strong></li>
+                </ul>
+
+                <p class="mb-3">
+                  Contoh penulisan yang tidak disarankan:
+                </p>
+
+                <ul class="mb-3 ps-5">
+                  <li>PT. MAJU JAYA ABADI</li>
+                  <li>CV. SUMBER REJEKI</li>
+                  <li>UD. SENTOSA MAKMUR</li>
+                  <li>PD. BERKAH USAHA</li>
+                </ul>
+
+                <p class="mb-3">
+                  Berdasarkan ketentuan nama Perseroan Terbatas, nama perseroan harus didahului
+                  frasa <strong>Perseroan Terbatas</strong> atau disingkat <strong>PT</strong>.
+                  Ketentuan ini terdapat dalam UU Nomor 40 Tahun 2007 tentang Perseroan Terbatas
+                  dan PP Nomor 43 Tahun 2011 tentang Tata Cara Pengajuan dan Pemakaian Nama
+                  Perseroan Terbatas.
+                </p>
+
+                <p class="mb-0">
+                  Untuk CV, dasar hukum persekutuan komanditer terdapat dalam KUHD, khususnya
+                  Pasal 19 sampai dengan Pasal 35. Di sistem ini, penulisan <strong>CV</strong>
+                  juga distandarkan tanpa titik agar format data vendor konsisten.
+                </p>
+              </VCardText>
+
+              <VCardActions class="justify-end">
+                <VBtn
+                  color="primary"
+                  @click="showInfoNamaVendor = false"
+                >
+                  Mengerti
+                </VBtn>
+              </VCardActions>
+            </VCard>
+          </VDialog>
+
           <VDivider class="mt-6 mb-4" />
             <div class="d-flex justify-end gap-3">
                 <VBtn

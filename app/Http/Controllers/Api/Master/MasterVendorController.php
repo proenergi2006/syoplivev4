@@ -16,6 +16,8 @@ use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\File;
+use Illuminate\Support\Str;
 
 class MasterVendorController extends Controller
 {
@@ -148,25 +150,90 @@ class MasterVendorController extends Controller
             $banks = json_decode($request->banks ?? '[]', true);
 
             if (is_array($banks) && !empty($banks)) {
-                foreach ($banks as $bank) {
+                foreach ($banks as $index => $bank) {
+
+                    if (
+                        empty($bank['bank_id']) &&
+                        empty($bank['atas_nama']) &&
+                        empty($bank['nomor_rekening']) &&
+                        empty($bank['cabang']) &&
+                        empty($bank['alamat_bank'])
+                    ) {
+                        continue;
+                    }
+
+                    if (empty($bank['bank_id'])) {
+
+                        Log::error('Validasi vendor gagal: bank kosong', [
+                            'index' => $index + 1,
+                            'bank_data' => $bank,
+                            'request' => $request->all(),
+                        ]);
+
+                        return response()->json([
+                            'success' => false,
+                            'message' => "Data bank ke-" . ($index + 1) . " bank wajib diisi.",
+                        ], 422);
+                    }
+
+                    if (empty($bank['atas_nama'])) {
+
+                        Log::error('Validasi vendor gagal: atas nama kosong', [
+                            'index' => $index + 1,
+                            'bank_data' => $bank,
+                            'request' => $request->all(),
+                        ]);
+
+                        return response()->json([
+                            'success' => false,
+                            'message' => "Data bank ke-" . ($index + 1) . " atas nama wajib diisi.",
+                        ], 422);
+                    }
+
+                    if (empty($bank['nomor_rekening'])) {
+
+                        Log::error('Validasi vendor gagal: nomor rekening kosong', [
+                            'index' => $index + 1,
+                            'bank_data' => $bank,
+                            'request' => $request->all(),
+                        ]);
+
+                        return response()->json([
+                            'success' => false,
+                            'message' => "Data bank ke-" . ($index + 1) . " nomor rekening wajib diisi.",
+                        ], 422);
+                    }
+
                     VendorBank::create([
-                        'vendor_id'       => $vendorId,
-                        'nama_bank'       => $bank['nama_bank'] ?? '',
-                        'atas_nama'       => $bank['atas_nama'] ?? '',
-                        'nomor_rekening'  => $bank['nomor_rekening'] ?? '',
-                        'cabang'          => $bank['cabang'] ?? '',
-                        'alamat_bank'     => $bank['alamat_bank'] ?? '',
-                        'swift_code'      => $bank['swift_code'] ?? '',
+                        'vendor_id' => $vendorId,
+                        'bank_id' => $bank['bank_id'] ?? null,
+                        'atas_nama' => $bank['atas_nama'] ?? null,
+                        'nomor_rekening' => $bank['nomor_rekening'] ?? null,
+                        'cabang' => $bank['cabang'] ?? null,
+                        'alamat_bank' => $bank['alamat_bank'] ?? null,
+                        'swift_code_snapshot' => $bank['swift_code_snapshot'] ?? null,
+                        'is_active' => true,
                     ]);
                 }
             }
 
             $selectedDokumen = json_decode($request->dokumen_pendukung ?? '[]', true);
+            $selectedDokumen = is_array($selectedDokumen) ? array_map('intval', $selectedDokumen) : [];
+
             $dokumenFiles = $request->file('dokumen_files', []);
+
+            $namaVendor = $clean($request->nama_vendor);
+            $vendorSlug = Str::slug($namaVendor);
+
+            if ($vendorSlug === '') {
+                $vendorSlug = 'vendor';
+            }
 
             if (!empty($dokumenFiles)) {
                 foreach ($dokumenFiles as $docId => $files) {
-                    if (!in_array((int) $docId, array_map('intval', $selectedDokumen ?? []))) {
+                    $docId = (int) $docId;
+
+                    if (!in_array($docId, $selectedDokumen, true)) {
                         continue;
                     }
 
@@ -175,13 +242,53 @@ class MasterVendorController extends Controller
                         continue;
                     }
 
-                    $slug = $masterDoc->slug;
-                    $folder = "syopv4/uploads/vendors/dokumen_pendukung/{$slug}";
+                    $docSlug = $masterDoc->slug
+                        ? Str::slug($masterDoc->slug)
+                        : Str::slug($masterDoc->nama_dokumen);
+
+                    if ($docSlug === '') {
+                        $docSlug = 'dokumen-' . $docId;
+                    }
+
+                    $folder = "syopv4/uploads/vendors/dokumen_pendukung/{$vendorId}_{$vendorSlug}/{$docSlug}";
+
+                    // Buat folder jika belum ada
                     Storage::disk('public')->makeDirectory($folder);
 
+                    // Set permission folder jadi all access
+                    $fullFolderPath = storage_path('app/public/' . $folder);
+
+                    if (File::exists($fullFolderPath)) {
+                        @chmod($fullFolderPath, 0777);
+                        @chmod(dirname($fullFolderPath), 0777);
+                    }
+
+                    $files = is_array($files) ? $files : [$files];
+
                     foreach ($files as $file) {
-                        $filename = time() . '_' . preg_replace('/\s+/', '_', $file->getClientOriginalName());
+                        if (!$file || !$file->isValid()) {
+                            continue;
+                        }
+
+                        $originalName = pathinfo($file->getClientOriginalName(), PATHINFO_FILENAME);
+                        $extension = strtolower($file->getClientOriginalExtension());
+
+                        $safeOriginalName = Str::slug($originalName);
+
+                        if ($safeOriginalName === '') {
+                            $safeOriginalName = 'file';
+                        }
+
+                        $filename = now()->format('YmdHis') . '_' . uniqid() . '_' . $safeOriginalName . '.' . $extension;
+
                         $path = $file->storeAs($folder, $filename, 'public');
+
+                        // Set permission file jadi all access
+                        $fullFilePath = storage_path('app/public/' . $path);
+
+                        if (File::exists($fullFilePath)) {
+                            @chmod($fullFilePath, 0777);
+                        }
 
                         VendorDokumenPendukung::create([
                             'vendor_id'  => $vendorId,
@@ -360,7 +467,7 @@ class MasterVendorController extends Controller
             $vendorId = (int) Crypt::decryptString($publicId);
 
             $vendor = MasterVendor::with([
-                'banks',
+                'banks.masterBank',
                 'transaksi:id,vendor_id,transaksi_id',
                 'dokumenPendukung:id,vendor_id,dokumen_id,file_name,file_path',
             ])->findOrFail($vendorId);
@@ -415,12 +522,15 @@ class MasterVendorController extends Controller
                     'banks' => $vendor->banks->map(function ($bank) {
                         return [
                             'id' => $bank->id,
-                            'nama_bank' => $bank->nama_bank,
+                            'bank_id' => $bank->bank_id,
+                            'nama_bank' => $bank->masterBank->nama_bank ?? '-',
+                            'nama_bank_pendek' => $bank->masterBank->nama_bank_pendek ?? null,
+                            'kode_bank' => $bank->masterBank->kode_bank ?? null,
                             'atas_nama' => $bank->atas_nama,
                             'nomor_rekening' => $bank->nomor_rekening,
                             'cabang' => $bank->cabang,
                             'alamat_bank' => $bank->alamat_bank,
-                            'swift_code' => $bank->swift_code,
+                            'swift_code' => $bank->swift_code_snapshot ?? ($bank->masterBank->swift_code ?? null),
                         ];
                     })->values(),
                 ],
@@ -495,7 +605,7 @@ class MasterVendorController extends Controller
             'dokumen_ids' => ['nullable', 'array'],
             'dokumen_ids.*' => ['integer'],
 
-            'banks' => ['nullable', 'array'],
+            'banks' => ['nullable'],
             'banks.*.id' => ['nullable', 'integer'],
             'banks.*.nama_bank' => ['nullable', 'string', 'max:255'],
             'banks.*.atas_nama' => ['nullable', 'string', 'max:255'],
@@ -513,6 +623,8 @@ class MasterVendorController extends Controller
             'dokumen_files.*.*' => ['file', 'mimes:pdf,jpg,jpeg,png', 'max:5120'],
         ]);
 
+        $clean = fn($v) => is_null($v) ? null : htmlspecialchars(strip_tags(trim((string) $v)), ENT_QUOTES, 'UTF-8');
+
         DB::beginTransaction();
 
         try {
@@ -520,32 +632,32 @@ class MasterVendorController extends Controller
             $vendor = MasterVendor::findOrFail($vendorId);
 
             $vendor->update([
-                'nama_vendor' => $request->nama_vendor,
-                'inisial_vendor' => $request->inisial_vendor,
-                'telepon' => $request->telepon,
-                'fax' => $request->fax,
-                'email' => $request->email,
-                'jenis_perusahaan' => $request->jenis_perusahaan,
-                'kategori_vendor' => $request->kategori_vendor,
-                'no_ktp' => $request->nomor_ktp,
-                'alamat' => $request->alamat,
+                'nama_vendor' => $clean($request->nama_vendor),
+                'inisial_vendor' => $clean($request->inisial_vendor),
+                'telepon' => $clean($request->telepon),
+                'fax' => $clean($request->fax),
+                'email' => $clean($request->email),
+                'jenis_perusahaan' => $clean($request->jenis_perusahaan),
+                'kategori_vendor' => $clean($request->kategori_vendor),
+                'no_ktp' => $clean($request->nomor_ktp),
+                'alamat' => $clean($request->alamat),
 
-                'nama_pic' => $request->contact_nama,
-                'jabatan_pic' => $request->contact_jabatan,
-                'telp_pic' => $request->contact_hp,
-                'email_pic' => $request->contact_email,
+                'nama_pic' => $clean($request->contact_nama),
+                'jabatan_pic' => $clean($request->contact_jabatan),
+                'telp_pic' => $clean($request->contact_hp),
+                'email_pic' => $clean($request->contact_email),
 
-                'status_pkp' => $request->status_pkp,
-                'no_npwp' => $request->npwp,
-                'alamat_npwp' => $request->npwp_alamat,
-                'no_sppkp' => $request->sppkp_nomor,
+                'status_pkp' => $clean($request->status_pkp),
+                'no_npwp' => $clean($request->npwp),
+                'alamat_npwp' => $clean($request->npwp_alamat),
+                'no_sppkp' => $clean($request->sppkp_nomor),
                 'tgl_sppkp' => $request->filled('sppkp_tanggal')
                     ? Carbon::parse($request->sppkp_tanggal)->format('Y-m-d')
                     : null,
-                'alamat_sppkp' => $request->sppkp_alamat,
-                'same_as_npwp' => $request->boolean('same_as_npwp'),
+                'alamat_sppkp' => $clean($request->sppkp_alamat),
+                'same_as_npwp' => $clean($request->boolean('same_as_npwp')),
 
-                'jenis_pembayaran' => $request->jenis_pembayaran,
+                'jenis_pembayaran' => $clean($request->jenis_pembayaran),
                 'top' => $request->filled('top') ? $request->top : null,
             ]);
 
@@ -577,26 +689,81 @@ class MasterVendorController extends Controller
             }
 
             /*
-        |--------------------------------------------------------------------------
-        | 2. Sinkron bank vendor
-        |--------------------------------------------------------------------------
-        */
-            $banks = collect($request->input('banks', []));
+            |--------------------------------------------------------------------------
+            | 2. Sinkron bank vendor
+            |--------------------------------------------------------------------------
+            */
+            $banks = $request->input('banks', []);
+
+            if (is_string($banks)) {
+                $decodedBanks = json_decode($banks, true);
+                $banks = is_array($decodedBanks) ? $decodedBanks : [];
+            }
+
+            $banks = collect($banks);
 
             $bankIdsToKeep = [];
 
-            foreach ($banks as $bankData) {
+            foreach ($banks as $index => $bankData) {
                 $isEmpty =
-                    blank($bankData['nama_bank'] ?? null) &&
+                    blank($bankData['bank_id'] ?? null) &&
                     blank($bankData['atas_nama'] ?? null) &&
                     blank($bankData['nomor_rekening'] ?? null) &&
                     blank($bankData['cabang'] ?? null) &&
-                    blank($bankData['alamat_bank'] ?? null) &&
-                    blank($bankData['swift_code'] ?? null);
+                    blank($bankData['alamat_bank'] ?? null);
 
                 if ($isEmpty) {
                     continue;
                 }
+
+                if (blank($bankData['bank_id'] ?? null)) {
+                    Log::warning('Update vendor gagal: bank_id kosong', [
+                        'vendor_id' => $vendor->id,
+                        'index' => $index + 1,
+                        'bank_data' => $bankData,
+                    ]);
+
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Data bank ke-' . ($index + 1) . ' nama bank wajib dipilih.',
+                    ], 422);
+                }
+
+                if (blank($bankData['atas_nama'] ?? null)) {
+                    Log::warning('Update vendor gagal: atas_nama kosong', [
+                        'vendor_id' => $vendor->id,
+                        'index' => $index + 1,
+                        'bank_data' => $bankData,
+                    ]);
+
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Data bank ke-' . ($index + 1) . ' atas nama wajib diisi.',
+                    ], 422);
+                }
+
+                if (blank($bankData['nomor_rekening'] ?? null)) {
+                    Log::warning('Update vendor gagal: nomor_rekening kosong', [
+                        'vendor_id' => $vendor->id,
+                        'index' => $index + 1,
+                        'bank_data' => $bankData,
+                    ]);
+
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Data bank ke-' . ($index + 1) . ' nomor rekening wajib diisi.',
+                    ], 422);
+                }
+
+                $payload = [
+                    'bank_id' => $bankData['bank_id'] ?? null,
+                    'atas_nama' => $bankData['atas_nama'] ?? null,
+                    'nomor_rekening' => $bankData['nomor_rekening'] ?? null,
+                    'cabang' => $bankData['cabang'] ?? null,
+                    'alamat_bank' => $bankData['alamat_bank'] ?? null,
+                    'swift_code_snapshot' => $bankData['swift_code_snapshot'] ?? null,
+                    'is_active' => true,
+                ];
 
                 if (!empty($bankData['id'])) {
                     $bank = VendorBank::where('vendor_id', $vendor->id)
@@ -604,14 +771,7 @@ class MasterVendorController extends Controller
                         ->first();
 
                     if ($bank) {
-                        $bank->update([
-                            'nama_bank' => $bankData['nama_bank'] ?? null,
-                            'atas_nama' => $bankData['atas_nama'] ?? null,
-                            'nomor_rekening' => $bankData['nomor_rekening'] ?? null,
-                            'cabang' => $bankData['cabang'] ?? null,
-                            'alamat_bank' => $bankData['alamat_bank'] ?? null,
-                            'swift_code' => $bankData['swift_code'] ?? null,
-                        ]);
+                        $bank->update($payload);
 
                         $bankIdsToKeep[] = $bank->id;
                         continue;
@@ -620,13 +780,7 @@ class MasterVendorController extends Controller
 
                 $newBank = VendorBank::create([
                     'vendor_id' => $vendor->id,
-                    'nama_bank' => $bankData['nama_bank'] ?? null,
-                    'atas_nama' => $bankData['atas_nama'] ?? null,
-                    'nomor_rekening' => $bankData['nomor_rekening'] ?? null,
-                    'cabang' => $bankData['cabang'] ?? null,
-                    'alamat_bank' => $bankData['alamat_bank'] ?? null,
-                    'swift_code' => $bankData['swift_code'] ?? null,
-                ]);
+                ] + $payload);
 
                 $bankIdsToKeep[] = $newBank->id;
             }
@@ -639,24 +793,32 @@ class MasterVendorController extends Controller
                 VendorBank::where('vendor_id', $vendor->id)->delete();
             }
 
-            /*
+           /*
             |--------------------------------------------------------------------------
             | 3. Sinkron dokumen pendukung
             |--------------------------------------------------------------------------
             */
+
+            $pathsToDelete = [];
+
             $dokumenIds = collect($request->input('dokumen_ids', []))
-                ->filter(fn($id) => $id !== null && $id !== '')
-                ->map(fn($id) => (int) $id)
+                ->filter(fn ($id) => $id !== null && $id !== '')
+                ->map(fn ($id) => (int) $id)
                 ->unique()
                 ->values();
 
             $dokumenExistingIds = collect($request->input('dokumen_existing_ids', []));
 
-            // 1. Hapus file lama per dokumen yang masih dipilih, tapi tidak ikut dipertahankan
+            /*
+            |--------------------------------------------------------------------------
+            | 1. Hapus record DB file lama yang tidak dipertahankan
+            |    File fisik jangan dihapus dulu, hanya tampung path-nya.
+            |--------------------------------------------------------------------------
+            */
             foreach ($dokumenIds as $dokumenId) {
                 $keepIdsForDokumen = collect($dokumenExistingIds->get((string) $dokumenId, []))
-                    ->filter(fn($id) => $id !== null && $id !== '')
-                    ->map(fn($id) => (int) $id)
+                    ->filter(fn ($id) => $id !== null && $id !== '')
+                    ->map(fn ($id) => (int) $id)
                     ->values()
                     ->all();
 
@@ -668,20 +830,23 @@ class MasterVendorController extends Controller
                     : $oldFilesQuery->get();
 
                 foreach ($filesToDelete as $file) {
-                    if ($file->file_path && Storage::disk('public')->exists($file->file_path)) {
-                        Storage::disk('public')->delete($file->file_path);
+                    if ($file->file_path) {
+                        $pathsToDelete[] = $file->file_path;
                     }
 
                     $file->delete();
                 }
             }
 
-            // 2. Hapus semua file dari dokumen yang sudah tidak dipilih sama sekali
+            /*
+            |--------------------------------------------------------------------------
+            | 2. Hapus record DB dari dokumen yang sudah tidak dipilih
+            |--------------------------------------------------------------------------
+            */
             $dokumenYangDihapusTotal = VendorDokumenPendukung::where('vendor_id', $vendor->id)
                 ->when(
                     $dokumenIds->isNotEmpty(),
-                    fn($query) => $query->whereNotIn('dokumen_id', $dokumenIds->all()),
-                    fn($query) => $query
+                    fn ($query) => $query->whereNotIn('dokumen_id', $dokumenIds->all())
                 )
                 ->get();
 
@@ -690,15 +855,26 @@ class MasterVendorController extends Controller
             }
 
             foreach ($dokumenYangDihapusTotal as $file) {
-                if ($file->file_path && Storage::disk('public')->exists($file->file_path)) {
-                    Storage::disk('public')->delete($file->file_path);
+                if ($file->file_path) {
+                    $pathsToDelete[] = $file->file_path;
                 }
 
                 $file->delete();
             }
 
-            // 3. Simpan file baru
+            /*
+            |--------------------------------------------------------------------------
+            | 3. Simpan file baru
+            |--------------------------------------------------------------------------
+            */
             $uploadedDokumenFiles = $request->file('dokumen_files', []);
+
+            $namaVendor = $clean($request->nama_vendor);
+            $vendorSlug = Str::slug($namaVendor);
+
+            if ($vendorSlug === '') {
+                $vendorSlug = 'vendor';
+            }
 
             foreach ($uploadedDokumenFiles as $dokumenId => $files) {
                 $dokumenId = (int) $dokumenId;
@@ -707,32 +883,75 @@ class MasterVendorController extends Controller
                     continue;
                 }
 
+                $masterDoc = MasterDokumenPendukung::find($dokumenId);
+
+                if (!$masterDoc) {
+                    continue;
+                }
+
+                $docSlug = $masterDoc->slug
+                    ? Str::slug($masterDoc->slug)
+                    : Str::slug($masterDoc->nama_dokumen);
+
+                if ($docSlug === '') {
+                    $docSlug = 'dokumen-' . $dokumenId;
+                }
+
+                $folder = "syopv4/uploads/vendors/dokumen_pendukung/{$vendor->id}_{$vendorSlug}/{$docSlug}";
+
+                Storage::disk('public')->makeDirectory($folder);
+
+                $fullFolderPath = storage_path('app/public/' . $folder);
+
+                if (File::exists($fullFolderPath)) {
+                    @chmod($fullFolderPath, 0777);
+                    @chmod(dirname($fullFolderPath), 0777);
+                }
+
                 $files = is_array($files) ? $files : [$files];
 
                 foreach ($files as $file) {
-                    if (!$file) {
+                    if (!$file || !$file->isValid()) {
                         continue;
                     }
 
-                    $masterDoc = MasterDokumenPendukung::find($dokumenId);
-                    if (!$masterDoc) {
-                        continue;
+                    $originalName = pathinfo($file->getClientOriginalName(), PATHINFO_FILENAME);
+                    $extension = strtolower($file->getClientOriginalExtension());
+
+                    $safeOriginalName = Str::slug($originalName);
+
+                    if ($safeOriginalName === '') {
+                        $safeOriginalName = 'file';
                     }
 
-                    $slug = $masterDoc->slug;
-                    $folder = "syopv4/uploads/vendors/dokumen_pendukung/{$slug}";
-                    $storedPath = $file->store($folder, 'public');
+                    $filename = now()->format('YmdHis') . '_' . uniqid() . '_' . $safeOriginalName . '.' . $extension;
+
+                    $storedPath = $file->storeAs($folder, $filename, 'public');
+
+                    $fullFilePath = storage_path('app/public/' . $storedPath);
+
+                    if (File::exists($fullFilePath)) {
+                        @chmod($fullFilePath, 0777);
+                    }
 
                     VendorDokumenPendukung::create([
-                        'vendor_id' => $vendor->id,
+                        'vendor_id'  => $vendor->id,
                         'dokumen_id' => $dokumenId,
-                        'file_name' => $file->getClientOriginalName(),
-                        'file_path' => $storedPath,
+                        'file_name'  => $filename,
+                        'file_path'  => $storedPath,
+                        'file_size'  => $file->getSize(),
+                        'file_type'  => $file->getMimeType(),
                     ]);
                 }
             }
 
             DB::commit();
+
+            foreach (array_unique($pathsToDelete) as $oldPath) {
+                if ($oldPath && Storage::disk('public')->exists($oldPath)) {
+                    Storage::disk('public')->delete($oldPath);
+                }
+            }
 
             return response()->json([
                 'success' => true,
@@ -783,5 +1002,17 @@ class MasterVendorController extends Controller
                 'message' => 'Gagal mengupdate vendor.',
             ], 500);
         }
+    }
+
+    public function dropdownSelect()
+    {
+        $vendors = MasterVendor::where('is_active', true)
+            ->orderBy('nama_vendor', 'ASC')
+            ->get();
+
+        return response()->json([
+            'status' => true,
+            'data' => $vendors
+        ]);
     }
 }

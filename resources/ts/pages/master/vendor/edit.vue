@@ -124,6 +124,28 @@ interface VendorDetailResponse {
   data?: VendorDetail
 }
 
+interface BankForm {
+  id?: number | null
+  bank_id: number | null
+  nama_bank: string
+  nama_bank_pendek: string
+  kode_bank: string
+  swift_code: string
+  atas_nama: string
+  nomor_rekening: string
+  cabang: string
+  alamat_bank: string
+}
+
+interface MasterBankItem {
+  id: number
+  kode_bank: string | null
+  nama_bank: string
+  nama_bank_pendek: string | null
+  swift_code: string | null
+  is_active: boolean
+}
+
 const router = useRouter()
 const route = useRoute()
 
@@ -147,6 +169,10 @@ const selectedDokumen = ref<number[]>([])
 const dokumenFiles = ref<Record<number, File[]>>({})
 const fileInputModels = ref<Record<number, File[]>>({})
 const existingDokumenFiles = ref<Record<number, ExistingDokumenFile[]>>({})
+
+const loadingBanks = ref(false)
+const bankError = ref<string | null>(null)
+const masterBanks = ref<MasterBankItem[]>([])
 
 const form = reactive<VendorForm>({
   nama_vendor: '',
@@ -178,16 +204,67 @@ const form = reactive<VendorForm>({
   top: null,
 })
 
-const banks = ref<BankItem[]>([
-  {
-    nama_bank: '',
-    atas_nama: '',
-    nomor_rekening: '',
-    cabang: '',
-    alamat_bank: '',
-    swift_code: '',
-  },
-])
+const createEmptyBank = (): BankForm => ({
+  id: null,
+  bank_id: null,
+  nama_bank: '',
+  nama_bank_pendek: '',
+  kode_bank: '',
+  swift_code: '',
+  atas_nama: '',
+  nomor_rekening: '',
+  cabang: '',
+  alamat_bank: '',
+})
+
+const banks = ref<BankForm[]>([createEmptyBank()])
+
+const filterMasterBank = (
+  itemTitle: string,
+  queryText: string,
+  item: any,
+): boolean => {
+  const searchText = String(queryText || '').toLowerCase()
+  const raw = item?.raw || {}
+
+  return [
+    raw.nama_bank,
+    raw.nama_bank_pendek,
+    raw.kode_bank,
+    raw.swift_code,
+  ]
+    .filter(Boolean)
+    .some(value => String(value).toLowerCase().includes(searchText))
+}
+
+const handleSelectBank = (index: number): void => {
+  const selectedId = banks.value[index].bank_id
+
+  if (!selectedId) {
+    banks.value[index].nama_bank = ''
+    banks.value[index].nama_bank_pendek = ''
+    banks.value[index].kode_bank = ''
+    banks.value[index].swift_code = ''
+    return
+  }
+
+  const selectedBank = masterBanks.value.find(
+    item => item.id === Number(selectedId),
+  )
+
+  if (!selectedBank) {
+    banks.value[index].nama_bank = ''
+    banks.value[index].nama_bank_pendek = ''
+    banks.value[index].kode_bank = ''
+    banks.value[index].swift_code = ''
+    return
+  }
+
+  banks.value[index].nama_bank = selectedBank.nama_bank || ''
+  banks.value[index].nama_bank_pendek = selectedBank.nama_bank_pendek || ''
+  banks.value[index].kode_bank = selectedBank.kode_bank || ''
+  banks.value[index].swift_code = selectedBank.swift_code || ''
+}
 
 const goBack = (): void => {
   router.push('/master/vendor')
@@ -227,19 +304,13 @@ const formatNPWP = (): void => {
 }
 
 const addBank = (): void => {
-  banks.value.push({
-    nama_bank: '',
-    atas_nama: '',
-    nomor_rekening: '',
-    cabang: '',
-    alamat_bank: '',
-    swift_code: '',
-  })
+  banks.value.push(createEmptyBank())
 }
 
 const removeBank = (index: number): void => {
-  if (banks.value.length <= 1) return
-  banks.value.splice(index, 1)
+  if (banks.value.length > 1) {
+    banks.value.splice(index, 1)
+  }
 }
 
 const toggleTransaksi = (id: number): void => {
@@ -343,6 +414,38 @@ watch(
   },
 )
 
+const loadMasterBanks = async (): Promise<void> => {
+  loadingBanks.value = true
+  bankError.value = null
+
+  try {
+    const res = await axios.get('/master/banks', {
+      params: {
+        is_active: 1,
+      },
+    })
+
+    const data = Array.isArray(res.data?.data)
+      ? res.data.data
+      : Array.isArray(res.data)
+        ? res.data
+        : []
+
+    masterBanks.value = data
+  } catch (error: any) {
+    bankError.value = 'Data master bank gagal dimuat'
+
+    await showErrorAlert({
+      title: 'Error',
+      text: getApiErrorMessage(error, 'Gagal memuat master bank.'),
+    })
+
+    masterBanks.value = []
+  } finally {
+    loadingBanks.value = false
+  }
+}
+
 const loadTransaksi = async (): Promise<void> => {
   loadingTransaksi.value = true
   transaksiError.value = ''
@@ -414,9 +517,10 @@ const loadVendorDetail = async (): Promise<void> => {
     form.telepon = detail.telepon ?? ''
     form.fax = detail.fax ?? ''
     form.email = formatEmail(detail.email ?? '')
-    form.jenis_perusahaan = detail.jenis_perusahaan !== null && detail.jenis_perusahaan !== undefined
-      ? String(detail.jenis_perusahaan)
-      : null
+    form.jenis_perusahaan =
+      detail.jenis_perusahaan !== null && detail.jenis_perusahaan !== undefined
+        ? String(detail.jenis_perusahaan)
+        : null
     form.kategori_vendor = detail.kategori_vendor ?? null
     form.nomor_ktp = detail.nomor_ktp ?? ''
     form.alamat = detail.alamat ?? ''
@@ -439,26 +543,7 @@ const loadVendorDetail = async (): Promise<void> => {
 
     form.transaksi_ids = Array.isArray(detail.transaksi_ids) ? detail.transaksi_ids : []
 
-    banks.value = Array.isArray(detail.banks) && detail.banks.length
-      ? detail.banks.map(bank => ({
-          id: bank.id ?? null,
-          nama_bank: bank.nama_bank ?? '',
-          atas_nama: bank.atas_nama ?? '',
-          nomor_rekening: bank.nomor_rekening ?? '',
-          cabang: bank.cabang ?? '',
-          alamat_bank: bank.alamat_bank ?? '',
-          swift_code: bank.swift_code ?? '',
-        }))
-      : [
-          {
-            nama_bank: '',
-            atas_nama: '',
-            nomor_rekening: '',
-            cabang: '',
-            alamat_bank: '',
-            swift_code: '',
-          },
-        ]
+    mapBanksFromDetail(Array.isArray(detail.banks) ? detail.banks : [])
 
     selectedDokumen.value = Array.isArray(detail.dokumen_ids) ? detail.dokumen_ids : []
 
@@ -492,6 +577,28 @@ const loadVendorDetail = async (): Promise<void> => {
   } finally {
     loading.value = false
   }
+}
+
+const getCleanBanks = () => {
+  return (banks.value || [])
+    .filter(bank => {
+      return [
+        bank.bank_id,
+        bank.atas_nama,
+        bank.nomor_rekening,
+        bank.cabang,
+        bank.alamat_bank,
+      ].some(value => String(value || '').trim() !== '')
+    })
+    .map(bank => ({
+      id: bank.id || null,
+      bank_id: bank.bank_id ? Number(bank.bank_id) : null,
+      atas_nama: String(bank.atas_nama || '').trim(),
+      nomor_rekening: String(bank.nomor_rekening || '').trim(),
+      cabang: String(bank.cabang || '').trim() || null,
+      alamat_bank: String(bank.alamat_bank || '').trim() || null,
+      swift_code_snapshot: bank.swift_code || null,
+    }))
 }
 
 const validateForm = async (): Promise<boolean> => {
@@ -564,37 +671,33 @@ const validateBanks = async (): Promise<boolean> => {
   for (let i = 0; i < bankList.length; i++) {
     const bank = bankList[i]
 
-    const namaBank = String(bank.nama_bank || '').trim()
+    const bankId = bank.bank_id
     const atasNama = String(bank.atas_nama || '').trim()
     const nomorRekening = String(bank.nomor_rekening || '').trim()
     const cabang = String(bank.cabang || '').trim()
     const alamatBank = String(bank.alamat_bank || '').trim()
-    const swiftCode = String(bank.swift_code || '').trim()
 
     const allEmpty =
-      namaBank === '' &&
+      !bankId &&
       atasNama === '' &&
       nomorRekening === '' &&
       cabang === '' &&
-      alamatBank === '' &&
-      swiftCode === ''
+      alamatBank === ''
 
     if (allEmpty) continue
 
     const missingFields: string[] = []
 
-    if (!namaBank) missingFields.push('Nama Bank')
+    if (!bankId) missingFields.push('Nama Bank')
     if (!atasNama) missingFields.push('Atas Nama')
     if (!nomorRekening) missingFields.push('Nomor Rekening')
-    if (!cabang) missingFields.push('Cabang')
-    if (!alamatBank) missingFields.push('Alamat Bank')
-    if (!swiftCode) missingFields.push('Swift Code')
 
     if (missingFields.length) {
       await showErrorAlert({
         title: 'Data Bank Belum Lengkap',
         text: `Data bank ke-${i + 1} belum lengkap. Lengkapi: ${missingFields.join(', ')}`,
       })
+
       return false
     }
   }
@@ -602,30 +705,50 @@ const validateBanks = async (): Promise<boolean> => {
   return true
 }
 
+const mapBanksFromDetail = (bankRows: any[] = []): void => {
+  if (!Array.isArray(bankRows) || !bankRows.length) {
+    banks.value = [createEmptyBank()]
+    return
+  }
+
+  banks.value = bankRows.map((bank): BankForm => ({
+    id: bank.id ?? null,
+    bank_id: bank.bank_id ? Number(bank.bank_id) : null,
+    nama_bank: bank.nama_bank || '',
+    nama_bank_pendek: bank.nama_bank_pendek || '',
+    kode_bank: bank.kode_bank || '',
+    swift_code: bank.swift_code || '',
+    atas_nama: bank.atas_nama || '',
+    nomor_rekening: bank.nomor_rekening || '',
+    cabang: bank.cabang || '',
+    alamat_bank: bank.alamat_bank || '',
+  }))
+}
+
 const buildPayload = (): FormData => {
   const payload = new FormData()
 
-  payload.append('nama_vendor', form.nama_vendor)
-  payload.append('inisial_vendor', form.inisial_vendor)
-  payload.append('telepon', form.telepon)
-  payload.append('fax', form.fax)
-  payload.append('email', form.email)
+  payload.append('nama_vendor', form.nama_vendor ?? '')
+  payload.append('inisial_vendor', form.inisial_vendor ?? '')
+  payload.append('telepon', form.telepon ?? '')
+  payload.append('fax', form.fax ?? '')
+  payload.append('email', form.email ?? '')
   payload.append('jenis_perusahaan', form.jenis_perusahaan ?? '')
   payload.append('kategori_vendor', form.kategori_vendor ?? '')
-  payload.append('nomor_ktp', form.nomor_ktp)
-  payload.append('alamat', form.alamat)
+  payload.append('nomor_ktp', form.nomor_ktp ?? '')
+  payload.append('alamat', form.alamat ?? '')
 
-  payload.append('contact_nama', form.contact_nama)
-  payload.append('contact_jabatan', form.contact_jabatan)
-  payload.append('contact_hp', form.contact_hp)
-  payload.append('contact_email', form.contact_email)
+  payload.append('contact_nama', form.contact_nama ?? '')
+  payload.append('contact_jabatan', form.contact_jabatan ?? '')
+  payload.append('contact_hp', form.contact_hp ?? '')
+  payload.append('contact_email', form.contact_email ?? '')
 
   payload.append('status_pkp', form.status_pkp ?? '')
-  payload.append('npwp', form.npwp)
-  payload.append('npwp_alamat', form.npwp_alamat)
-  payload.append('sppkp_nomor', form.sppkp_nomor)
-  payload.append('sppkp_tanggal', form.sppkp_tanggal)
-  payload.append('sppkp_alamat', form.sppkp_alamat)
+  payload.append('npwp', form.npwp ?? '')
+  payload.append('npwp_alamat', form.npwp_alamat ?? '')
+  payload.append('sppkp_nomor', form.sppkp_nomor ?? '')
+  payload.append('sppkp_tanggal', form.sppkp_tanggal ?? '')
+  payload.append('sppkp_alamat', form.sppkp_alamat ?? '')
   payload.append('same_as_npwp', form.same_as_npwp ? '1' : '0')
 
   payload.append('jenis_pembayaran', form.jenis_pembayaran ?? '')
@@ -639,18 +762,7 @@ const buildPayload = (): FormData => {
     payload.append(`dokumen_ids[${index}]`, String(id))
   })
 
-  banks.value.forEach((bank, index) => {
-    if (bank.id) {
-      payload.append(`banks[${index}][id]`, String(bank.id))
-    }
-
-    payload.append(`banks[${index}][nama_bank]`, bank.nama_bank ?? '')
-    payload.append(`banks[${index}][atas_nama]`, bank.atas_nama ?? '')
-    payload.append(`banks[${index}][nomor_rekening]`, bank.nomor_rekening ?? '')
-    payload.append(`banks[${index}][cabang]`, bank.cabang ?? '')
-    payload.append(`banks[${index}][alamat_bank]`, bank.alamat_bank ?? '')
-    payload.append(`banks[${index}][swift_code]`, bank.swift_code ?? '')
-  })
+  payload.append('banks', JSON.stringify(getCleanBanks()))
 
   Object.entries(existingDokumenFiles.value).forEach(([docId, files]) => {
     files.forEach((file, index) => {
@@ -695,9 +807,7 @@ const saveVendor = async (): Promise<void> => {
     cancelButtonText: 'Batal',
   })
 
-  if (!confirm.isConfirmed) {
-    return
-  }
+  if (!confirm.isConfirmed) return
 
   isSaving.value = true
 
@@ -706,16 +816,27 @@ const saveVendor = async (): Promise<void> => {
 
     const payload = buildPayload()
 
-    await axios.post(`/master/vendor/${vendorPublicId.value}`, payload)
+    // Jika backend update memakai PUT/PATCH tapi request dikirim via multipart POST
+    // maka spoof method seperti ini lebih aman.
+    if (payload instanceof FormData) {
+      payload.append('_method', 'PUT')
+    }
+
+    const response = await axios.post(`/master/vendor/${vendorPublicId.value}`, payload, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+        Accept: 'application/json',
+      },
+    })
 
     closeAlert()
 
     await showSuccessAlert({
       title: 'Berhasil',
-      text: 'Data vendor berhasil diperbarui',
+      text: response.data?.message || 'Data vendor berhasil diperbarui',
     })
 
-    goBack()
+    await goBack()
   } catch (error: unknown) {
     closeAlert()
 
@@ -734,6 +855,7 @@ const saveVendor = async (): Promise<void> => {
 
 onMounted(async () => {
   await Promise.all([
+    loadMasterBanks(),
     loadTransaksi(),
     loadMasterDokumen(),
     loadVendorDetail(),
@@ -1266,125 +1388,189 @@ onMounted(async () => {
                     </VCol>
                     <!-- Data Pembayaran -->
                     <VCol cols="12">
-                        <div class="mt-4">
-                            <div class="d-flex align-center justify-space-between flex-wrap gap-3 mb-2">
-                            <div class="text-subtitle-1 font-weight-bold">
-                                Data Pembayaran
-                            </div>
+                      <div class="mt-4">
+                        <div class="d-flex align-center justify-space-between flex-wrap gap-3 mb-2">
+                          <div class="text-subtitle-1 font-weight-bold">
+                            Data Pembayaran
+                          </div>
 
-                                <VBtn
-                                    color="primary"
-                                    variant="outlined"
-                                    size="small"
-                                    @click="addBank"
-                                >
-                                    + Tambah Bank
-                                </VBtn>
-                            </div>
-
-                            <VDivider class="mb-4" />
-
-                            <div
-                            v-for="(bank, index) in banks"
-                            :key="index"
-                            class="mb-4"
-                            >
-                                <VCard variant="outlined">
-                                    <VCardTitle class="d-flex align-center justify-space-between py-3">
-                                    <div class="text-subtitle-2 font-weight-bold">
-                                        {{ index + 1 }}. Bank
-                                    </div>
-
-                                    <VBtn
-                                        v-if="banks.length > 1"
-                                        color="error"
-                                        variant="text"
-                                        size="small"
-                                        @click="removeBank(index)"
-                                    >
-                                        Hapus
-                                    </VBtn>
-                                    </VCardTitle>
-
-                                    <VDivider />
-
-                                    <VCardText>
-                                    <VRow>
-                                        <VCol
-                                        cols="12"
-                                        md="6"
-                                        >
-                                        <VTextField
-                                            v-model="bank.nama_bank"
-                                            label="Nama Bank"
-                                            placeholder="Nama Bank"
-                                            @update:model-value="value => bank.nama_bank = toUpper(value)"
-                                        />
-                                        </VCol>
-
-                                        <VCol
-                                        cols="12"
-                                        md="6"
-                                        >
-                                        <VTextField
-                                            v-model="bank.atas_nama"
-                                            label="Atas Nama"
-                                            placeholder="Atas Nama Rekening"
-                                            @update:model-value="value => bank.atas_nama = toUpper(value)"
-                                        />
-                                        </VCol>
-
-                                        <VCol
-                                        cols="12"
-                                        md="6"
-                                        >
-                                        <VTextField
-                                            v-model="bank.nomor_rekening"
-                                            label="Nomor Rekening"
-                                            placeholder="Nomor Rekening"
-                                            @update:model-value="value => bank.nomor_rekening = onlyNumber(value)"
-                                        />
-                                        </VCol>
-
-                                        <VCol
-                                        cols="12"
-                                        md="6"
-                                        >
-                                        <VTextField
-                                            v-model="bank.cabang"
-                                            label="Cabang"
-                                            placeholder="Cabang Bank"
-                                        />
-                                        </VCol>
-
-                                        <VCol
-                                        cols="12"
-                                        md="6"
-                                        >
-                                        <VTextarea
-                                            v-model="bank.alamat_bank"
-                                            label="Alamat Bank"
-                                            placeholder="Alamat lengkap bank"
-                                            rows="2"
-                                            auto-grow
-                                        />
-                                        </VCol>
-
-                                        <VCol
-                                        cols="12"
-                                        md="6"
-                                        >
-                                        <VTextField
-                                            v-model="bank.swift_code"
-                                            label="Swift Code"
-                                            placeholder="SWIFT Code"
-                                        />
-                                        </VCol>
-                                    </VRow>
-                                    </VCardText>
-                                </VCard>
-                            </div>
+                          <VBtn
+                            color="primary"
+                            variant="outlined"
+                            size="small"
+                            @click="addBank"
+                          >
+                            + Tambah Bank
+                          </VBtn>
                         </div>
+
+                        <VDivider class="mb-4" />
+
+                        <div
+                          v-if="loadingBanks"
+                          class="d-flex flex-column align-center justify-center py-8 text-medium-emphasis"
+                        >
+                          <VProgressCircular
+                            indeterminate
+                            color="primary"
+                            size="24"
+                            width="3"
+                            class="mb-2"
+                          />
+                          <span>Sedang memuat master bank...</span>
+                        </div>
+
+                        <VAlert
+                          v-else-if="bankError"
+                          type="error"
+                          variant="tonal"
+                          prominent
+                          icon="mdi-alert-circle"
+                          class="mb-4"
+                        >
+                          <div class="d-flex justify-space-between align-center">
+                            <div>
+                              <div class="font-weight-medium">
+                                Gagal Memuat Data
+                              </div>
+
+                              <div class="text-body-2">
+                                {{ bankError }}
+                              </div>
+                            </div>
+
+                            <VBtn
+                              type="button"
+                              size="small"
+                              variant="outlined"
+                              color="error"
+                              @click="loadMasterBanks"
+                            >
+                              Coba Lagi
+                            </VBtn>
+                          </div>
+                        </VAlert>
+
+                        <div
+                          v-for="(bank, index) in banks"
+                          :key="bank.id || index"
+                          class="mb-4"
+                        >
+                          <VCard variant="outlined">
+                            <VCardTitle class="d-flex align-center justify-space-between py-3">
+                              <div class="text-subtitle-2 font-weight-bold">
+                                {{ index + 1 }}. Bank
+                              </div>
+
+                              <VBtn
+                                v-if="banks.length > 1"
+                                color="error"
+                                variant="text"
+                                size="small"
+                                @click="removeBank(index)"
+                              >
+                                Hapus
+                              </VBtn>
+                            </VCardTitle>
+
+                            <VDivider />
+
+                            <VCardText>
+                              <VRow>
+                                <VCol cols="12" md="6">
+                                  <VAutocomplete
+                                    v-model="bank.bank_id"
+                                    label="Nama Bank *"
+                                    :items="masterBanks"
+                                    item-title="nama_bank"
+                                    item-value="id"
+                                    clearable
+                                    density="comfortable"
+                                    :menu-props="{ maxHeight: 300 }"
+                                    :custom-filter="filterMasterBank"
+                                    :error="isSubmitted && !bank.bank_id"
+                                    :error-messages="isSubmitted && !bank.bank_id ? ['Nama bank wajib dipilih'] : []"
+                                    no-data-text="Data bank tidak ditemukan"
+                                    placeholder="Cari nama bank..."
+                                    @update:model-value="handleSelectBank(index)"
+                                  >
+                                    <template #item="{ props, item }">
+                                      <VListItem
+                                        v-bind="props"
+                                        :title="item.raw.nama_bank"
+                                        :subtitle="`${item.raw.nama_bank_pendek || '-'} • Kode: ${item.raw.kode_bank || '-'} • Swift: ${item.raw.swift_code || '-'}`"
+                                      />
+                                    </template>
+                                  </VAutocomplete>
+                                </VCol>
+
+                                <VCol cols="12">
+                                  <VAlert
+                                    v-if="bank.bank_id"
+                                    type="info"
+                                    variant="tonal"
+                                  >
+                                    <div class="d-flex flex-column ga-1">
+                                      <div>
+                                        <strong>Kode Bank:</strong>
+                                        {{ bank.kode_bank || '-' }}
+                                      </div>
+                                      <div>
+                                        <strong>Nama Bank Pendek:</strong>
+                                        {{ bank.nama_bank_pendek || '-' }}
+                                      </div>
+                                      <div>
+                                        <strong>Swift Code:</strong>
+                                        {{ bank.swift_code || '-' }}
+                                      </div>
+                                    </div>
+                                  </VAlert>
+                                </VCol>
+
+                                <VCol cols="12" md="6">
+                                  <VTextField
+                                    v-model="bank.atas_nama"
+                                    label="Atas Nama *"
+                                    placeholder="Atas Nama Rekening"
+                                    :error="isSubmitted && !bank.atas_nama"
+                                    :error-messages="isSubmitted && !bank.atas_nama ? ['Atas nama wajib diisi'] : []"
+                                    @update:model-value="value => bank.atas_nama = toUpper(value)"
+                                  />
+                                </VCol>
+
+                                <VCol cols="12" md="6">
+                                  <VTextField
+                                    v-model="bank.nomor_rekening"
+                                    label="Nomor Rekening *"
+                                    placeholder="Nomor Rekening"
+                                    :error="isSubmitted && !bank.nomor_rekening"
+                                    :error-messages="isSubmitted && !bank.nomor_rekening ? ['Nomor rekening wajib diisi'] : []"
+                                    @update:model-value="value => bank.nomor_rekening = onlyNumber(value)"
+                                  />
+                                </VCol>
+
+                                <VCol cols="12" md="6">
+                                  <VTextField
+                                    v-model="bank.cabang"
+                                    label="Cabang"
+                                    placeholder="Cabang Bank"
+                                  />
+                                </VCol>
+
+                                <VCol cols="12" md="6">
+                                  <VTextarea
+                                    v-model="bank.alamat_bank"
+                                    label="Alamat Bank"
+                                    placeholder="Alamat lengkap bank"
+                                    rows="2"
+                                    auto-grow
+                                  />
+                                </VCol>
+                              </VRow>
+                            </VCardText>
+                          </VCard>
+                        </div>
+                      </div>
                     </VCol>
                     <!-- Sistem Pembayaran -->
                     <VCol cols="12">

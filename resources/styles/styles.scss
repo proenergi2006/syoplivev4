@@ -75,3 +75,13 @@
 .pagination-footer-right .v-pagination {
   margin: 0;
 }
+
+.native-date-hidden {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
