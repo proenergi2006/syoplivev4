@@ -793,7 +793,7 @@ class MasterVendorController extends Controller
                 VendorBank::where('vendor_id', $vendor->id)->delete();
             }
 
-           /*
+            /*
             |--------------------------------------------------------------------------
             | 3. Sinkron dokumen pendukung
             |--------------------------------------------------------------------------
@@ -802,8 +802,8 @@ class MasterVendorController extends Controller
             $pathsToDelete = [];
 
             $dokumenIds = collect($request->input('dokumen_ids', []))
-                ->filter(fn ($id) => $id !== null && $id !== '')
-                ->map(fn ($id) => (int) $id)
+                ->filter(fn($id) => $id !== null && $id !== '')
+                ->map(fn($id) => (int) $id)
                 ->unique()
                 ->values();
 
@@ -817,8 +817,8 @@ class MasterVendorController extends Controller
             */
             foreach ($dokumenIds as $dokumenId) {
                 $keepIdsForDokumen = collect($dokumenExistingIds->get((string) $dokumenId, []))
-                    ->filter(fn ($id) => $id !== null && $id !== '')
-                    ->map(fn ($id) => (int) $id)
+                    ->filter(fn($id) => $id !== null && $id !== '')
+                    ->map(fn($id) => (int) $id)
                     ->values()
                     ->all();
 
@@ -846,7 +846,7 @@ class MasterVendorController extends Controller
             $dokumenYangDihapusTotal = VendorDokumenPendukung::where('vendor_id', $vendor->id)
                 ->when(
                     $dokumenIds->isNotEmpty(),
-                    fn ($query) => $query->whereNotIn('dokumen_id', $dokumenIds->all())
+                    fn($query) => $query->whereNotIn('dokumen_id', $dokumenIds->all())
                 )
                 ->get();
 
@@ -1004,15 +1004,57 @@ class MasterVendorController extends Controller
         }
     }
 
-    public function dropdownSelect()
+    public function dropdownSelect(Request $request)
     {
-        $vendors = MasterVendor::where('is_active', true)
-            ->orderBy('nama_vendor', 'ASC')
-            ->get();
+        try {
 
-        return response()->json([
-            'status' => true,
-            'data' => $vendors
-        ]);
+            $query = MasterVendor::query()
+                ->where('is_active', true)
+                ->orderBy('nama_vendor', 'ASC');
+
+            if ($request->search) {
+                $search = $request->search;
+
+                $query->where(function ($q) use ($search) {
+                    $q->where('nama_vendor', 'ILIKE', "%{$search}%")
+                        ->orWhere('inisial_vendor', 'ILIKE', "%{$search}%")
+                        ->orWhere('email_vendor', 'ILIKE', "%{$search}%");
+                });
+            }
+
+            $vendors = $query->get()->map(function ($vendor) {
+                return [
+                    'id' => $vendor->id,
+                    'value' => $vendor->id,
+
+                    'nama_vendor' => $vendor->nama_vendor,
+                    'status_pkp' => $vendor->status_pkp ?? 'NON_PKP',
+
+                    'title' => $vendor->nama_vendor,
+                ];
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Data vendor berhasil dimuat.',
+                'data' => $vendors,
+            ], 200);
+        } catch (\Throwable $e) {
+
+            Log::error('[Vendor] Dropdown select error', [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal memuat data vendor.',
+                'data' => [],
+                'debug' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
+            ], 500);
+        }
     }
 }

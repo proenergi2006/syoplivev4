@@ -4,9 +4,9 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 
-class Departemen extends Model
+class Department extends Model
 {
-    protected $table = 'departemen';
+    protected $table = 'departments';
 
     protected $fillable = [
         'kode',

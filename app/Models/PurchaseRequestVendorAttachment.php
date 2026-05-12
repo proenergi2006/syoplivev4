@@ -20,11 +20,6 @@ class PurchaseRequestVendorAttachment extends Model
         'filetype',
     ];
 
-    public function offer()
-    {
-        return $this->belongsTo(PurchaseRequestVendor::class, 'id');
-    }
-
     public function getFullUrlAttribute()
     {
         return asset('storage/' . $this->filepath);

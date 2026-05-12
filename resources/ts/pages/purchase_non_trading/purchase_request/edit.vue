@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref, toRef } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, reactive, ref, toRef } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import Swal from 'sweetalert2'
 import axios from '@axios'
 import {
@@ -99,7 +99,20 @@ interface UnitItem {
   kategori: string
 }
 
+interface ExistingPrAttachment {
+  id: number
+  filename: string
+  original_filename: string
+  filepath: string
+  filesize: number
+  filetype: string
+}
+
+const route = useRoute()
 const router = useRouter()
+
+const publicId = computed(() => String(route.query.id || ''))
+const isLoadingDetail = ref(false)
 
 const isSubmitted = ref(false)
 const isSaving = ref(false)
@@ -130,6 +143,8 @@ const { mobile } = useDisplay()
 const confirmCloseItemDialog = ref(false)
 const itemDialogSaved = ref(false)
 const savedVendorItems = ref<number[]>([])
+
+const existingLampiranRequests = ref<ExistingPrAttachment[]>([])
 
 const form = reactive<PurchaseRequestForm>({
   tanggal_pr: '',
@@ -209,6 +224,110 @@ const fetchDepartmentList = async (showAlert = true): Promise<void> => {
     }
   } finally {
     isLoadingDepartment.value = false
+  }
+}
+
+const loadPurchaseRequestDetail = async (): Promise<void> => {
+  if (!publicId.value) {
+    showErrorToast({
+      title: 'Error',
+      text: 'ID Purchase Request tidak ditemukan.',
+    })
+
+    await router.replace('/purchase_non_trading/purchase_request')
+    return
+  }
+
+  if (isLoadingDetail.value) return
+
+  isLoadingDetail.value = true
+
+  try {
+    const response = await axios.get(
+      `/transaction/purchase-request/${publicId.value}/edit`,
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+    )
+
+    const detail = response.data?.data
+
+    if (!detail) {
+      throw new Error('Data purchase request tidak ditemukan')
+    }
+
+    existingLampiranRequests.value = Array.isArray(detail.attachments)
+      ? detail.attachments.map((file: any) => ({
+          id: Number(file.id),
+          filename: file.filename || '-',
+          original_filename: file.original_filename || '-',
+          filepath: file.filepath || '#',
+          filesize: Number(file.filesize || 0),
+          filetype: file.filetype || '',
+        }))
+      : []
+
+    form.lampiran_requests = []
+
+    form.tanggal_pr = detail.tanggal_pr ?? ''
+    form.cabang = detail.cabang_id !== null && detail.cabang_id !== undefined
+      ? Number(detail.cabang_id)
+      : null
+
+    form.id_department = detail.department_id !== null && detail.department_id !== undefined
+      ? Number(detail.department_id)
+      : null
+
+    form.kategori = detail.kategori ?? null
+    form.notes = detail.notes ?? ''
+    form.lampiran_requests = []
+
+    vendors.value = Array.isArray(detail.vendors) && detail.vendors.length
+      ? detail.vendors.map((vendor: any) => ({
+          vendor_id: vendor.vendor_id !== null && vendor.vendor_id !== undefined
+            ? Number(vendor.vendor_id)
+            : null,
+
+          status_pkp: vendor.status_pkp ?? 'NON_PKP',
+          is_selected: Boolean(vendor.is_selected),
+
+          items: Array.isArray(vendor.items) && vendor.items.length
+            ? vendor.items.map((item: any) => ({
+                nama_item: item.nama_item ?? '',
+                qty: Number(item.qty || 1),
+
+                satuan: item.satuan_id !== null && item.satuan_id !== undefined
+                  ? Number(item.satuan_id)
+                  : null,
+
+                keterangan: item.keterangan ?? '',
+                harga_unit: Number(item.harga_unit || 0),
+                subtotal: Number(item.subtotal || 0),
+              }))
+            : [createEmptyItem()],
+        }))
+      : [
+          {
+            vendor_id: null,
+            is_selected: false,
+            items: [createEmptyItem()],
+          },
+        ]
+
+    savedVendorItems.value = vendors.value.map((_, index) => index)
+  } catch (error: unknown) {
+    const err = error as AxiosErrorShape
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(err, 'Gagal memuat detail Purchase Request.'),
+    })
+
+    await router.replace('/purchase_non_trading/purchase_request')
+  } finally {
+    isLoadingDetail.value = false
   }
 }
 
@@ -322,6 +441,8 @@ const loadUnits = async (showAlert = true): Promise<void> => {
     })
 
     const payload = response?.data
+
+    console.log('UNITS RESPONSE:', payload)
 
     const data = Array.isArray(payload?.data)
       ? payload.data
@@ -691,8 +812,27 @@ const handleFileUpload = async (event: Event): Promise<void> => {
   input.value = ''
 }
 
+const getExistingFileType = (file: ExistingPrAttachment): string => {
+  const type = String(file.filetype || '').toLowerCase()
+  const name = String(file.filename || '').toLowerCase()
+
+  if (type.includes('pdf') || name.endsWith('.pdf')) return 'PDF'
+
+  return 'IMAGE'
+}
+
+const formatExistingFileSize = (bytes: number): string => {
+  if (!bytes) return '-'
+
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
 const removeLampiran = (index: number): void => {
   form.lampiran_requests.splice(index, 1)
+}
+
+const removeExistingLampiran = (index: number): void => {
+  existingLampiranRequests.value.splice(index, 1)
 }
 
 const formatFileSize = (bytes: number): string => {
@@ -786,6 +926,11 @@ const buildFormData = (): FormData => {
   formData.append('notes', String(form.notes || ''))
 
   formData.append(
+    'existing_attachment_ids',
+    JSON.stringify(existingLampiranRequests.value.map(file => file.id)),
+  )
+
+  formData.append(
     'vendors',
     JSON.stringify(
       vendors.value.map((vendor, index) => ({
@@ -798,17 +943,16 @@ const buildFormData = (): FormData => {
     ),
   )
 
-  form.lampiran_requests.forEach(file => {
-    formData.append('lampiran_request[]', file)
-  })
+  if (Array.isArray(form.lampiran_requests)) {
+    form.lampiran_requests.forEach((file: File) => {
+      formData.append('lampiran_requests[]', file)
+    })
+  }
 
   return formData
 }
 
-const savePurchaseRequest = async (event?: Event): Promise<void> => {
-  event?.preventDefault()
-  event?.stopPropagation()
-
+const updatePurchaseRequest = async (): Promise<void> => {
   if (isSaving.value) return
 
   isSubmitted.value = true
@@ -817,9 +961,9 @@ const savePurchaseRequest = async (event?: Event): Promise<void> => {
   if (!isValid) return
 
   const confirm = await showConfirmAlert({
-    title: 'Simpan Purchase Request?',
-    text: 'Pastikan data sudah benar.',
-    confirmButtonText: 'Ya, simpan',
+    title: 'Update Purchase Request?',
+    text: 'Pastikan perubahan data sudah benar.',
+    confirmButtonText: 'Ya, update',
     cancelButtonText: 'Batal',
   })
 
@@ -828,53 +972,37 @@ const savePurchaseRequest = async (event?: Event): Promise<void> => {
   isSaving.value = true
 
   try {
-    showLoadingAlert('Menyimpan data...', 'Mohon tunggu sebentar')
+    showLoadingAlert('Mengupdate data...', 'Mohon tunggu sebentar')
 
     const formData = buildFormData()
+    formData.append('_method', 'PUT')
 
-    const response = await axios.post('/transaction/purchase-request', formData, {
-      headers: {
-        Accept: 'application/json',
+    const response = await axios.post(
+      `/transaction/purchase-request/${publicId.value}`,
+      formData,
+      {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          Accept: 'application/json',
+        },
       },
-    })
+    )
 
     closeAlert()
 
-    await router.replace({
-      path: '/purchase_non_trading/purchase_request',
-      query: {
-        success: 'created',
-      },
+    showSuccessToast({
+      title: 'Berhasil',
+      text: response.data?.message || 'Purchase Request berhasil diperbarui.',
     })
+
+    await router.replace('/purchase_non_trading/purchase_request')
   } catch (error: unknown) {
     closeAlert()
 
-    const err = error as AxiosErrorShape
-
-    console.error('[Purchase Request] SAVE ERROR:', err)
-
-    if (err?.response?.status === 401) {
-      showErrorToast({
-        title: 'Sesi Login Berakhir',
-        text: 'Silakan login ulang terlebih dahulu.',
-      })
-
-      localStorage.removeItem('accessToken')
-      localStorage.removeItem('userData')
-      localStorage.removeItem('navItems')
-
-      await router.replace('/login')
-      return
-    }
-
     showErrorToast({
       title: 'Error',
-      text:
-        err?.response?.data?.message
-        || getApiErrorMessage(error, 'Gagal menyimpan Purchase Request.'),
+      text: getApiErrorMessage(error, 'Gagal memperbarui Purchase Request.'),
     })
-
-    return
   } finally {
     isSaving.value = false
   }
@@ -882,14 +1010,13 @@ const savePurchaseRequest = async (event?: Event): Promise<void> => {
 
 const confirmCancel = async (): Promise<void> => {
   const confirm = await showConfirmAlert({
-    title: 'Batalkan?',
-    text: 'Data yang sudah diisi akan hilang.',
-    confirmButtonText: 'Ya, batal',
-    cancelButtonText: 'Batal',
+    title: 'Batalkan perubahan?',
+    confirmButtonText: 'Ya',
+    cancelButtonText: 'Tidak',
   })
 
   if (confirm.isConfirmed) {
-    await router.replace('/purchase_non_trading/purchase_request')
+    goBack()
   }
 }
 
@@ -900,12 +1027,15 @@ const goBack = async (): Promise<void> => {
 }
 
 onMounted(async () => {
-  form.tanggal_pr = today()
+    form.tanggal_pr = today()
+    await Promise.all([
+        loadUnits(false),
+        loadVendors(false),
+        fetchCabangList(false),
+        fetchDepartmentList(false),
+    ])
 
-  await loadUnits(false)
-  await loadVendors(false)
-  await fetchCabangList(false)
-  await fetchDepartmentList(false)
+    await loadPurchaseRequestDetail()
 })
 </script>
 
@@ -917,7 +1047,7 @@ onMounted(async () => {
         <VCardTitle class="d-flex align-center justify-space-between">
           <div>
             <div class="text-h6 font-weight-bold">
-              Form Purchase Request
+              Form Edit Purchase Request
             </div>
             <div class="text-body-2 text-medium-emphasis">
               Silakan lengkapi data purchase request dengan benar
@@ -1491,7 +1621,7 @@ onMounted(async () => {
                 </VAlert>
 
                 <VAlert
-                  v-if="!form.lampiran_requests.length"
+                  v-if="!existingLampiranRequests.length && !form.lampiran_requests.length"
                   type="info"
                   variant="tonal"
                 >
@@ -1504,13 +1634,56 @@ onMounted(async () => {
                   border
                   rounded
                 >
+                  <!-- Lampiran lama dari BE -->
                   <VListItem
-                    v-for="(file, index) in form.lampiran_requests"
-                    :key="`${file.name}-${file.size}-${index}`"
+                    v-for="(file, index) in existingLampiranRequests"
+                    :key="`existing-${file.id}-${index}`"
                   >
                     <template #prepend>
                       <VIcon
-                        :icon="getFileType(file) === 'PDF' ? 'mdi-file-pdf-box' : 'mdi-file-image-outline'"
+                        :icon="getExistingFileType(file) === 'PDF'
+                          ? 'mdi-file-pdf-box'
+                          : 'mdi-file-image-outline'"
+                      />
+                    </template>
+
+                    <VListItemTitle class="text-body-2">
+                      <a
+                        :href="file.filepath"
+                        target="_blank"
+                        class="text-decoration-none"
+                      >
+                        {{ file.original_filename }}
+                      </a>
+                    </VListItemTitle>
+
+                    <VListItemSubtitle>
+                      {{ getExistingFileType(file) }} • {{ formatExistingFileSize(file.filesize) }} • File Lama
+                    </VListItemSubtitle>
+
+                    <template #append>
+                      <VBtn
+                        type="button"
+                        color="error"
+                        variant="text"
+                        size="small"
+                        @click="removeExistingLampiran(index)"
+                      >
+                        Hapus
+                      </VBtn>
+                    </template>
+                  </VListItem>
+
+                  <!-- Lampiran baru dari FE -->
+                  <VListItem
+                    v-for="(file, index) in form.lampiran_requests"
+                    :key="`new-${file.name}-${file.size}-${index}`"
+                  >
+                    <template #prepend>
+                      <VIcon
+                        :icon="getFileType(file) === 'PDF'
+                          ? 'mdi-file-pdf-box'
+                          : 'mdi-file-image-outline'"
                       />
                     </template>
 
@@ -1519,7 +1692,7 @@ onMounted(async () => {
                     </VListItemTitle>
 
                     <VListItemSubtitle>
-                      {{ getFileType(file) }} • {{ formatFileSize(file.size) }}
+                      {{ getFileType(file) }} • {{ formatFileSize(file.size) }} • File Baru
                     </VListItemSubtitle>
 
                     <template #append>
@@ -1565,9 +1738,9 @@ onMounted(async () => {
               type="button"
               color="primary"
               :loading="isSaving"
-              @click.prevent.stop="savePurchaseRequest($event)"
+              @click.prevent.stop="updatePurchaseRequest"
             >
-              Simpan
+              Update
             </VBtn>
           </div>
         </VCardText>

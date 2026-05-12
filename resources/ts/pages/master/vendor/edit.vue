@@ -4,11 +4,12 @@ import { useRoute, useRouter } from 'vue-router'
 import axios from '@axios'
 import {
   showLoadingAlert,
-  showSuccessAlert,
-  showErrorAlert,
+  showSuccessToast,
+  showErrorToast,
   closeAlert,
   showConfirmAlert,
-  showWarningAlert,
+  showWarningToast,
+  showInfoToast,
 } from '@/utils/alert'
 import { getApiErrorMessage } from '@/utils/apiHelper'
 
@@ -273,9 +274,9 @@ const goBack = (): void => {
 const confirmCancel = async (): Promise<void> => {
   const result = await showConfirmAlert({
     title: 'Batalkan perubahan?',
-    text: 'Data yang sudah diisi tidak akan tersimpan. Apakah Anda yakin ingin keluar?',
-    confirmButtonText: 'Ya, keluar',
-    cancelButtonText: 'Batal',
+    text: 'Data yang sudah diisi tidak akan tersimpan. Apakah Anda yakin?',
+    confirmButtonText: 'Ya, batal',
+    cancelButtonText: 'Tidak',
   })
 
   if (result.isConfirmed) {
@@ -435,7 +436,7 @@ const loadMasterBanks = async (): Promise<void> => {
   } catch (error: any) {
     bankError.value = 'Data master bank gagal dimuat'
 
-    await showErrorAlert({
+    showErrorToast({
       title: 'Error',
       text: getApiErrorMessage(error, 'Gagal memuat master bank.'),
     })
@@ -482,7 +483,7 @@ const validateDokumen = async (): Promise<boolean> => {
     const hasNewFiles = (dokumenFiles.value[id] || []).length > 0
 
     if (!hasExistingFiles && !hasNewFiles) {
-      await showWarningAlert({
+      showWarningToast({
         title: 'Peringatan',
         text: 'Lampiran wajib diunggah untuk dokumen yang dipilih.',
       })
@@ -570,7 +571,7 @@ const loadVendorDetail = async (): Promise<void> => {
     const err = error as AxiosErrorShape
     loadError.value = getApiErrorMessage(err, 'Gagal memuat detail vendor')
 
-    await showErrorAlert({
+    showErrorToast({
       title: 'Error',
       text: loadError.value,
     })
@@ -603,7 +604,7 @@ const getCleanBanks = () => {
 
 const validateForm = async (): Promise<boolean> => {
   if (!form.nama_vendor || !form.inisial_vendor || !form.jenis_perusahaan || !form.kategori_vendor) {
-    await showWarningAlert({
+    showWarningToast({
       title: 'Warning',
       text: 'Silakan isi semua kolom wajib.',
     })
@@ -611,7 +612,7 @@ const validateForm = async (): Promise<boolean> => {
   }
 
   if (form.telepon && !/^[0-9]+$/.test(form.telepon)) {
-    await showWarningAlert({
+    showWarningToast({
       title: 'Warning',
       text: 'Nomor telepon hanya boleh angka.',
     })
@@ -619,7 +620,7 @@ const validateForm = async (): Promise<boolean> => {
   }
 
   if (form.contact_hp && !/^[0-9]+$/.test(form.contact_hp)) {
-    await showWarningAlert({
+    showWarningToast({
       title: 'Warning',
       text: 'Nomor HP PIC hanya boleh angka.',
     })
@@ -627,7 +628,7 @@ const validateForm = async (): Promise<boolean> => {
   }
 
   if (form.email && !validateEmail(form.email)) {
-    await showWarningAlert({
+    showWarningToast({
       title: 'Warning',
       text: emailValidationMessage,
     })
@@ -635,7 +636,7 @@ const validateForm = async (): Promise<boolean> => {
   }
 
   if (form.contact_email && !validateEmail(form.contact_email)) {
-    await showWarningAlert({
+    showWarningToast({
       title: 'Warning',
       text: emailValidationMessage,
     })
@@ -643,7 +644,7 @@ const validateForm = async (): Promise<boolean> => {
   }
 
   if (!form.jenis_pembayaran) {
-    await showWarningAlert({
+    showWarningToast({
       title: 'Warning',
       text: 'Pilih sistem pembayaran.',
     })
@@ -651,7 +652,7 @@ const validateForm = async (): Promise<boolean> => {
   }
 
   if (form.jenis_pembayaran === 'TOP' && (!form.top || form.top <= 0)) {
-    await showWarningAlert({
+    showWarningToast({
       title: 'Warning',
       text: 'Isi jumlah hari TOP.',
     })
@@ -693,7 +694,7 @@ const validateBanks = async (): Promise<boolean> => {
     if (!nomorRekening) missingFields.push('Nomor Rekening')
 
     if (missingFields.length) {
-      await showErrorAlert({
+      showErrorToast({
         title: 'Data Bank Belum Lengkap',
         text: `Data bank ke-${i + 1} belum lengkap. Lengkapi: ${missingFields.join(', ')}`,
       })
@@ -703,6 +704,16 @@ const validateBanks = async (): Promise<boolean> => {
   }
 
   return true
+}
+
+const isBankRowFilled = (bank: any): boolean => {
+  return Boolean(
+    bank.bank_id
+    || String(bank.atas_nama || '').trim()
+    || String(bank.nomor_rekening || '').trim()
+    || String(bank.cabang || '').trim()
+    || String(bank.alamat_bank || '').trim(),
+  )
 }
 
 const mapBanksFromDetail = (bankRows: any[] = []): void => {
@@ -791,7 +802,7 @@ const saveVendor = async (): Promise<void> => {
   if (!isBankValid) return
 
   if (!vendorPublicId.value) {
-    await showErrorAlert({
+    showErrorToast({
       title: 'Error',
       text: 'ID vendor tidak ditemukan.',
     })
@@ -831,7 +842,7 @@ const saveVendor = async (): Promise<void> => {
 
     closeAlert()
 
-    await showSuccessAlert({
+    showSuccessToast({
       title: 'Berhasil',
       text: response.data?.message || 'Data vendor berhasil diperbarui',
     })
@@ -842,7 +853,7 @@ const saveVendor = async (): Promise<void> => {
 
     const err = error as AxiosErrorShape
 
-    await showErrorAlert({
+    showErrorToast({
       title: 'Error',
       text: getApiErrorMessage(err, 'Gagal memperbarui vendor'),
     })
@@ -1480,7 +1491,7 @@ onMounted(async () => {
                                 <VCol cols="12" md="6">
                                   <VAutocomplete
                                     v-model="bank.bank_id"
-                                    label="Nama Bank *"
+                                    label="Nama Bank"
                                     :items="masterBanks"
                                     item-title="nama_bank"
                                     item-value="id"
@@ -1488,8 +1499,8 @@ onMounted(async () => {
                                     density="comfortable"
                                     :menu-props="{ maxHeight: 300 }"
                                     :custom-filter="filterMasterBank"
-                                    :error="isSubmitted && !bank.bank_id"
-                                    :error-messages="isSubmitted && !bank.bank_id ? ['Nama bank wajib dipilih'] : []"
+                                    :error="isSubmitted && isBankRowFilled(bank) && !bank.bank_id"
+                                    :error-messages="isSubmitted && isBankRowFilled(bank) && !bank.bank_id ? ['Nama bank wajib dipilih'] : []"
                                     no-data-text="Data bank tidak ditemukan"
                                     placeholder="Cari nama bank..."
                                     @update:model-value="handleSelectBank(index)"
@@ -1530,10 +1541,10 @@ onMounted(async () => {
                                 <VCol cols="12" md="6">
                                   <VTextField
                                     v-model="bank.atas_nama"
-                                    label="Atas Nama *"
+                                    label="Atas Nama"
                                     placeholder="Atas Nama Rekening"
-                                    :error="isSubmitted && !bank.atas_nama"
-                                    :error-messages="isSubmitted && !bank.atas_nama ? ['Atas nama wajib diisi'] : []"
+                                    :error="isSubmitted && isBankRowFilled(bank) && !bank.atas_nama"
+                                    :error-messages="isSubmitted && isBankRowFilled(bank) && !bank.atas_nama ? ['Atas nama wajib diisi'] : []"
                                     @update:model-value="value => bank.atas_nama = toUpper(value)"
                                   />
                                 </VCol>
@@ -1541,10 +1552,10 @@ onMounted(async () => {
                                 <VCol cols="12" md="6">
                                   <VTextField
                                     v-model="bank.nomor_rekening"
-                                    label="Nomor Rekening *"
+                                    label="Nomor Rekening"
                                     placeholder="Nomor Rekening"
-                                    :error="isSubmitted && !bank.nomor_rekening"
-                                    :error-messages="isSubmitted && !bank.nomor_rekening ? ['Nomor rekening wajib diisi'] : []"
+                                    :error="isSubmitted && isBankRowFilled(bank) && !bank.nomor_rekening"
+                                    :error-messages="isSubmitted && isBankRowFilled(bank) && !bank.nomor_rekening ? ['Nomor rekening wajib diisi'] : []"
                                     @update:model-value="value => bank.nomor_rekening = onlyNumber(value)"
                                   />
                                 </VCol>

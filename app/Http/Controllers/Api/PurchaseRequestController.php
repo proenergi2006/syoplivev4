@@ -24,6 +24,7 @@ use Maatwebsite\Excel\Facades\Excel;
 use DocumentHelper;
 use App\Helpers\ApprovalHelper;
 use Illuminate\Support\Facades\File;
+use Illuminate\Support\Facades\Log;
 
 class PurchaseRequestController extends Controller
 {
@@ -44,70 +45,102 @@ class PurchaseRequestController extends Controller
 
     public function index(Request $request)
     {
-        $query = PurchaseRequest::with([
-            'vendors.vendor',
-            'vendors.items',
-            'vendors.attachments'
-        ])->orderBy('id', 'desc');
+        try {
+            $query = PurchaseRequest::with([
+                'cabangData',
+                'departmentData',
+                'vendors.vendor',
+                'vendors.items',
+            ])->orderBy('id', 'desc');
 
-        // SEARCH
-        if ($request->search) {
-            $search = $request->search;
+            if ($request->search) {
+                $search = $request->search;
 
-            $query->where(function ($q) use ($search) {
-                $q->where('nomor_pr', 'LIKE', "%{$search}%")
-                    ->orWhere('kategori', 'LIKE', "%{$search}%")
-                    ->orWhere('cabang', 'LIKE', "%{$search}%");
+                $query->where(function ($q) use ($search) {
+                    $q->where('nomor_pr', 'ILIKE', "%{$search}%")
+                        ->orWhere('kategori', 'ILIKE', "%{$search}%");
+                });
+            }
+
+            if ($request->tanggal_mulai) {
+                $query->whereDate('tanggal_pr', '>=', $request->tanggal_mulai);
+            }
+
+            if ($request->tanggal_selesai) {
+                $query->whereDate('tanggal_pr', '<=', $request->tanggal_selesai);
+            }
+
+            if ($request->status) {
+                $query->where('status', $request->status);
+            }
+
+            $perPage = (int) ($request->per_page ?? 10);
+
+            $prs = $query->paginate($perPage);
+
+            $prs->getCollection()->transform(function ($pr) {
+                return [
+                    'id'            => $pr->id,
+                    'public_id'     => $pr->encrypted_id,
+                    'nomor_pr'      => $pr->nomor_pr,
+                    'tanggal_pr'    => $pr->tanggal_pr,
+
+                    'cabang'        => $pr->cabangData->nama_cabang ?? '-',
+                    'cabang_id'     => $pr->cabang,
+
+                    'department'    => $pr->departmentData->kode ?? '-',
+                    'department_id' => $pr->department,
+
+                    'kategori'      => $pr->kategori,
+                    'notes'         => $pr->notes,
+                    'status'        => $pr->status,
+                    'requested_by'  => $pr->requested_by,
+
+                    'vendors' => $pr->vendors->map(function ($v) {
+                        return [
+                            'vendor_id'   => $v->vendor_id,
+                            'nama_vendor' => $v->vendor->nama_vendor ?? '-',
+                            'status_pkp'  => $v->vendor->status_pkp ?? '-',
+                            'price_offer' => $v->price_offer,
+                            'dpp'         => $v->dpp,
+                            'ppn'         => $v->ppn,
+                        ];
+                    }),
+                ];
             });
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Data Purchase Request berhasil dimuat.',
+                'data'    => $prs->items(),
+                'meta'    => [
+                    'current_page' => $prs->currentPage(),
+                    'last_page'    => $prs->lastPage(),
+                    'per_page'     => $prs->perPage(),
+                    'total'        => $prs->total(),
+                ],
+            ], 200);
+        } catch (\Throwable $e) {
+            Log::error('[Purchase Request] Index error', [
+                'message' => $e->getMessage(),
+                'file'    => $e->getFile(),
+                'line'    => $e->getLine(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal memuat data Purchase Request',
+                'data'    => [],
+                'meta'    => [
+                    'current_page' => 1,
+                    'last_page'    => 1,
+                    'per_page'     => (int) ($request->per_page ?? 10),
+                    'total'        => 0,
+                ],
+                'debug' => app()->environment('local') ? $e->getMessage() : null,
+            ], 500);
         }
-
-        // FILTER STATUS
-        if ($request->status) {
-            $query->where('status', $request->status);
-        }
-
-        $perPage = $request->per_page ?? 10;
-
-        $prs = $query->paginate($perPage);
-
-        $prs->getCollection()->transform(function ($pr) {
-            return [
-                'id'            => $pr->id,
-                'encrypted_id'  => $pr->encrypted_id,
-                'nomor_pr'      => $pr->nomor_pr,
-                'tanggal_pr'    => $pr->tanggal_pr,
-                'cabang'        => $pr->cabang,
-                'department'    => $pr->department ?? '-',
-                'kategori'      => $pr->kategori,
-                'notes'         => $pr->notes,
-                'status'        => $pr->status,
-                'requested_by'  => $pr->requested_by,
-
-                'vendors' => $pr->vendors->map(function ($v) {
-                    return [
-                        'vendor_id'   => $v->vendor_id,
-                        'nama_vendor' => $v->vendor->nama_vendor ?? '-',
-                        'status_pkp'  => $v->vendor->status_pkp ?? '-',
-                        'price_offer' => $v->price_offer,
-                        'dpp'         => $v->dpp,
-                        'ppn'         => $v->ppn,
-                    ];
-                }),
-            ];
-        });
-
-        return response()->json([
-            'success' => true,
-            'data'    => $prs->items(),
-            'meta'    => [
-                'current_page' => $prs->currentPage(),
-                'last_page'    => $prs->lastPage(),
-                'per_page'     => $prs->perPage(),
-                'total'        => $prs->total(),
-            ],
-        ], 200);
     }
-
     /**
      * POST /api/purchase-request
      * Simpan data baru dari form (axios.post)
@@ -181,7 +214,7 @@ class PurchaseRequestController extends Controller
             |--------------------------------------------------------------------------
             */
             if ($request->hasFile('lampiran_request')) {
-                $folder = "syopv4/uploads/purchase_requests/{$pr->id}";
+                $folder = "syopv4/uploads/purchase_requests/lampiran/{$pr->id}";
 
                 Storage::disk('public')->makeDirectory($folder);
 
@@ -262,7 +295,7 @@ class PurchaseRequestController extends Controller
                 $offer = PurchaseRequestVendor::create([
                     'purchase_request_id' => $pr->id,
                     'vendor_id'           => (int) ($v['vendor_id'] ?? 0),
-                    'price_offer'         => $dpp + $ppn,
+                    'price_offer'         => $grandTotal + $ppn,
                     'dpp'                 => $dpp,
                     'ppn'                 => $ppn,
                     'is_selected'         => $isSelected,
@@ -293,9 +326,8 @@ class PurchaseRequestController extends Controller
             | 6. Update Total PR
             |--------------------------------------------------------------------------
             */
-            $pr->update([
-                'total_amount' => $selectedPrice,
-            ]);
+            $pr->total_amount = $selectedPrice ?? 0;
+            $pr->save();
 
             DB::commit();
 
@@ -305,7 +337,7 @@ class PurchaseRequestController extends Controller
                 'nomor_pr' => $nomorPr,
                 'data'     => [
                     'id'        => $pr->id,
-                    'public_id' => $pr->public_id ?? null,
+                    'public_id' => $pr->encrypted_id ?? null,
                     'nomor_pr'  => $pr->nomor_pr ?? $nomorPr,
                 ],
             ], 201);
@@ -333,26 +365,113 @@ class PurchaseRequestController extends Controller
      * GET /api/purchase-request/{id}
      * Ambil detail PR berdasarkan ID
      */
-    public function show($encryptedId)
+    public function show($publicId)
     {
-        $id = Crypt::decryptString($encryptedId);
-        $pr = PurchaseRequest::with([
-            // vendor
-            'vendors',
-            'vendors.vendor',
-            'vendors.items',
-            'vendors.attachments',
+        try {
+            $id = Crypt::decryptString($publicId);
 
-            // lampiran PR
-            'attachments',
+            $pr = PurchaseRequest::with([
+                'cabangData',
+                'departmentData',
 
-            // 🔥 history approval
-            'approvalHistories',
-        ])->findOrFail($id);
+                'vendors.vendor',
+                'vendors.items.unit',
 
-        return response()->json([
-            'data' => $pr
-        ]);
+                'attachments',
+                'approvalHistories',
+            ])->find($id);
+
+            if (!$pr) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Purchase Request tidak ditemukan.',
+                    'data' => null,
+                ], 404);
+            }
+
+            $data = [
+                'id' => $pr->id,
+                'public_id' => $pr->encrypted_id,
+                'nomor_pr' => $pr->nomor_pr,
+                'tanggal_pr' => $pr->tanggal_pr,
+
+                'cabang_id' => $pr->cabang,
+                'cabang' => $pr->cabangData->nama_cabang ?? '-',
+
+                'department_id' => $pr->department,
+                'department' => $pr->departmentData->kode . " - " . $pr->departmentData->nama ?? '-',
+
+                'kategori' => $pr->kategori,
+                'notes' => $pr->notes,
+                'status' => $pr->status,
+                'requested_by' => $pr->requested_by,
+
+                'vendors' => $pr->vendors->map(function ($v) {
+                    return [
+                        'vendor_id' => $v->vendor_id,
+                        'nama_vendor' => $v->vendor->nama_vendor ?? '-',
+                        'status_pkp' => $v->vendor->status_pkp ?? 'NON_PKP',
+
+                        'is_selected' => (bool) $v->is_selected,
+
+                        'price_offer' => $v->price_offer,
+                        'dpp' => $v->dpp,
+                        'ppn' => $v->ppn,
+
+                        'items' => $v->items->map(function ($item) {
+                            return [
+                                'nama_item' => $item->nama_item,
+                                'qty' => $item->qty,
+
+                                'satuan_id' => $item->satuan,
+
+                                'satuan' => [
+                                    'id' => $item->unit->id ?? null,
+                                    'kode' => $item->unit->kode ?? '-',
+                                    'nama' => $item->unit->nama ?? '-',
+                                ],
+
+                                'harga_unit' => $item->harga_unit,
+                                'subtotal' => $item->subtotal,
+                                'keterangan' => $item->keterangan,
+                            ];
+                        }),
+                    ];
+                }),
+
+                'attachments' => $pr->attachments->map(function ($a) {
+                    return [
+                        'filename' => $a->filename,
+                        'filepath' => asset('storage/' . $a->filepath),
+                        'filesize' => $a->filesize,
+                        'filetype' => $a->filetype,
+                        'original_filename' => $a->original_filename,
+                    ];
+                }),
+
+                'approval_histories' => $pr->approvalHistories,
+            ];
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Detail Purchase Request berhasil dimuat.',
+                'data' => $data,
+            ], 200);
+        } catch (\Throwable $e) {
+            Log::error('[Purchase Request] Show error', [
+                'public_id' => $publicId,
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal memuat detail Purchase Request',
+                'data' => null,
+                'debug' => app()->environment('local') ? $e->getMessage() : null,
+            ], 500);
+        }
     }
 
 
@@ -360,17 +479,17 @@ class PurchaseRequestController extends Controller
      * PUT /api/purchase-request/{id}
      * Update PR
      */
-    public function update(string $encryptedId, Request $request)
+    public function update(string $publicId, Request $request)
     {
         try {
             $clean = fn($v) => htmlspecialchars(strip_tags(trim($v)), ENT_QUOTES, 'UTF-8');
 
-            $id = Crypt::decryptString($encryptedId);
+            $id = Crypt::decryptString($publicId);
             $pr = PurchaseRequest::findOrFail($id);
 
             /* =====================================================
-           1️⃣ PROTEKSI STATUS
-        ===================================================== */
+            1️⃣ PROTEKSI STATUS
+            ===================================================== */
             if ($pr->status === 'APPROVED') {
                 return response()->json([
                     'message' => 'Purchase request sudah diapprove. Tidak dapat diperbarui.'
@@ -378,8 +497,8 @@ class PurchaseRequestController extends Controller
             }
 
             /* =====================================================
-           2️⃣ UPDATE HEADER PR
-        ===================================================== */
+            2️⃣ UPDATE HEADER PR
+            ===================================================== */
             $pr->update([
                 'tanggal_pr'    => $clean($request->tanggal_pr),
                 'cabang'        => $clean($request->cabang),
@@ -389,53 +508,90 @@ class PurchaseRequestController extends Controller
             ]);
 
             /* =====================================================
-           3️⃣ UPDATE / SYNC VENDOR
-        ===================================================== */
+            3️⃣ UPDATE / SYNC VENDOR
+            ===================================================== */
             $vendors = json_decode($request->vendors, true);
 
             if (!is_array($vendors)) {
                 throw new \Exception('Format vendor tidak valid');
             }
 
-            $vendorIds = collect($vendors)->pluck('vendor_id')->toArray();
+            $selectedVendorCount = collect($vendors)
+                ->filter(fn($v) => filter_var($v['is_selected'] ?? false, FILTER_VALIDATE_BOOLEAN))
+                ->count();
 
-            // Hapus vendor yang dihilangkan di edit
+            if ($selectedVendorCount !== 1) {
+                throw new \Exception('Harus ada tepat 1 vendor yang dipilih.');
+            }
+
+            $keptVendorRowIds = collect($vendors)
+                ->pluck('id')
+                ->filter()
+                ->map(fn($id) => (int) $id)
+                ->values()
+                ->toArray();
+
             PurchaseRequestVendor::where('purchase_request_id', $pr->id)
-                ->whereNotIn('vendor_id', $vendorIds)
+                ->when(count($keptVendorRowIds) > 0, function ($q) use ($keptVendorRowIds) {
+                    $q->whereNotIn('id', $keptVendorRowIds);
+                })
                 ->delete();
 
+            $selectedPrice = 0;
+
             foreach ($vendors as $v) {
+                $items = $v['items'] ?? [];
 
-                /* -----------------------------------------
-               3.1 CREATE / UPDATE VENDOR
-            ----------------------------------------- */
-                $vendor = PurchaseRequestVendor::updateOrCreate(
-                    [
-                        'purchase_request_id' => $pr->id,
-                        'vendor_id'           => $v['vendor_id'],
-                    ],
-                    [
-                        'dpp'         => $v['dpp'] ?? 0,
-                        'ppn'         => $v['ppn'] ?? 0,
-                        'price_offer' => ($v['dpp'] ?? 0) + ($v['ppn'] ?? 0),
-                        'is_selected' => $v['is_selected'] ?? false,
-                    ]
-                );
+                if (!is_array($items) || count($items) === 0) {
+                    throw new \Exception('Setiap vendor wajib memiliki minimal 1 item.');
+                }
 
-                /* -----------------------------------------
-               3.2 RESET & INSERT ITEM
-            ----------------------------------------- */
+                $grandTotal = 0;
+
+                foreach ($items as $item) {
+                    $qty = (float) ($item['qty'] ?? 0);
+                    $harga = (float) ($item['harga_unit'] ?? 0);
+
+                    $grandTotal += $qty * $harga;
+                }
+
+                $dpp = (float) ($v['dpp'] ?? $grandTotal);
+                $ppn = (float) ($v['ppn'] ?? 0);
+                $isSelected = filter_var($v['is_selected'] ?? false, FILTER_VALIDATE_BOOLEAN);
+
+                $vendor = !empty($v['id'])
+                    ? PurchaseRequestVendor::where('purchase_request_id', $pr->id)
+                    ->where('id', (int) $v['id'])
+                    ->first()
+                    : null;
+
+                if (!$vendor) {
+                    $vendor = new PurchaseRequestVendor();
+                    $vendor->purchase_request_id = $pr->id;
+                }
+
+                $vendor->vendor_id = (int) ($v['vendor_id'] ?? 0);
+                $vendor->dpp = $dpp;
+                $vendor->ppn = $ppn;
+                $vendor->price_offer = $grandTotal + $ppn;
+                $vendor->is_selected = $isSelected;
+                $vendor->save();
+
+                if ($isSelected) {
+                    $selectedPrice = $vendor->price_offer;
+                }
+
                 PurchaseRequestVendorItem::where('pr_vendor_id', $vendor->id)->delete();
 
-                foreach ($v['items'] as $item) {
-                    $qty   = (int) ($item['qty'] ?? 0);
-                    $harga = (int) ($item['harga_unit'] ?? 0);
+                foreach ($items as $item) {
+                    $qty = (float) ($item['qty'] ?? 0);
+                    $harga = (float) ($item['harga_unit'] ?? 0);
 
                     PurchaseRequestVendorItem::create([
                         'pr_vendor_id' => $vendor->id,
-                        'nama_item'    => $clean($item['nama_item']),
+                        'nama_item'    => $clean($item['nama_item'] ?? ''),
                         'qty'          => $qty,
-                        'satuan'       => $clean($item['satuan']),
+                        'satuan'       => (int) ($item['satuan'] ?? 0),
                         'keterangan'   => $clean($item['keterangan'] ?? ''),
                         'harga_unit'   => $harga,
                         'subtotal'     => $qty * $harga,
@@ -444,23 +600,95 @@ class PurchaseRequestController extends Controller
             }
 
             /* =====================================================
-           4️⃣ TAMBAH LAMPIRAN PR (MULTIPLE) – SAMA DENGAN STORE
-        ===================================================== */
-            if ($request->hasFile('lampiran_requests')) {
+            4️⃣ UPDATE TOTAL PR
+            ===================================================== */
+            $pr->total_amount = $selectedPrice;
+            $pr->save();
 
-                $folder = "asset-management/uploads/purchase_request/lampiran_request";
+            /*
+            |--------------------------------------------------------------------------
+            | existing_attachment_ids
+            | FE mengirim attachment lama yang MASIH dipertahankan
+            |--------------------------------------------------------------------------
+            */
+            $existingAttachmentIds = json_decode(
+                $request->existing_attachment_ids ?? '[]',
+                true
+            );
+
+            if (!is_array($existingAttachmentIds)) {
+                $existingAttachmentIds = [];
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | HAPUS ATTACHMENT LAMA YANG SUDAH DIHAPUS DI FE
+            |--------------------------------------------------------------------------
+            */
+            $deletedAttachments = PrAttachment::where('purchase_request_id', $pr->id)
+                ->whereNotIn('id', $existingAttachmentIds)
+                ->get();
+
+            foreach ($deletedAttachments as $attachment) {
+
+                // hapus file fisik
+                if (
+                    $attachment->filepath &&
+                    Storage::disk('public')->exists($attachment->filepath)
+                ) {
+                    Storage::disk('public')->delete($attachment->filepath);
+                }
+
+                // hapus record DB
+                $attachment->delete();
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | TAMBAH LAMPIRAN BARU
+            |--------------------------------------------------------------------------
+            */
+            if ($request->hasFile('lampiran_requests')) {
+                $nomorPr = $pr->nomor_pr;
+                $folder = "syopv4/uploads/purchase_requests/lampiran/{$id}";
+
                 Storage::disk('public')->makeDirectory($folder);
 
-                foreach ($request->file('lampiran_requests') as $file) {
+                $fullFolderPath = storage_path('app/public/' . $folder);
 
-                    if ($file->getSize() > 3 * 1024 * 1024) {
-                        throw new \Exception("Ukuran file maksimal 3MB");
+                if (\Illuminate\Support\Facades\File::exists($fullFolderPath)) {
+                    @chmod($fullFolderPath, 0777);
+                }
+
+                foreach ($request->file('lampiran_requests') as $file) {
+                    if (!$file || !$file->isValid()) {
+                        continue;
                     }
 
-                    $filename = str_replace("/", "-", $pr->nomor_pr)
-                        . "_" . $file->getClientOriginalName();
+                    $originalName = pathinfo($file->getClientOriginalName(), PATHINFO_FILENAME);
+                    $extension = strtolower($file->getClientOriginalExtension());
+
+                    $safeOriginalName = \Illuminate\Support\Str::slug($originalName);
+
+                    if ($safeOriginalName === '') {
+                        $safeOriginalName = 'file';
+                    }
+
+                    $filename = str_replace('/', '-', $nomorPr)
+                        . '_' . now()->format('YmdHis')
+                        . '_' . uniqid()
+                        . '_' . $safeOriginalName
+                        . '.' . $extension;
 
                     $path = $file->storeAs($folder, $filename, 'public');
+
+                    $storedPaths[] = $path;
+
+                    $fullFilePath = storage_path('app/public/' . $path);
+
+                    if (\Illuminate\Support\Facades\File::exists($fullFilePath)) {
+                        @chmod($fullFilePath, 0777);
+                    }
 
                     PrAttachment::create([
                         'purchase_request_id' => $pr->id,
@@ -475,7 +703,7 @@ class PurchaseRequestController extends Controller
 
             return response()->json([
                 'message' => 'Purchase Request berhasil diperbarui.'
-            ], 200);
+            ], 201);
         } catch (\Exception $e) {
 
             return response()->json([
@@ -489,23 +717,65 @@ class PurchaseRequestController extends Controller
      * DELETE /api/purchase-request/{id}
      * Soft delete data
      */
-    public function destroy($encryptedId)
+    public function destroy($publicId)
     {
-        $id = Crypt::decryptString($encryptedId);
-        $pr = PurchaseRequest::findOrFail($id);
+        DB::beginTransaction();
 
-        // Hanya PR NEW yang boleh dihapus
-        if ($pr->status !== 'DRAFT') {
+        try {
+            $id = Crypt::decryptString($publicId);
+
+            $pr = PurchaseRequest::with([
+                'vendors.items',
+                'attachments',
+                'approvalHistories',
+            ])->find($id);
+
+            if (!$pr) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Purchase Request tidak ditemukan.',
+                ], 404);
+            }
+
+            if (strtolower($pr->status) !== 'draft') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Purchase Request hanya dapat dihapus jika status masih Draft.',
+                ], 422);
+            }
+
+            foreach ($pr->vendors as $vendor) {
+                $vendor->items()->delete();
+                $vendor->delete();
+            }
+
+            $pr->attachments()->delete();
+            $pr->approvalHistories()->delete();
+
+            $pr->delete();
+
+            DB::commit();
+
             return response()->json([
-                'error' => 'Purchase Request tidak dapat dihapus karena status bukan DRAFT'
-            ], 400);
+                'success' => true,
+                'message' => 'Purchase Request berhasil dihapus.',
+            ], 200);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+
+            Log::error('[Purchase Request] Delete error', [
+                'public_id' => $publicId,
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal menghapus Purchase Request.',
+                'debug' => app()->environment('local') ? $e->getMessage() : null,
+            ], 500);
         }
-
-        $pr->delete(); // soft delete
-
-        return response()->json([
-            'message' => 'Purchase Request berhasil dihapus'
-        ]);
     }
 
     public function exportExcel(Request $request)
@@ -513,7 +783,6 @@ class PurchaseRequestController extends Controller
         $query = PurchaseRequest::with([
             "vendors.vendor",
             "vendors.items",
-            "vendors.attachments"
         ]);
 
         // ===============================
@@ -550,22 +819,105 @@ class PurchaseRequestController extends Controller
         );
     }
 
-    public function edit($encryptedId)
+    public function edit($publicId)
     {
         try {
-            $id = Crypt::decryptString($encryptedId);
+            $id = Crypt::decryptString($publicId);
 
             $pr = PurchaseRequest::with([
-                "vendors.vendor",
-                "vendors.items",
-                "attachments"
-            ])->findOrFail($id);
+                'cabangData',
+                'departmentData',
+                'vendors.vendor',
+                'vendors.items.unit',
+                'attachments',
+            ])->find($id);
 
-            return response()->json($pr);
-        } catch (\Exception $e) {
+            if (!$pr) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Purchase Request tidak ditemukan.',
+                    'data' => null,
+                ], 404);
+            }
+
             return response()->json([
-                'message' => 'Data tidak ditemukan',
-                'error' => $e->getMessage()
+                'success' => true,
+                'message' => 'Data edit Purchase Request berhasil dimuat.',
+                'data' => [
+                    'id' => $pr->id,
+                    'public_id' => $pr->encrypted_id,
+                    'nomor_pr' => $pr->nomor_pr,
+                    'tanggal_pr' => $pr->tanggal_pr,
+
+                    'cabang_id' => $pr->cabang,
+                    'cabang' => $pr->cabangData->nama_cabang ?? '-',
+
+                    'department_id' => $pr->id_department,
+                    'department' => $pr->departmentData->nama ?? '-',
+
+                    'kategori' => $pr->kategori,
+                    'notes' => $pr->notes,
+                    'status' => $pr->status,
+                    'requested_by' => $pr->requested_by,
+
+                    'vendors' => $pr->vendors->map(function ($v) {
+                        return [
+                            'id' => $v->id,
+                            'vendor_id' => $v->vendor_id,
+                            'nama_vendor' => $v->vendor->nama_vendor ?? '-',
+                            'status_pkp' => $v->vendor->status_pkp ?? 'NON_PKP',
+                            'is_selected' => (bool) $v->is_selected,
+
+                            'price_offer' => $v->price_offer,
+                            'dpp' => $v->dpp,
+                            'ppn' => $v->ppn,
+
+                            'items' => $v->items->map(function ($item) {
+                                return [
+                                    'id' => $item->id,
+                                    'nama_item' => $item->nama_item,
+                                    'qty' => $item->qty,
+
+                                    'satuan_id' => $item->satuan,
+                                    'satuan' => [
+                                        'id' => $item->unit->id ?? null,
+                                        'kode' => $item->unit->kode ?? '-',
+                                        'nama' => $item->unit->nama ?? '-',
+                                    ],
+
+                                    'harga_unit' => $item->harga_unit,
+                                    'subtotal' => $item->subtotal,
+                                    'keterangan' => $item->keterangan,
+                                ];
+                            }),
+                        ];
+                    }),
+
+                    'attachments' => $pr->attachments->map(function ($a) {
+                        return [
+                            'id' => $a->id,
+                            'filename' => $a->filename,
+                            'original_filename' => $a->original_filename,
+                            'filepath' => asset('storage/' . $a->filepath),
+                            'filesize' => $a->filesize,
+                            'filetype' => $a->filetype,
+                        ];
+                    }),
+                ],
+            ], 200);
+        } catch (\Throwable $e) {
+            Log::error('[Purchase Request] Edit error', [
+                'public_id' => $publicId,
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal memuat data edit Purchase Request.',
+                'data' => null,
+                'debug' => app()->environment('local') ? $e->getMessage() : null,
             ], 500);
         }
     }
@@ -728,138 +1080,40 @@ class PurchaseRequestController extends Controller
         }
     }
 
-    public function submit(string $encryptedId)
+    public function submit($publicId)
     {
-        DB::beginTransaction();
-
         try {
-            $id = Crypt::decryptString($encryptedId);
+            $id = Crypt::decryptString($publicId);
 
-            $pr = PurchaseRequest::with(['vendors', 'attachments'])->findOrFail($id);
+            $pr = PurchaseRequest::find($id);
 
-            /* ===============================
-           VALIDASI STATUS
-        =============================== */
-            if ($pr->status !== 'DRAFT') {
+            if (!$pr) {
                 return response()->json([
-                    'message' => 'Purchase Request sudah dikirim.'
-                ], 400);
+                    'success' => false,
+                    'message' => 'Purchase Request tidak ditemukan.',
+                ], 404);
             }
 
-            /* ===============================
-           AMBIL VENDOR REKOMENDASI
-        =============================== */
-            $vendor = $pr->vendors->firstWhere('is_selected', true);
-
-            if (!$vendor) {
+            if ($pr->status !== PurchaseRequest::STATUS_DRAFT) {
                 return response()->json([
-                    'message' => 'Vendor rekomendasi belum dipilih.'
+                    'success' => false,
+                    'message' => 'Purchase Request hanya bisa disubmit dari status Draft.',
                 ], 422);
             }
 
-            $grandTotal = $vendor->price_offer;
-
-            /* ===============================
-           MAP DEPARTMENT & LOCATION
-        =============================== */
-            $location   = ApprovalHelper::mapLocation($pr->cabang);
-            $departmentGroup = ApprovalHelper::mapDepartmentById((int) $pr->id_department);
-
-            /* ===============================
-           APPROVAL MATRIX
-        =============================== */
-            $matrix = ApprovalMatrixPR::where('location', $location)
-                ->where('department', $departmentGroup)
-                ->where('min_value', '<=', $grandTotal)
-                ->where(function ($q) use ($grandTotal) {
-                    $q->where(function ($qq) use ($grandTotal) {
-                        $qq->whereNotNull('max_value')
-                            ->where('max_value', '>=', $grandTotal);
-                    })
-                        ->orWhereNull('max_value');
-                })
-                ->orderBy('level_order')
-                ->get();
-
-            if ($matrix->isEmpty()) {
-                return response()->json([
-                    'message' => 'Approval matrix tidak ditemukan.'
-                ], 422);
-            }
-
-            /* ===============================
-           GENERATE NOMOR PR RESMI (PAKSA)
-        =============================== */
-            $nomorResmi = generatePRNumber($pr);
-            $oldNomor   = $pr->nomor_pr;
-
-            $pr->nomor_pr = $nomorResmi;
-
-            /* ===============================
-           RENAME SEMUA LAMPIRAN PR
-        =============================== */
-            foreach ($pr->attachments as $attachment) {
-
-                if (!$attachment->filepath) continue;
-
-                $oldPath = $attachment->filepath;
-
-                if (!Storage::disk('public')->exists($oldPath)) continue;
-
-                $folder = dirname($oldPath);
-
-                // 🔥 GANTI PREFIX DRAFT → NOMOR RESMI
-                $newFilename = preg_replace(
-                    '/^' . preg_quote(str_replace('/', '-', $oldNomor), '/') . '/',
-                    str_replace('/', '-', $nomorResmi),
-                    $attachment->filename
-                );
-
-                $newPath = $folder . '/' . $newFilename;
-
-                if ($oldPath !== $newPath) {
-                    Storage::disk('public')->move($oldPath, $newPath);
-                }
-
-                $attachment->update([
-                    'filename' => $newFilename,
-                    'filepath' => $newPath,
-                ]);
-            }
-
-            /* ===============================
-           UPDATE STATUS PR
-        =============================== */
-            $pr->status = 'IN PROGRESS';
-            $pr->current_level = $matrix->first()->level_order;
+            $pr->status = PurchaseRequest::STATUS_IN_PROGRESS;
+            $pr->current_level = 1;
             $pr->save();
 
-            /* ===============================
-           SIMPAN HISTORY APPROVAL
-        =============================== */
-            foreach ($matrix as $row) {
-                PurchaseRequestHistoryApproval::create([
-                    'purchase_request_id' => $pr->id,
-                    'level'               => $row->level_order,
-                    'approver_role'       => $row->approver_role,
-                    'approver_user_id'    => null,
-                    'status'              => $row->level_order === $matrix->first()->level_order
-                        ? 'WAITING'
-                        : 'PENDING',
-                ]);
-            }
-
-            DB::commit();
-
             return response()->json([
-                'message' => 'Purchase Request berhasil dikirim ke proses approval.'
-            ]);
+                'success' => true,
+                'message' => 'Purchase Request berhasil disubmit.',
+            ], 201);
         } catch (\Throwable $e) {
-            DB::rollBack();
-
             return response()->json([
-                'message' => 'Gagal mengirim Purchase Request.',
-                'error'   => $e->getMessage()
+                'success' => false,
+                'message' => 'Gagal submit Purchase Request.',
+                'debug' => app()->environment('local') ? $e->getMessage() : null,
             ], 500);
         }
     }

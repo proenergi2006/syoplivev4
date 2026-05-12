@@ -33,32 +33,32 @@ class InitialSetupSeeder extends Seeder
             | 2) Cabang
             |--------------------------------------------------------------------------
             */
-            $cabangId = $this->upsertAndGetId(
-                'cabang',
-                ['kode' => 'CBG-01'],
-                [
-                    'wilayah_id' => $wilayahId,
-                    'nama' => 'JAKARTA',
-                    'alamat' => 'Head Office',
-                    'is_active' => true,
-                    'updated_at' => $now,
-                ]
-            );
+            // $cabangId = $this->upsertAndGetId(
+            //     'cabang',
+            //     ['kode' => 'CBG-01'],
+            //     [
+            //         'wilayah_id' => $wilayahId,
+            //         'nama' => 'JAKARTA',
+            //         'alamat' => 'Head Office',
+            //         'is_active' => true,
+            //         'updated_at' => $now,
+            //     ]
+            // );
 
             /*
             |--------------------------------------------------------------------------
             | 3) Departemen
             |--------------------------------------------------------------------------
             */
-            $deptIT = $this->upsertAndGetId(
-                'departemen',
-                ['kode' => 'DEP-IT'],
-                [
-                    'nama' => 'IT',
-                    'is_active' => true,
-                    'updated_at' => $now,
-                ]
-            );
+            // $deptIT = $this->upsertAndGetId(
+            //     'departemen',
+            //     ['kode' => 'DEP-IT'],
+            //     [
+            //         'nama' => 'IT',
+            //         'is_active' => true,
+            //         'updated_at' => $now,
+            //     ]
+            // );
 
             /*
             |--------------------------------------------------------------------------
@@ -117,7 +117,7 @@ class InitialSetupSeeder extends Seeder
             );
 
             $purchaseMenuId = $this->upsertMenu(
-                ['name' => 'Purchase Non Trading', 'parent_id' => null],
+                ['name' => 'Non Trade', 'parent_id' => null],
                 [
                     'path' => null,
                     'route_name' => null,
@@ -468,8 +468,8 @@ class InitialSetupSeeder extends Seeder
                 [
                     'name' => 'Admin SYOP',
                     'password' => Hash::make('admin123'),
-                    'cabang_id' => $cabangId,
-                    'departemen_id' => $deptIT,
+                    'cabang_id' => 2,
+                    'departemen_id' => 1,
                     'is_active' => true,
                     'updated_at' => $now,
                 ]
@@ -537,7 +537,7 @@ class InitialSetupSeeder extends Seeder
             */
             $this->upsertPivot('user_cabang', [
                 'user_id' => $adminUserId,
-                'cabang_id' => $cabangId,
+                'cabang_id' => 2,
             ]);
         });
     }

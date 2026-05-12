@@ -5,88 +5,238 @@ namespace App\Http\Controllers\Api\Master;
 use App\Http\Controllers\Controller;
 use App\Models\Cabang;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 
 class CabangController extends Controller
 {
     public function index(Request $request)
     {
-        $q = Cabang::query();
+        $query = Cabang::with('groupCabang')
+            ->orderBy('id', 'asc');
 
-        // search kode/nama
-        if ($request->filled('search')) {
-            $s = (string) $request->input('search');
-            $q->where(function ($qq) use ($s) {
-                $qq->where('kode', 'like', "%{$s}%")
-                   ->orWhere('nama', 'like', "%{$s}%");
+        if ($request->search) {
+            $search = $request->search;
+
+            $query->where(function ($q) use ($search) {
+                $q->where('nama_cabang', 'ILIKE', "%{$search}%")
+                    ->orWhere('inisial_cabang', 'ILIKE', "%{$search}%")
+                    ->orWhere('inisial_segel', 'ILIKE', "%{$search}%");
             });
         }
 
-        // filter status
         if ($request->filled('is_active')) {
-            $q->where('is_active', filter_var($request->input('is_active'), FILTER_VALIDATE_BOOLEAN));
+            $query->where('is_active', filter_var($request->is_active, FILTER_VALIDATE_BOOLEAN));
         }
 
-        // filter wilayah
-        if ($request->filled('wilayah_id')) {
-            $q->where('wilayah_id', (int) $request->input('wilayah_id'));
+        $perPage = (int) ($request->per_page ?? 10);
+
+        $cabangs = $query->paginate($perPage);
+
+        $cabangs->getCollection()->transform(function ($cabang) {
+            return [
+                'id' => $cabang->id,
+                'group_cabang_id' => $cabang->group_cabang_id,
+                'group_wilayah' => $cabang->groupCabang->group_wilayah ?? '-',
+                'nama_cabang' => $cabang->nama_cabang,
+                'inisial_cabang' => $cabang->inisial_cabang,
+                'inisial_segel' => $cabang->inisial_segel,
+                'catatan_cabang' => $cabang->catatan_cabang,
+                'kode_barcode' => $cabang->kode_barcode,
+                'stok_segel' => $cabang->stok_segel,
+                'is_active' => $cabang->is_active,
+            ];
+        });
+
+        return response()->json([
+            'success' => true,
+            'data' => $cabangs->items(),
+            'meta' => [
+                'current_page' => $cabangs->currentPage(),
+                'last_page' => $cabangs->lastPage(),
+                'per_page' => $cabangs->perPage(),
+                'total' => $cabangs->total(),
+            ],
+        ]);
+    }
+
+    public function dropdownSelect(Request $request)
+    {
+        try {
+            $query = Cabang::query()
+                ->where('is_active', true)
+                ->orderBy('id', 'asc');
+
+            if ($request->search) {
+                $search = $request->search;
+
+                $query->where(function ($q) use ($search) {
+                    $q->where('nama_cabang', 'ILIKE', "%{$search}%")
+                        ->orWhere('inisial_cabang', 'ILIKE', "%{$search}%");
+                });
+            }
+
+            $cabangs = $query->get()->map(function ($cabang) {
+                return [
+                    'id' => $cabang->id,
+                    'value' => $cabang->id,
+                    'title' => $cabang->nama_cabang,
+                    'nama' => $cabang->nama_cabang,
+                    'nama_cabang' => $cabang->nama_cabang,
+                    'inisial_cabang' => $cabang->inisial_cabang,
+                ];
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Data cabang berhasil dimuat.',
+                'data' => $cabangs,
+            ], 200);
+        } catch (\Throwable $e) {
+            Log::error('[Cabang] Dropdown select error', [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal memuat data cabang.',
+                'data' => [],
+            ], 500);
         }
-
-        $perPage = (int) $request->input('per_page', 15);
-
-        return response()->json(
-            $q->orderBy('nama')->paginate($perPage)
-        );
     }
 
     public function store(Request $request)
     {
-        $data = $request->validate([
-            'kode' => ['required', 'string', 'max:20', 'unique:cabang,kode'],
-            'nama' => ['required', 'string', 'max:150'],
-            'wilayah_id' => ['required', 'integer'],
+        $validated = $request->validate([
+            'group_cabang_id' => ['required', 'exists:group_cabang,id'],
+            'nama_cabang' => [
+                'required',
+                'string',
+                'max:70',
+                Rule::unique('cabang', 'nama_cabang'),
+            ],
+            'inisial_cabang' => ['required', 'string', 'max:15'],
+            'inisial_segel' => ['nullable', 'string', 'max:20'],
+            'catatan_cabang' => ['nullable', 'string', 'max:1000'],
+            'kode_barcode' => ['nullable', 'integer'],
+            'stok_segel' => ['nullable', 'integer'],
             'is_active' => ['nullable', 'boolean'],
         ]);
 
-        $row = Cabang::create($data);
+        DB::beginTransaction();
 
-        return response()->json($row, 201);
+        try {
+            $cabang = Cabang::create([
+                'group_cabang_id' => $validated['group_cabang_id'],
+                'nama_cabang' => $validated['nama_cabang'],
+                'inisial_cabang' => strtoupper($validated['inisial_cabang']),
+                'inisial_segel' => strtoupper($validated['inisial_segel'] ?? ''),
+                'catatan_cabang' => $validated['catatan_cabang'] ?? null,
+                'kode_barcode' => $validated['kode_barcode'] ?? 0,
+                'stok_segel' => $validated['stok_segel'] ?? 0,
+                'is_active' => $validated['is_active'] ?? true,
+
+                'created_time' => now(),
+                'created_ip' => $request->ip(),
+                'created_by' => auth()->user()->name ?? 'SYSTEM',
+            ]);
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Cabang berhasil dibuat.',
+                'data' => $cabang,
+            ], 201);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Cabang gagal dibuat.',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
     }
 
-    public function show(Cabang $cabang)
+    public function show(string $id)
     {
-        return response()->json($cabang);
+        $cabang = Cabang::with('groupCabang')->findOrFail($id);
+
+        return response()->json([
+            'success' => true,
+            'data' => $cabang,
+        ]);
     }
 
-    public function update(Request $request, Cabang $cabang)
+    public function update(Request $request, string $id)
     {
-        $data = $request->validate([
-            'kode' => ['required', 'string', 'max:20', Rule::unique('cabang', 'kode')->ignore($cabang->id)],
-            'nama' => ['required', 'string', 'max:150'],
-            'wilayah_id' => ['required', 'integer'],
+        $cabang = Cabang::findOrFail($id);
+
+        $validated = $request->validate([
+            'group_cabang_id' => ['required', 'exists:group_cabang,id'],
+            'nama_cabang' => [
+                'required',
+                'string',
+                'max:70',
+                Rule::unique('cabang', 'nama_cabang')->ignore($cabang->id),
+            ],
+            'inisial_cabang' => ['required', 'string', 'max:15'],
+            'inisial_segel' => ['nullable', 'string', 'max:20'],
+            'catatan_cabang' => ['nullable', 'string', 'max:1000'],
+            'kode_barcode' => ['nullable', 'integer'],
+            'stok_segel' => ['nullable', 'integer'],
             'is_active' => ['nullable', 'boolean'],
         ]);
 
-        $cabang->update($data);
+        DB::beginTransaction();
 
-        return response()->json($cabang);
+        try {
+            $cabang->update([
+                'group_cabang_id' => $validated['group_cabang_id'],
+                'nama_cabang' => $validated['nama_cabang'],
+                'inisial_cabang' => strtoupper($validated['inisial_cabang']),
+                'inisial_segel' => strtoupper($validated['inisial_segel'] ?? ''),
+                'catatan_cabang' => $validated['catatan_cabang'] ?? null,
+                'kode_barcode' => $validated['kode_barcode'] ?? 0,
+                'stok_segel' => $validated['stok_segel'] ?? 0,
+                'is_active' => $validated['is_active'] ?? $cabang->is_active,
+
+                'lastupdate_time' => now(),
+                'lastupdate_ip' => $request->ip(),
+                'lastupdate_by' => auth()->user()->name ?? 'SYSTEM',
+            ]);
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Cabang berhasil diperbarui.',
+                'data' => $cabang,
+            ]);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Cabang gagal diperbarui.',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
     }
 
-    public function destroy(Cabang $cabang)
+    public function destroy(string $id)
     {
+        $cabang = Cabang::findOrFail($id);
+
         $cabang->delete();
 
-        return response()->json(['message' => 'Deleted']);
+        return response()->json([
+            'success' => true,
+            'message' => 'Cabang berhasil dihapus.',
+        ]);
     }
-
-    public function options()
-    {
-    $data = \App\Models\Cabang::query()
-        ->where('is_active', true)
-        ->orderBy('nama')
-        ->get(['id', 'kode', 'nama']); // kita ambil kode+nama
-
-    return response()->json($data);
-    }
-
 }

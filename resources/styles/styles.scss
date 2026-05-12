@@ -78,10 +78,30 @@
 
 .native-date-hidden {
   position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 1px;
-  height: 1px;
+  right: 200px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
   opacity: 0;
-  pointer-events: none;
+  cursor: pointer;
+}
+
+.swal-confirm-white {
+  background-color: #8b5cf6;
+  color: white !important;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 24px;
+  font-weight: 600;
+  margin-right: 10px;
+}
+
+.swal-cancel-white {
+  background-color: #6b7280;
+  color: white !important;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 24px;
+  font-weight: 600;
 }

@@ -13,6 +13,8 @@ import '@core-scss/template/index.scss'
 import '@styles/styles.scss'
 import { createPinia } from 'pinia'
 import { createApp } from 'vue'
+import Vue3Toastify from 'vue3-toastify'
+import 'vue3-toastify/dist/index.css'
 
 loadFonts()
 
@@ -27,6 +29,12 @@ app.use(layoutsPlugin)
 app.use(i18n)
 app.use(abilitiesPlugin, ability, {
   useGlobalProperties: true,
+})
+
+app.use(Vue3Toastify, {
+  autoClose: 2500,
+  position: 'top-right',
+  theme: 'colored',
 })
 
 // Mount vue app

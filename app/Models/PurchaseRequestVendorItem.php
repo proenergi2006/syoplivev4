@@ -22,10 +22,10 @@ class PurchaseRequestVendorItem extends Model
     ];
 
     // Vendor Item -> PR
-    public function purchaseRequest()
-    {
-        return $this->belongsTo(PurchaseRequest::class, 'purchase_request_id');
-    }
+    // public function purchaseRequest()
+    // {
+    //     return $this->belongsTo(PurchaseRequest::class, 'purchase_request_id');
+    // }
 
     // Vendor Item -> PO Items (bisa dipakai lebih dari satu PO kalau mau)
     public function purchaseOrderItems()
@@ -34,5 +34,15 @@ class PurchaseRequestVendorItem extends Model
             PurchaseOrderItem::class,
             'purchase_request_vendor_item_id'
         );
+    }
+
+    public function unit()
+    {
+        return $this->belongsTo(Unit::class, 'satuan', 'id');
+    }
+
+    public function prVendor()
+    {
+        return $this->belongsTo(PurchaseRequestVendor::class, 'pr_vendor_id', 'id');
     }
 }

@@ -167,3 +167,30 @@ export const formatSanitizedNumberInput = (
 export const getClipboardText = (event: ClipboardEvent): string => {
   return event.clipboardData?.getData('text') || ''
 }
+
+export const formatCurrency = (value: number | string | null | undefined): string => {
+  const numberValue = Number(value || 0)
+
+  return new Intl.NumberFormat('id-ID', {
+    style: 'currency',
+    currency: 'IDR',
+    minimumFractionDigits: 0,
+  }).format(numberValue)
+}
+
+export const formatNumberWithoutRp = (
+  value: number | string | null | undefined,
+): string => {
+  const numberValue = Number(value || 0)
+
+  return new Intl.NumberFormat('id-ID', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(numberValue)
+}
+
+export const unformatMoney = (value: string | number | null): number => {
+  if (!value) return 0
+
+  return Number(String(value).replace(/[^\d]/g, '')) || 0
+}

@@ -8,7 +8,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\MenuController;
 use App\Http\Controllers\Api\Master\WilayahController;
 use App\Http\Controllers\Api\Master\CabangController;
-use App\Http\Controllers\Api\Master\DepartemenController;
+use App\Http\Controllers\Api\Master\DepartmentController;
 use App\Http\Controllers\Api\Master\ProvinsiController;
 use App\Http\Controllers\Api\Master\KabupatenController;
 use App\Http\Controllers\Api\Master\VendorController;
@@ -35,6 +35,7 @@ use App\Http\Controllers\Api\Master\GroupCabangController;
 use App\Http\Controllers\Api\Master\MasterDokumenPendukungController;
 use App\Http\Controllers\Api\Master\MasterKeteranganTransaksiController;
 use App\Http\Controllers\Api\Master\MasterVendorController;
+use App\Http\Controllers\Api\Master\UnitController as MasterUnitController;
 use App\Http\Controllers\Api\PurchaseRequestController;
 use App\Http\Controllers\MasterBankController;
 use App\Http\Controllers\UnitController;
@@ -49,8 +50,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
 
     Route::apiResource('master/wilayah', WilayahController::class);
-    Route::apiResource('master/cabang', CabangController::class);
-    Route::apiResource('master/departemen', DepartemenController::class);
     Route::apiResource('master/provinsi', ProvinsiController::class);
     Route::apiResource('master/kabupaten', KabupatenController::class);
     // Route::apiResource('master/vendor', VendorController::class);
@@ -92,23 +91,44 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('master/keterangan-transaksi', [MasterKeteranganTransaksiController::class, 'index']);
     Route::get('master/dokumen-pendukung', [MasterDokumenPendukungController::class, 'index']);
 
-    Route::get('/units', [UnitController::class, 'index']);
+    Route::get('/units/dropdown-select', [UnitController::class, 'dropdownSelect']);
+    Route::apiResource('/units', UnitController::class);
 
-    // ===================== VENDOR =========================
-    Route::prefix('master/vendor')->group(function () {
-        Route::get('dropdown-select', [MasterVendorController::class, 'dropdownSelect']);
-        Route::patch('{id}/status', [MasterVendorController::class, 'updateStatus']);
-    });
+    // ===================== DATA MASTER =====================
     Route::prefix('master')->group(function () {
+
+        // Vendor
+        Route::get('vendor/dropdown-select', [MasterVendorController::class, 'dropdownSelect']);
+        Route::patch('vendor/{id}/status', [MasterVendorController::class, 'updateStatus']);
+
         Route::apiResource('vendor', MasterVendorController::class)
             ->parameters([
                 'vendor' => 'publicId',
             ]);
+
+        // Group Cabang
         Route::apiResource('group-cabang', GroupCabangController::class);
+
+        // Cabang
+        Route::get('cabang/dropdown-select', [CabangController::class, 'dropdownSelect']);
+        Route::apiResource('cabang', CabangController::class);
+
+        // Department
+        Route::get(
+            'department/dropdown-select',
+            [DepartmentController::class, 'dropdownSelect']
+        );
+
+        Route::apiResource(
+            'department',
+            DepartmentController::class
+        );
     });
 
     // ===================== PURCHASE REQUEST =========================
     Route::prefix('transaction')->group(function () {
+        Route::get('purchase-request/{publicId}/edit', [PurchaseRequestController::class, 'edit']);
+        Route::patch('purchase-request/{publicId}/submit', [PurchaseRequestController::class, 'submit']);
         Route::apiResource('purchase-request', PurchaseRequestController::class)
             ->parameters([
                 'purchase-request' => 'publicId',

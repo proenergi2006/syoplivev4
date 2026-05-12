@@ -11,21 +11,12 @@ return new class extends Migration
      *
      * @return void
      */
-    public function up()
-    {
-        Schema::create('master_banks', function (Blueprint $table) {
-            $table->id();
-            $table->timestamps();
-        });
-    }
+    public function up() {}
 
     /**
      * Reverse the migrations.
      *
      * @return void
      */
-    public function down()
-    {
-        Schema::dropIfExists('master_banks');
-    }
+    public function down() {}
 };

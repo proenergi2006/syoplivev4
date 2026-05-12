@@ -7,6 +7,10 @@ import {
   showSuccessAlert,
   showErrorAlert,
   closeAlert,
+  showSuccessToast,
+  showErrorToast,
+  showWarningToast,
+  showInfoToast
 } from '@/utils/alert'
 import { getApiErrorMessage } from '@/utils/apiHelper'
 import { formatStatusPKP, formatKategoriVendor } from '@/utils/textFormatter'
@@ -74,6 +78,7 @@ const goToEdit = (public_id: string): void => {
 const statusDialog = ref<boolean>(false)
 const statusLoading = ref<boolean>(false)
 const statusTarget = ref<Vendor | null>(null)
+const loadError = ref(false)
 
 const openStatusDialog = (row: Vendor): void => {
   statusTarget.value = row
@@ -104,9 +109,11 @@ const confirmUpdateStatus = async (): Promise<void> => {
       is_active: nextStatus,
     })
 
-    await showSuccessAlert({
+    closeAlert()
+
+    showSuccessToast({
       title: 'Berhasil',
-      text: `Status vendor "${vendorName}" berhasil diubah menjadi ${nextStatus ? 'aktif' : 'nonaktif'}`,
+      text: `Status vendor "${vendorName}" berhasil diubah menjadi ${nextStatus ? 'AKTIF' : 'NON AKTIF'}`,
     })
 
     await fetchRows()
@@ -115,7 +122,7 @@ const confirmUpdateStatus = async (): Promise<void> => {
 
     const err = error as AxiosErrorShape
 
-    await showErrorAlert({
+    showErrorToast({
       title: 'Error',
       text: getApiErrorMessage(err, 'Gagal memperbarui status vendor'),
     })
@@ -246,7 +253,7 @@ const openDetail = async (publicId: string): Promise<void> => {
     const err = error as AxiosErrorShape
     detailError.value = getApiErrorMessage(err, 'Gagal memuat detail vendor')
 
-    await showErrorAlert({
+    showErrorToast({
       title: 'Error',
       text: detailError.value,
     })
@@ -381,10 +388,9 @@ const confirmDelete = async (): Promise<void> => {
 
     closeAlert()
 
-    await showSuccessAlert({
+    showSuccessToast({
       title: 'Berhasil',
       text: `Vendor "${vendorName}" berhasil dihapus`,
-      timer: 1800,
     })
 
     await fetchRows()
@@ -393,7 +399,7 @@ const confirmDelete = async (): Promise<void> => {
 
     const err = error as AxiosErrorShape
 
-    await showErrorAlert({
+    showErrorToast({
       title: 'Error',
       text: getApiErrorMessage(err, 'Gagal menghapus vendor'),
     })
@@ -440,6 +446,7 @@ const fetchRows = async (): Promise<void> => {
   if (loading.value) return
 
   loading.value = true
+  loadError.value = false
 
   try {
     const params = buildParams()
@@ -461,17 +468,18 @@ const fetchRows = async (): Promise<void> => {
     }
   } catch (error: unknown) {
     const err = error as AxiosErrorShape
+    loadError.value = true
 
     rows.value = []
     totalRows.value = 0
     totalPage.value = 1
 
-    notify(getApiErrorMessage(err, 'Gagal memuat data vendor'), 'error')
-    console.error(
-      '[Vendor] FETCH ERROR:',
-      err.response?.status,
-      err.response?.data ?? error,
-    )
+    console.error('[Purchase Request] FETCH ERROR:', err)
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(err, 'Gagal memuat data purchase request'),
+    })
   } finally {
     loading.value = false
   }
@@ -581,7 +589,28 @@ onMounted(async () => {
 
         <VSpacer />
 
-        <VChip v-if="loading" size="small" variant="tonal">Loading...</VChip>
+        <div class="d-flex align-center gap-2">
+          <!-- LOADING -->
+          <VChip
+            v-if="loading"
+            size="small"
+            variant="tonal"
+          >
+            Loading...
+          </VChip>
+
+          <!-- ERROR -->
+          <VBtn
+            v-else-if="loadError"
+            size="small"
+            color="error"
+            variant="tonal"
+            prepend-icon="tabler-refresh"
+            @click="fetchRows"
+          >
+            Reload Data
+          </VBtn>
+        </div>
       </VCardText>
 
       <VDivider />

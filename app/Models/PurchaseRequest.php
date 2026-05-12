@@ -53,15 +53,19 @@ class PurchaseRequest extends Model
         )->orderBy('level');
     }
 
+    public function vendors()
+    {
+        return $this->hasMany(PurchaseRequestVendor::class, 'purchase_request_id', 'id');
+    }
+
+    public function items()
+    {
+        return $this->hasMany(PurchaseRequestVendorItem::class, 'pr_vendor_id', 'id');
+    }
 
     public function attachments()
     {
-        return $this->hasMany(PrAttachment::class);
-    }
-
-    public function vendors()
-    {
-        return $this->hasMany(PurchaseRequestVendor::class, 'purchase_request_id');
+        return $this->hasMany(PrAttachment::class, 'purchase_request_id', 'id');
     }
 
     public function getEncryptedIdAttribute()
@@ -86,6 +90,16 @@ class PurchaseRequest extends Model
             'purchase_request_id',
             'purchase_order_id'
         )->withTimestamps();
+    }
+
+    public function cabangData()
+    {
+        return $this->belongsTo(Cabang::class, 'cabang', 'id');
+    }
+
+    public function departmentData()
+    {
+        return $this->belongsTo(Department::class, 'id_department', 'id');
     }
 
     const STATUS_DRAFT = 'DRAFT';

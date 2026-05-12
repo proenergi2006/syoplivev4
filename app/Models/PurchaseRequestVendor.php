@@ -27,17 +27,10 @@ class PurchaseRequestVendor extends Model
 
             if ($vendor->isForceDeleting()) {
                 $vendor->items()->forceDelete();
-                $vendor->attachments()->forceDelete();
             } else {
                 $vendor->items()->delete();
-                $vendor->attachments()->delete();
             }
         });
-    }
-
-    public function attachments()
-    {
-        return $this->hasMany(PurchaseRequestVendorAttachment::class, 'pr_vendor_offer_id');
     }
 
     public function vendor()
@@ -47,7 +40,7 @@ class PurchaseRequestVendor extends Model
 
     public function items()
     {
-        return $this->hasMany(PurchaseRequestVendorItem::class, 'pr_vendor_id');
+        return $this->hasMany(PurchaseRequestVendorItem::class, 'pr_vendor_id', 'id');
     }
 
     public function purchaseRequest()

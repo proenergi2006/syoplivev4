@@ -20,6 +20,9 @@ class DatabaseSeeder extends Seeder
             UnitsSeeder::class,
             InitialSetupSeeder::class,
             MasterKeteranganTransaksiSeeder::class,
+            GroupCabangSeeder::class,
+            CabangSeeder::class,
+            DepartmentSeeder::class,
         ]);
     }
 }
