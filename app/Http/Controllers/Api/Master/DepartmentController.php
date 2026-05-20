@@ -104,7 +104,7 @@ class DepartmentController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal memuat data department.',
+                'message' => 'Gagal memuat data department',
                 'data' => [],
             ], 500);
         }

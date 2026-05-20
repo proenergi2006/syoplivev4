@@ -36,6 +36,7 @@ use App\Http\Controllers\Api\Master\MasterDokumenPendukungController;
 use App\Http\Controllers\Api\Master\MasterKeteranganTransaksiController;
 use App\Http\Controllers\Api\Master\MasterVendorController;
 use App\Http\Controllers\Api\Master\UnitController as MasterUnitController;
+use App\Http\Controllers\Api\PurchaseOrderController;
 use App\Http\Controllers\Api\PurchaseRequestController;
 use App\Http\Controllers\MasterBankController;
 use App\Http\Controllers\UnitController;
@@ -125,13 +126,22 @@ Route::middleware('auth:sanctum')->group(function () {
         );
     });
 
-    // ===================== PURCHASE REQUEST =========================
     Route::prefix('transaction')->group(function () {
+        // ===================== PURCHASE REQUEST =========================
+        Route::get('purchase-request/dropdown-approved', [PurchaseRequestController::class, 'dropdownApproved']);
         Route::get('purchase-request/{publicId}/edit', [PurchaseRequestController::class, 'edit']);
         Route::patch('purchase-request/{publicId}/submit', [PurchaseRequestController::class, 'submit']);
         Route::apiResource('purchase-request', PurchaseRequestController::class)
             ->parameters([
                 'purchase-request' => 'publicId',
+            ]);
+
+        // ===================== PURCHASE ORDER =========================
+        Route::get('purchase-order/{publicId}/edit', [PurchaseOrderController::class, 'edit']);
+        Route::patch('purchase-order/{publicId}/submit', [PurchaseOrderController::class, 'submit']);
+        Route::apiResource('purchase-order', PurchaseOrderController::class)
+            ->parameters([
+                'purchase-order' => 'publicId',
             ]);
     });
 });

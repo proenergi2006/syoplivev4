@@ -10,14 +10,22 @@ use Illuminate\Support\Facades\Crypt;
 class PurchaseRequest extends Model
 {
     use HasFactory, SoftDeletes;
+
     protected $table = 'purchase_requests';
+
     protected $dates = ['deleted_at'];
-    protected $appends = ['encrypted_id', 'full_lampiran_url'];
+
+    protected $appends = [
+        'encrypted_id',
+        'full_lampiran_url',
+    ];
+
     protected $fillable = [
         'nomor_pr',
         'tanggal_pr',
         'cabang',
         'id_department',
+        'recommended_vendor_id',
         'kategori',
         'notes',
         'lampiran_request',
@@ -25,26 +33,43 @@ class PurchaseRequest extends Model
         'size_lampiran',
         'type_lampiran',
         'status',
+        'status_po',
+        'total_amount',
         'current_level',
         'requested_by',
-        'request_date'
+        'request_date',
     ];
 
     protected static function booted()
     {
         static::deleting(function ($pr) {
+
+            // Soft delete / force delete items
             if ($pr->isForceDeleting()) {
-                // Jika force delete → hapus permanen
-                $pr->vendors()->forceDelete();
+
+                $pr->items()->forceDelete();
+                $pr->attachments()->forceDelete();
+                $pr->approvalHistories()->forceDelete();
             } else {
-                // Soft delete vendor
-                foreach ($pr->vendors as $vendor) {
-                    $vendor->delete(); // soft delete vendor & relasinya
+
+                foreach ($pr->items as $item) {
+                    $item->delete();
+                }
+
+                foreach ($pr->attachments as $attachment) {
+                    $attachment->delete();
+                }
+
+                foreach ($pr->approvalHistories as $history) {
+                    $history->delete();
                 }
             }
         });
     }
 
+    /**
+     * Approval Histories
+     */
     public function approvalHistories()
     {
         return $this->hasMany(
@@ -53,35 +78,45 @@ class PurchaseRequest extends Model
         )->orderBy('level');
     }
 
-    public function vendors()
-    {
-        return $this->hasMany(PurchaseRequestVendor::class, 'purchase_request_id', 'id');
-    }
-
+    /**
+     * PR Items
+     */
     public function items()
     {
-        return $this->hasMany(PurchaseRequestVendorItem::class, 'pr_vendor_id', 'id');
+        return $this->hasMany(
+            PurchaseRequestItem::class,
+            'purchase_request_id',
+            'id'
+        );
     }
 
+    /**
+     * Attachments
+     */
     public function attachments()
     {
-        return $this->hasMany(PrAttachment::class, 'purchase_request_id', 'id');
+        return $this->hasMany(
+            PrAttachment::class,
+            'purchase_request_id',
+            'id'
+        );
     }
 
-    public function getEncryptedIdAttribute()
+    /**
+     * Recommended Vendor
+     */
+    public function recommendedVendor()
     {
-        return Crypt::encryptString($this->id);
+        return $this->belongsTo(
+            MasterVendor::class,
+            'recommended_vendor_id',
+            'id'
+        );
     }
 
-    public function getFullLampiranUrlAttribute()
-    {
-        if (!$this->path_lampiran) {
-            return null;
-        }
-
-        return asset('storage/' . $this->path_lampiran);
-    }
-
+    /**
+     * Purchase Orders
+     */
     public function purchaseOrders()
     {
         return $this->belongsToMany(
@@ -92,18 +127,60 @@ class PurchaseRequest extends Model
         )->withTimestamps();
     }
 
+    /**
+     * Cabang
+     */
     public function cabangData()
     {
-        return $this->belongsTo(Cabang::class, 'cabang', 'id');
+        return $this->belongsTo(
+            Cabang::class,
+            'cabang',
+            'id'
+        );
     }
 
+    /**
+     * Department
+     */
     public function departmentData()
     {
-        return $this->belongsTo(Department::class, 'id_department', 'id');
+        return $this->belongsTo(
+            Department::class,
+            'id_department',
+            'id'
+        );
     }
 
+    /**
+     * Encrypted ID
+     */
+    public function getEncryptedIdAttribute()
+    {
+        return Crypt::encryptString($this->id);
+    }
+
+    /**
+     * Full Lampiran URL
+     */
+    public function getFullLampiranUrlAttribute()
+    {
+        if (!$this->path_lampiran) {
+            return null;
+        }
+
+        return asset('storage/' . $this->path_lampiran);
+    }
+
+    /**
+     * Status Constants
+     */
     const STATUS_DRAFT = 'DRAFT';
     const STATUS_IN_PROGRESS = 'IN PROGRESS';
     const STATUS_APPROVED = 'APPROVED';
     const STATUS_REJECTED = 'REJECTED';
+
+    // Status PO
+    const STATUS_PO_OPEN = 'OPEN';
+    const STATUS_PO_PARTIAL = 'PARTIAL';
+    const STATUS_PO_COMPLETED = 'COMPLETED';
 }

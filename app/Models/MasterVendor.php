@@ -42,6 +42,7 @@ class MasterVendor extends Model
 
         'jenis_pembayaran',
         'top',
+        'id_department',
     ];
 
     protected $casts = [
@@ -67,5 +68,10 @@ class MasterVendor extends Model
     public function getPublicIdAttribute(): string
     {
         return Crypt::encryptString((string) $this->id);
+    }
+
+    public function department()
+    {
+        return $this->belongsTo(Department::class, 'id_department');
     }
 }

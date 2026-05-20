@@ -274,7 +274,7 @@ const goBack = (): void => {
 const confirmCancel = async (): Promise<void> => {
   const result = await showConfirmAlert({
     title: 'Batalkan perubahan?',
-    text: 'Data yang sudah diisi tidak akan tersimpan. Apakah Anda yakin?',
+    text: 'Data yang sudah diubah tidak akan tersimpan. Apakah Anda yakin?',
     confirmButtonText: 'Ya, batal',
     cancelButtonText: 'Tidak',
   })
@@ -833,7 +833,7 @@ const saveVendor = async (): Promise<void> => {
       payload.append('_method', 'PUT')
     }
 
-    const response = await axios.post(`/master/vendor/${vendorPublicId.value}`, payload, {
+    await axios.post(`/master/vendor/${vendorPublicId.value}`, payload, {
       headers: {
         'Content-Type': 'multipart/form-data',
         Accept: 'application/json',
@@ -842,12 +842,10 @@ const saveVendor = async (): Promise<void> => {
 
     closeAlert()
 
-    showSuccessToast({
-      title: 'Berhasil',
-      text: response.data?.message || 'Data vendor berhasil diperbarui',
+    await router.replace({
+      path: '/master/vendor',
+      query: { success: 'created' },
     })
-
-    await goBack()
   } catch (error: unknown) {
     closeAlert()
 
@@ -1497,7 +1495,11 @@ onMounted(async () => {
                                     item-value="id"
                                     clearable
                                     density="comfortable"
-                                    :menu-props="{ maxHeight: 300 }"
+                                    :menu-props="{
+                                      location: 'bottom',
+                                      offset: 8,
+                                      maxHeight: 300,
+                                    }"
                                     :custom-filter="filterMasterBank"
                                     :error="isSubmitted && isBankRowFilled(bank) && !bank.bank_id"
                                     :error-messages="isSubmitted && isBankRowFilled(bank) && !bank.bank_id ? ['Nama bank wajib dipilih'] : []"

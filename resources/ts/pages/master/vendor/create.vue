@@ -23,6 +23,7 @@ interface VendorForm {
   email: string
   jenis_perusahaan: string | null
   kategori_vendor: string | null
+  id_department: string | number | null
   nomor_ktp: string
   contact_nama: string
   contact_jabatan: string
@@ -67,6 +68,12 @@ interface MasterDokumenItem {
   nama_dokumen: string
   deskripsi: string
   is_required: boolean
+}
+
+interface DepartmentOption {
+  id: number
+  nama: string
+  kode?: string
 }
 
 interface VendorResponsePayload {
@@ -120,6 +127,9 @@ const loadingBanks = ref(false)
 const bankError = ref<string | null>(null)
 const masterBanks = ref<MasterBankItem[]>([])
 
+const departmentOptions = ref<DepartmentOption[]>([])
+const loadingDepartments = ref(false)
+
 
 const form = reactive<VendorForm>({
   nama_vendor: '',
@@ -129,6 +139,7 @@ const form = reactive<VendorForm>({
   email: '',
   jenis_perusahaan: null,
   kategori_vendor: null,
+  id_department: null,
   nomor_ktp: '',
   contact_nama: '',
   contact_jabatan: '',
@@ -297,6 +308,40 @@ const loadTransaksi = async (): Promise<void> => {
     masterTransaksi.value = []
   } finally {
     loadingTransaksi.value = false
+  }
+}
+
+const fetchDepartments = async (showAlert = true): Promise<void> => {
+  loadingDepartments.value = true
+
+  try {
+    const response = await axios.get('/master/department/dropdown-select', {
+      headers: {
+        Accept: 'application/json',
+      },
+    })
+
+    departmentOptions.value = Array.isArray(response.data?.data)
+    ? response.data.data.map((item: any) => ({
+        id: Number(item.id),
+        kode: item.kode || '',
+        nama: item.nama || item.title || '-',
+        label: `${item.kode || '-'} - ${item.nama || item.title || '-'}`,
+      }))
+    : []
+  } catch (error: unknown) {
+    console.error('[Department] FETCH ERROR:', error)
+
+    departmentOptions.value = []
+
+    if (showAlert) {
+      showErrorToast({
+        title: 'Error',
+        text: getApiErrorMessage(error, 'Gagal memuat data department'),
+      })
+    }
+  } finally {
+    loadingDepartments.value = false
   }
 }
 
@@ -528,20 +573,6 @@ const isValidNPWP = (value: string | null | undefined): boolean => {
   return digits.length === 16
 }
 
-const formatNPWP = (): void => {
-  const raw = form.npwp.replace(/\D/g, '')
-  let formatted = ''
-
-  if (raw.length > 0) formatted = raw.substring(0, 2)
-  if (raw.length >= 3) formatted += `.${raw.substring(2, 5)}`
-  if (raw.length >= 6) formatted += `.${raw.substring(5, 8)}`
-  if (raw.length >= 9) formatted += `.${raw.substring(8, 9)}`
-  if (raw.length >= 10) formatted += `-${raw.substring(9, 12)}`
-  if (raw.length >= 13) formatted += `.${raw.substring(12, 15)}`
-
-  form.npwp = formatted
-}
-
 const handleNamaVendor = (event: InputEvent): void => {
   const inputEl = event.target as HTMLInputElement
   let value = inputEl.value
@@ -689,6 +720,7 @@ const buildFormData = (): FormData => {
     email: form.email || '',
     jenis_perusahaan: form.jenis_perusahaan || '',
     kategori_vendor: form.kategori_vendor || '',
+    id_department: String(form.id_department) || '',
     nomor_ktp: form.nomor_ktp || '',
     alamat: form.alamat || '',
     contact_nama: form.contact_nama || '',
@@ -741,7 +773,7 @@ const saveVendor = async (): Promise<void> => {
 
     const formData = buildFormData()
 
-    const response = await axios.post('/master/vendor', formData, {
+    await axios.post('/master/vendor', formData, {
       headers: {
         Accept: 'application/json',
       },
@@ -749,12 +781,10 @@ const saveVendor = async (): Promise<void> => {
 
     closeAlert()
 
-    showSuccessToast({
-      title: 'Berhasil',
-      text: response.data?.message || 'Vendor berhasil dibuat!',
+    await router.replace({
+      path: '/master/vendor',
+      query: { success: 'created' },
     })
-
-    await router.replace('/master/vendor')
   } catch (error: unknown) {
     closeAlert()
 
@@ -813,6 +843,7 @@ onMounted(async () => {
   await loadTransaksi()
   await loadMasterDokumen()
   await loadMasterBanks()
+  await fetchDepartments(false)
 })
 </script>
 
@@ -915,27 +946,21 @@ onMounted(async () => {
               </VCol>
 
               <!-- Email -->
-              <VCol
-                cols="12"
-                md="4"
-              >
+              <VCol cols="12" md="6">
                 <VTextField
-                    v-model="form.email"
-                    label="Email"
-                    placeholder="contoh@email.com"
-                    :error="!!(form.email && !validateEmail(form.email))"
-                    :error-messages="form.email && !validateEmail(form.email)
-                        ? [emailValidationMessage]
-                        : []"
-                    @update:model-value="value => form.email = formatEmail(value)"
+                  v-model="form.email"
+                  label="Email"
+                  placeholder="contoh@email.com"
+                  :error="!!(form.email && !validateEmail(form.email))"
+                  :error-messages="form.email && !validateEmail(form.email)
+                    ? [emailValidationMessage]
+                    : []"
+                  @update:model-value="value => form.email = formatEmail(value)"
                 />
               </VCol>
 
               <!-- Jenis Perusahaan -->
-              <VCol
-                cols="12"
-                md="4"
-              >
+              <VCol cols="12" md="6">
                 <VAutocomplete
                   v-model="form.jenis_perusahaan"
                   label="Jenis Perusahaan *"
@@ -948,7 +973,11 @@ onMounted(async () => {
                   item-value="value"
                   clearable
                   density="comfortable"
-                  :menu-props="{ maxHeight: 300 }"
+                  :menu-props="{
+                    location: 'bottom',
+                    offset: 8,
+                    maxHeight: 300,
+                  }"
                   :error="isSubmitted && !form.jenis_perusahaan"
                   :error-messages="isSubmitted && !form.jenis_perusahaan ? ['Jenis perusahaan wajib dipilih'] : []"
                   no-data-text="Jenis perusahaan tidak ditemukan"
@@ -956,11 +985,8 @@ onMounted(async () => {
                 />
               </VCol>
 
-              <!-- Kategori vendor -->
-              <VCol
-                cols="12"
-                md="4"
-              >
+              <!-- Kategori Vendor -->
+              <VCol cols="12" md="6">
                 <VAutocomplete
                   v-model="form.kategori_vendor"
                   label="Kategori Vendor *"
@@ -972,12 +998,69 @@ onMounted(async () => {
                   item-value="value"
                   clearable
                   density="comfortable"
-                  :menu-props="{ maxHeight: 300 }"
+                  :menu-props="{
+                    location: 'bottom',
+                    offset: 8,
+                    maxHeight: 300,
+                  }"
                   :error="isSubmitted && !form.kategori_vendor"
                   :error-messages="isSubmitted && !form.kategori_vendor ? ['Kategori vendor wajib dipilih'] : []"
                   no-data-text="Kategori vendor tidak ditemukan"
                   placeholder="Pilih kategori vendor"
                 />
+              </VCol>
+
+              <!-- Department -->
+              <VCol cols="12" md="6">
+                <VAutocomplete
+                v-model="form.id_department"
+                label="Department *"
+                :items="departmentOptions"
+                item-title="label"
+                item-value="id"
+                clearable
+                density="comfortable"
+                :loading="loadingDepartments"
+                :menu-props="{
+                  location: 'bottom',
+                  offset: 8,
+                  maxHeight: 300,
+                }"
+                :error="isSubmitted && !form.id_department"
+                :error-messages="isSubmitted && !form.id_department
+                  ? ['Department wajib dipilih']
+                  : []"
+                no-data-text="Department tidak ditemukan"
+                placeholder="Pilih department"
+              >
+                <template #append-inner>
+                  <VProgressCircular
+                    v-if="loadingDepartments"
+                    indeterminate
+                    size="18"
+                    width="2"
+                  />
+
+                  <VTooltip
+                    v-else-if="departmentOptions.length === 0"
+                    text="Reload data department"
+                    location="top"
+                  >
+                    <template #activator="{ props }">
+                      <VBtn
+                        v-bind="props"
+                        icon
+                        size="x-small"
+                        variant="text"
+                        color="primary"
+                        @click.stop.prevent="fetchDepartments(true)"
+                      >
+                        <VIcon icon="tabler-refresh" />
+                      </VBtn>
+                    </template>
+                  </VTooltip>
+                </template>
+              </VAutocomplete>
               </VCol>
 
               <!-- Nomor E-KTP -->
@@ -1407,7 +1490,11 @@ onMounted(async () => {
                                 item-value="id"
                                 clearable
                                 density="comfortable"
-                                :menu-props="{ maxHeight: 300 }"
+                                :menu-props="{
+                                  location: 'bottom',
+                                  offset: 8,
+                                  maxHeight: 300,
+                                }"
                                 :custom-filter="filterMasterBank"
                                 :error="isSubmitted && isBankRowFilled(bank) && !bank.bank_id"
                                 :error-messages="isSubmitted && isBankRowFilled(bank) && !bank.bank_id ? ['Nama bank wajib dipilih'] : []"

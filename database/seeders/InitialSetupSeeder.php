@@ -144,7 +144,7 @@ class InitialSetupSeeder extends Seeder
             $purchaseRequestMenuId = $this->upsertMenu(
                 ['name' => 'Purchase Request', 'parent_id' => $purchaseMenuId],
                 [
-                    'path' => '/purchase_non_trading/purchase_request',
+                    'path' => '/non_trade/purchase_request',
                     'route_name' => 'purchase-request',
                     'icon' => 'tabler-file-invoice',
                     'order_no' => 1,
@@ -156,7 +156,7 @@ class InitialSetupSeeder extends Seeder
             $purchaseOrderMenuId = $this->upsertMenu(
                 ['name' => 'Purchase Order', 'parent_id' => $purchaseMenuId],
                 [
-                    'path' => '/purchase_non_trading/purchase_order',
+                    'path' => '/non_trade/purchase_order',
                     'route_name' => 'purchase-order',
                     'icon' => 'tabler-file-invoice',
                     'order_no' => 2,

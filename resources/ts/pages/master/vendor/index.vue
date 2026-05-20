@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch, onBeforeUnmount } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import axios from '@axios'
 import {
   showLoadingAlert,
@@ -59,6 +59,7 @@ interface AxiosErrorShape {
 
 type SnackbarColor = 'success' | 'error' | 'warning' | 'info'
 
+const route = useRoute()
 const router = useRouter()
 
 // =========================
@@ -382,7 +383,10 @@ const confirmDelete = async (): Promise<void> => {
   try {
     closeDelete()
 
-    showLoadingAlert('Menghapus vendor...', 'Mohon tunggu sebentar')
+    showLoadingAlert(
+      'Menghapus vendor...',
+      'Mohon tunggu sebentar',
+    )
 
     await axios.delete(`/master/vendor/${vendorPublicId}`)
 
@@ -401,7 +405,10 @@ const confirmDelete = async (): Promise<void> => {
 
     showErrorToast({
       title: 'Error',
-      text: getApiErrorMessage(err, 'Gagal menghapus vendor'),
+      text: getApiErrorMessage(
+        err,
+        'Gagal menghapus vendor',
+      ),
     })
 
     console.error('[Vendor] DELETE ERROR:', err)
@@ -536,6 +543,31 @@ onMounted(async () => {
     loadMasterDokumen(),
     loadTransaksi(),
   ])
+
+  const success = route.query.success
+
+  if (success) {
+    await router.replace({
+      path: '/master/vendor',
+      query: {},
+    })
+
+    setTimeout(() => {
+      if (success === 'created') {
+        showSuccessToast({
+          title: 'Berhasil',
+          text: 'Data Vendor berhasil disimpan.',
+        })
+      }
+
+      if (success === 'updated') {
+        showSuccessToast({
+          title: 'Berhasil',
+          text: 'Data Vendor berhasil diperbarui.',
+        })
+      }
+    }, 300)
+  }
 })
 </script>
 
@@ -914,6 +946,11 @@ onMounted(async () => {
                     <div class="detail-item">
                       <div class="detail-label">Kategori Vendor</div>
                       <div class="detail-value">{{ formatKategoriVendor(detailVendor.kategori_vendor) || '-' }}</div>
+                    </div>
+
+                    <div class="detail-item">
+                      <div class="detail-label">Department Vendor</div>
+                      <div class="detail-value">{{ detailVendor.department.label || '-' }}</div>
                     </div>
                   </VCol>
 

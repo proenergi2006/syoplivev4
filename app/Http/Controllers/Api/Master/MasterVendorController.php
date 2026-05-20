@@ -115,6 +115,7 @@ class MasterVendorController extends Controller
                 'email'             => $clean($request->email),
                 'jenis_perusahaan'  => $clean($request->jenis_perusahaan),
                 'kategori_vendor'   => $clean($request->kategori_vendor),
+                'id_department'     => $clean($request->id_department),
                 'no_ktp'            => $clean($request->nomor_ktp),
                 'alamat'            => $clean($request->alamat),
 
@@ -470,6 +471,7 @@ class MasterVendorController extends Controller
                 'banks.masterBank',
                 'transaksi:id,vendor_id,transaksi_id',
                 'dokumenPendukung:id,vendor_id,dokumen_id,file_name,file_path',
+                'department'
             ])->findOrFail($vendorId);
 
             return response()->json([
@@ -484,6 +486,12 @@ class MasterVendorController extends Controller
                     'email' => $vendor->email,
                     'jenis_perusahaan' => $vendor->jenis_perusahaan,
                     'kategori_vendor' => $vendor->kategori_vendor,
+                    'department' => [
+                        'id' => $vendor->department?->id,
+                        'kode' => $vendor->department?->kode,
+                        'nama' => $vendor->department?->nama,
+                        'label' => trim(($vendor->department?->kode ?? '-') . ' - ' . ($vendor->department?->nama ?? '-')),
+                    ],
                     'nomor_ktp' => $vendor->nomor_ktp,
                     'alamat' => $vendor->alamat,
                     'is_active' => $vendor->is_active,
@@ -1007,10 +1015,13 @@ class MasterVendorController extends Controller
     public function dropdownSelect(Request $request)
     {
         try {
-
             $query = MasterVendor::query()
                 ->where('is_active', true)
                 ->orderBy('nama_vendor', 'ASC');
+
+            if ($request->filled('id_department')) {
+                $query->where('id_department', (int) $request->id_department);
+            }
 
             if ($request->search) {
                 $search = $request->search;
@@ -1026,9 +1037,13 @@ class MasterVendorController extends Controller
                 return [
                     'id' => $vendor->id,
                     'value' => $vendor->id,
+                    'id_department' => $vendor->id_department,
 
                     'nama_vendor' => $vendor->nama_vendor,
                     'status_pkp' => $vendor->status_pkp ?? 'NON_PKP',
+
+                    'jenis_pembayaran' => $vendor->jenis_pembayaran,
+                    'top' => $vendor->top,
 
                     'title' => $vendor->nama_vendor,
                 ];
@@ -1040,7 +1055,6 @@ class MasterVendorController extends Controller
                 'data' => $vendors,
             ], 200);
         } catch (\Throwable $e) {
-
             Log::error('[Vendor] Dropdown select error', [
                 'message' => $e->getMessage(),
                 'file' => $e->getFile(),
@@ -1051,9 +1065,7 @@ class MasterVendorController extends Controller
                 'success' => false,
                 'message' => 'Gagal memuat data vendor.',
                 'data' => [],
-                'debug' => app()->environment('local')
-                    ? $e->getMessage()
-                    : null,
+                'debug' => app()->environment('local') ? $e->getMessage() : null,
             ], 500);
         }
     }
