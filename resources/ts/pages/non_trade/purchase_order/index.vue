@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import axios from '@axios'
+import SignaturePad from 'signature_pad'
 
 import {
   showLoadingAlert,
   showSuccessToast,
+  showWarningToast,
   showErrorToast,
   closeAlert,
   showConfirmAlert,
@@ -27,6 +29,7 @@ interface PurchaseOrderItem {
   top: number | null
   total_nilai: number | null
   status: string | null
+  can_approve: string | null
 }
 
 interface PurchaseOrderApiResponse {
@@ -57,6 +60,27 @@ const router = useRouter()
 const loading = ref(false)
 const rows = ref<PurchaseOrderItem[]>([])
 
+// Notifications
+const notifications = ref<any[]>([])
+const unreadNotificationCount = ref(0)
+const notificationLoading = ref(false)
+
+// Signature Pad
+const signatureDialog = ref(false)
+const signatureCanvasRef = ref<HTMLCanvasElement | null>(null)
+const signaturePad = ref<any>(null)
+const signatureAgree = ref(false)
+const signatureError = ref('')
+const signatureLoading = ref(false)
+const submitLoading = ref(false)
+const approveLoading = ref(false)
+const approveNotes = ref('')
+
+const pendingAction = ref<'submit' | 'approve' | null>(null)
+const selectedPo = ref<any>(null)
+
+const printLoadingId = ref<string | null>(null)
+
 const searchQuery = ref('')
 const selectedStatus = ref('')
 
@@ -85,6 +109,8 @@ const detailPurchaseOrderPublicId = ref<string | null>(null)
 const visiblePrCount = ref(5)
 const detailItemPage = ref(1)
 const detailItemPerPage = ref<number | 'ALL'>(10)
+
+const currentUser = ref<any | null>(null)
 
 const visibleRelatedPurchaseRequests = computed(() => {
   const list = detailPurchaseOrder.value?.purchase_requests || []
@@ -179,6 +205,25 @@ const formatCurrency = (value: number | null): string => {
   }).format(Number(value || 0))
 }
 
+const loadCurrentUser = async (): Promise<void> => {
+  try {
+    const res = await axios.get('/auth/me', {
+      headers: { Accept: 'application/json' },
+    })
+
+    currentUser.value = res.data?.data || null
+
+    console.log('CURRENT USER', currentUser.value)
+  } catch (error) {
+    console.error('[AUTH] Failed load current user', error)
+    currentUser.value = null
+  }
+}
+
+const handlePurchaseOrderRefresh = async (): Promise<void> => {
+  await fetchPurchaseOrders()
+}
+
 const fetchPurchaseOrders = async (): Promise<void> => {
   loading.value = true
   loadError.value = false
@@ -234,6 +279,169 @@ const fetchPurchaseOrders = async (): Promise<void> => {
 
 const calcPOTotal = (items: any[] = []) => {
   return items.reduce((total, item) => total + Number(item.subtotal || 0), 0)
+}
+
+const checkUserSignature = async (): Promise<boolean> => {
+  const response = await axios.get('/master/user/check-signature', {
+    headers: { Accept: 'application/json' },
+  })
+
+  return response.data?.has_signature === true
+}
+
+const openSubmitPO = async (po: any): Promise<void> => {
+  selectedPo.value = po
+  pendingAction.value = 'submit'
+
+  const hasSignature = await checkUserSignature()
+
+  if (!hasSignature) {
+    openSignatureDialog()
+    return
+  }
+
+  await submitPurchaseOrder()
+}
+
+const openApprovePO = async (po: any): Promise<void> => {
+  selectedPo.value = po
+  pendingAction.value = 'approve'
+
+  const hasSignature = await checkUserSignature()
+
+  if (!hasSignature) {
+    openSignatureDialog()
+    return
+  }
+
+  await approvePurchaseOrder()
+}
+
+const openSignatureDialog = async (): Promise<void> => {
+  signatureError.value = ''
+  signatureAgree.value = false
+  signatureDialog.value = true
+
+  await nextTick()
+
+  setTimeout(() => {
+    initSignaturePad()
+  }, 300)
+}
+
+const resizeSignatureCanvas = (): void => {
+  const canvas = signatureCanvasRef.value
+  if (!canvas) return
+
+  const ratio = Math.max(window.devicePixelRatio || 1, 1)
+  const rect = canvas.getBoundingClientRect()
+
+  canvas.width = rect.width * ratio
+  canvas.height = rect.height * ratio
+
+  const context = canvas.getContext('2d')
+  if (!context) return
+
+  context.setTransform(ratio, 0, 0, ratio, 0, 0)
+
+  signaturePad.value?.clear()
+}
+
+const initSignaturePad = (): void => {
+  const canvas = signatureCanvasRef.value
+  if (!canvas) return
+
+  const rect = canvas.getBoundingClientRect()
+
+  if (!rect.width || !rect.height) {
+    setTimeout(initSignaturePad, 200)
+    return
+  }
+
+  signaturePad.value = new SignaturePad(canvas, {
+    minWidth: 0.8,
+    maxWidth: 2.4,
+    throttle: 16,
+    penColor: 'black',
+    backgroundColor: 'rgba(255,255,255,0)',
+  })
+
+  resizeSignatureCanvas()
+}
+
+const saveSignatureAndContinue = async (): Promise<void> => {
+  if (!signaturePad.value || signaturePad.value.isEmpty()) {
+    signatureError.value = 'Tanda tangan wajib diisi.'
+    return
+  }
+
+  if (!signatureAgree.value) {
+    signatureError.value = 'Anda wajib menyetujui penggunaan tanda tangan digital.'
+    return
+  }
+
+  try {
+    signatureLoading.value = true
+
+    const signature = signaturePad.value.toDataURL('image/png')
+
+    await axios.post('/master/user/store-signature', {
+      signature,
+    }, {
+      headers: { Accept: 'application/json' },
+    })
+
+    signatureDialog.value = false
+
+    if (pendingAction.value === 'submit') {
+      await submitPurchaseOrder()
+    }
+
+    if (pendingAction.value === 'approve') {
+      await approvePurchaseOrder()
+    }
+  } catch (error) {
+    console.error(error)
+    signatureError.value = 'Gagal menyimpan tanda tangan digital.'
+  } finally {
+    signatureLoading.value = false
+  }
+}
+
+const printPurchaseOrder = async (publicId: string): Promise<void> => {
+  if (printLoadingId.value) return
+
+  printLoadingId.value = publicId
+
+  try {
+    showLoadingAlert('Membuka cetakan PO...', 'Mohon tunggu sebentar')
+
+    const response = await axios.get(
+      `/transaction/purchase-order/${publicId}/print`,
+      {
+        responseType: 'blob',
+        headers: {
+          Accept: 'application/pdf',
+        },
+      },
+    )
+
+    const file = new Blob([response.data], { type: 'application/pdf' })
+    const fileURL = URL.createObjectURL(file)
+
+    closeAlert()
+
+    window.open(fileURL, '_blank')
+  } catch (error: unknown) {
+    closeAlert()
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(error, 'Gagal mencetak Purchase Order.'),
+    })
+  } finally {
+    printLoadingId.value = null
+  }
 }
 
 const openDetail = async (publicId: string): Promise<void> => {
@@ -326,30 +534,72 @@ const confirmDelete = async (): Promise<void> => {
   }
 }
 
-const submitPurchaseOrder = async (po: any): Promise<void> => {
-  if (!po?.public_id) return
+// const submitPurchaseOrder = async (po: any): Promise<void> => {
+//   if (!po?.public_id) return
+
+//   const confirm = await showConfirmAlert({
+//     title: 'Submit Purchase Order?',
+//     text: `Purchase Order "${po.nomor_po}" akan masuk proses approval.`,
+//     confirmButtonText: 'Ya, submit',
+//     cancelButtonText: 'Batal',
+//   })
+
+//   if (!confirm.isConfirmed) return
+
+//   try {
+//     showLoadingAlert('Submit Purchase Order...', 'Mohon tunggu sebentar')
+
+//     await axios.patch(`/transaction/purchase-order/${po.public_id}/submit`, null, {
+//       headers: { Accept: 'application/json' },
+//     })
+
+//     closeAlert()
+
+//     showSuccessToast({
+//       title: 'Berhasil',
+//       text: `Purchase Order "${po.nomor_po}" berhasil disubmit`,
+//     })
+
+//     await fetchPurchaseOrders()
+//   } catch (error: unknown) {
+//     closeAlert()
+
+//     showErrorToast({
+//       title: 'Error',
+//       text: getApiErrorMessage(error, 'Gagal submit Purchase Order'),
+//     })
+//   }
+// }
+
+const submitPurchaseOrder = async (): Promise<void> => {
+  if (!selectedPo.value || submitLoading.value) return
 
   const confirm = await showConfirmAlert({
     title: 'Submit Purchase Order?',
-    text: `Purchase Order "${po.nomor_po}" akan masuk proses approval.`,
+    text: `Purchase Order "${selectedPo.value.nomor_po}" akan masuk proses approval.`,
     confirmButtonText: 'Ya, submit',
     cancelButtonText: 'Batal',
   })
 
   if (!confirm.isConfirmed) return
 
+  submitLoading.value = true
+
   try {
     showLoadingAlert('Submit Purchase Order...', 'Mohon tunggu sebentar')
 
-    await axios.patch(`/transaction/purchase-order/${po.public_id}/submit`, null, {
-      headers: { Accept: 'application/json' },
+    await axios.patch(`/transaction/purchase-order/${selectedPo.value.public_id}/submit`, {}, {
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
     })
 
     closeAlert()
 
     showSuccessToast({
       title: 'Berhasil',
-      text: `Purchase Order "${po.nomor_po}" berhasil disubmit`,
+      text: `Purchase Order "${selectedPo.value.nomor_po}" berhasil disubmit`,
     })
 
     await fetchPurchaseOrders()
@@ -360,8 +610,137 @@ const submitPurchaseOrder = async (po: any): Promise<void> => {
       title: 'Error',
       text: getApiErrorMessage(error, 'Gagal submit Purchase Order'),
     })
+  } finally {
+    submitLoading.value = false
   }
 }
+
+const approvePurchaseOrder = async (): Promise<void> => {
+  if (!selectedPo.value || approveLoading.value) return
+
+  const target = { ...selectedPo.value }
+
+  const confirm = await showConfirmAlert({
+    title: 'Approve Purchase Order?',
+    text: `Purchase Order "${target.nomor_po}" akan disetujui.`,
+    confirmButtonText: 'Ya, approve',
+    cancelButtonText: 'Batal',
+  })
+
+  if (!confirm.isConfirmed) return
+
+  approveLoading.value = true
+
+  try {
+    showLoadingAlert('Approve Purchase Order...', 'Mohon tunggu sebentar')
+
+    const response = await axios.patch(`/transaction/purchase-order/${target.public_id}/approve`, {
+      notes: approveNotes.value || null,
+    }, {
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+    })
+
+    const responseData = response.data?.data || {}
+    const newStatus = responseData.status || 'APPROVED'
+    const newNomorPO = responseData.nomor_po || target.nomor_po
+
+    rows.value = rows.value.map(item => {
+      if (item.public_id !== target.public_id) return item
+
+      return {
+        ...item,
+        nomor_po: newNomorPO,
+        status: newStatus,
+        approved_at: new Date().toISOString(),
+      }
+    })
+
+    closeAlert()
+
+    showSuccessToast({
+      title: 'Berhasil',
+      text: response.data?.message || `Purchase Order "${target.nomor_po}" berhasil diapprove`,
+    })
+
+    approveNotes.value = ''
+    selectedPo.value = null
+  } catch (error: unknown) {
+    closeAlert()
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(error, 'Gagal approve Purchase Order'),
+    })
+  } finally {
+    approveLoading.value = false
+  }
+}
+
+const handleSubmitPurchaseOrder = async (po: any): Promise<void> => {
+  selectedPo.value = po
+  pendingAction.value = 'submit'
+
+  const hasSignature = await checkUserSignature()
+
+  if (!hasSignature) {
+    await openSignatureDialog()
+    return
+  }
+
+  await submitPurchaseOrder()
+}
+
+const handleApprovePurchaseOrder = async (po: any): Promise<void> => {
+  selectedPo.value = po
+  pendingAction.value = 'approve'
+
+  const hasSignature = await checkUserSignature()
+
+  if (!hasSignature) {
+    await openSignatureDialog()
+    return
+  }
+
+  await approvePurchaseOrder()
+}
+
+// Polling
+let pollingTimer: ReturnType<typeof setInterval> | null = null
+
+const startPolling = (): void => {
+  if (pollingTimer) return
+
+  pollingTimer = setInterval(async () => {
+    if (document.hidden) return
+
+    await fetchPurchaseOrders()
+  }, 30000)
+}
+
+const stopPolling = (): void => {
+  if (pollingTimer) {
+    clearInterval(pollingTimer)
+    pollingTimer = null
+  }
+}
+
+const handleVisibilityChange = (): void => {
+  if (document.hidden) {
+    stopPolling()
+  } else {
+    fetchPurchaseOrders()
+    startPolling()
+  }
+}
+
+onBeforeUnmount(() => {
+  stopPolling()
+
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+})
 
 watch(currentPage, async () => {
   await fetchPurchaseOrders()
@@ -411,6 +790,17 @@ watch(tanggalMulai, async (newValue) => {
 
 onMounted(async () => {
   await fetchPurchaseOrders()
+  await loadCurrentUser()
+
+  window.addEventListener('purchase-order:refresh', handlePurchaseOrderRefresh)
+
+  fetchPurchaseOrders()
+
+  startPolling()
+
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+
+  window.addEventListener('resize', resizeSignatureCanvas)
 
   const success = route.query.success
 
@@ -436,6 +826,10 @@ onMounted(async () => {
       }
     }, 300)
   }
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', resizeSignatureCanvas)
+  window.removeEventListener('purchase-order:refresh', handlePurchaseOrderRefresh)
 })
 </script>
 
@@ -638,9 +1032,52 @@ onMounted(async () => {
                     </VListItem>
 
                     <VListItem
+                      v-if="String(v.status).toLowerCase() !== 'draft'"
+                      href="javascript:void(0)"
+                      :disabled="printLoadingId === v.public_id"
+                      @click="printPurchaseOrder(v.public_id)"
+                    >
+                      <template #prepend>
+                        <VProgressCircular
+                          v-if="printLoadingId === v.public_id"
+                          indeterminate
+                          size="18"
+                          width="2"
+                          class="me-3"
+                        />
+
+                        <VIcon
+                          v-else
+                          icon="tabler-printer"
+                          :size="20"
+                          class="me-3"
+                        />
+                      </template>
+
+                      <VListItemTitle>
+                        {{ printLoadingId === v.public_id ? 'Membuka...' : 'Cetak PO' }}
+                      </VListItemTitle>
+                    </VListItem>
+
+                    <VListItem
+                      v-if="String(v.status).toLowerCase() === 'in progress' && v.can_approve"
+                      @click="openApprovePO(v)"
+                    >
+                      <template #prepend>
+                        <VIcon
+                          icon="tabler-circle-check"
+                          :size="20"
+                          class="me-3"
+                        />
+                      </template>
+
+                      <VListItemTitle>Approve</VListItemTitle>
+                    </VListItem>
+
+                    <VListItem
                       v-if="String(v.status).toLowerCase() === 'draft'"
                       href="javascript:void(0)"
-                      @click="submitPurchaseOrder(v)"
+                      @click="openSubmitPO(v)"
                     >
                       <template #prepend>
                         <VIcon icon="mdi-send-outline" :size="20" class="me-3" />
@@ -1148,6 +1585,111 @@ onMounted(async () => {
         </VCardActions>
       </VCard>
     </VDialog>
+
+    <VDialog
+      v-model="signatureDialog"
+      max-width="720"
+      persistent
+      scrollable
+      class="signature-register-dialog"
+    >
+      <VCard class="signature-card">
+        <VCardText class="pa-0">
+          <div class="signature-header">
+            <div class="signature-icon">
+              ✍️
+            </div>
+
+            <div>
+              <h3 class="signature-title">
+                Registrasi Tanda Tangan Digital
+              </h3>
+              <p class="signature-subtitle">
+                Tanda tangan ini cukup dibuat satu kali dan akan digunakan kembali pada proses transaksi berikutnya.
+              </p>
+            </div>
+          </div>
+
+          <div class="signature-alert">
+            <strong>Mengapa diperlukan?</strong>
+            <p>
+              Sistem memerlukan tanda tangan digital Anda sebelum melakukan submit atau approval.
+              Tanda tangan ini akan digunakan pada seluruh cetakan dokumen yang membutuhkan persetujuan,
+              seperti proses submit ke approval maupun approval transaksi.
+            </p>
+          </div>
+
+          <div class="signature-section-title">
+            Silakan tanda tangan pada area berikut
+          </div>
+
+          <div class="signature-box">
+            <canvas
+              ref="signatureCanvasRef"
+              class="signature-canvas"
+            />
+          </div>
+
+          <div class="signature-action-row">
+            <span class="signature-hint">
+              Gunakan mouse, touchpad, atau layar sentuh.
+            </span>
+
+            <VBtn
+              variant="text"
+              color="error"
+              size="small"
+              :disabled="signatureLoading"
+              @click="signaturePad?.clear()"
+            >
+              Clear
+            </VBtn>
+          </div>
+
+          <div class="signature-agreement">
+            <VCheckbox
+              v-model="signatureAgree"
+              density="compact"
+              hide-details
+              :disabled="signatureLoading"
+            />
+
+            <span>
+              Saya menyetujui penggunaan tanda tangan digital ini sebagai identitas persetujuan saya
+              pada dokumen dan transaksi yang memerlukan proses submit atau approval di sistem.
+            </span>
+          </div>
+
+          <div
+            v-if="signatureError"
+            class="signature-error"
+          >
+            {{ signatureError }}
+          </div>
+        </VCardText>
+
+        <VDivider />
+
+        <VCardActions class="signature-footer">
+          <VBtn
+            variant="tonal"
+            color="secondary"
+            :disabled="signatureLoading"
+            @click="signatureDialog = false"
+          >
+            Batal
+          </VBtn>
+
+          <VBtn
+            color="primary"
+            :loading="signatureLoading"
+            @click="saveSignatureAndContinue"
+          >
+            Simpan & Lanjutkan
+          </VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
   </section>
 </template>
 
@@ -1505,5 +2047,194 @@ onMounted(async () => {
 .pr-slide-enter-to {
   opacity: 1;
   transform: translateY(0);
+}
+
+// Signature Pad
+
+.signature-box {
+  width: 100%;
+  height: 220px;
+  border: 2px dashed rgb(var(--v-theme-primary));
+  border-radius: 14px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.signature-canvas {
+  width: 100%;
+  height: 220px;
+  display: block;
+  cursor: crosshair;
+}
+
+.signature-register-dialog {
+  .v-overlay__content {
+    width: calc(100% - 32px);
+    margin: 16px;
+  }
+}
+
+.signature-card {
+  border-radius: 22px;
+  overflow: hidden;
+}
+
+.signature-header {
+  display: flex;
+  gap: 16px;
+  padding: 24px 28px 16px;
+  background: linear-gradient(135deg, rgba(var(--v-theme-primary), 0.12), rgba(var(--v-theme-primary), 0.03));
+}
+
+.signature-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  width: 48px;
+  height: 48px;
+  border-radius: 16px;
+  background: rgb(var(--v-theme-primary));
+  color: white;
+  font-size: 24px;
+}
+
+.signature-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  color: rgba(var(--v-theme-on-surface), 0.92);
+}
+
+.signature-subtitle {
+  margin: 6px 0 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: rgba(var(--v-theme-on-surface), 0.68);
+}
+
+.signature-alert {
+  margin: 20px 28px 0;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(var(--v-theme-warning), 0.12);
+  border: 1px solid rgba(var(--v-theme-warning), 0.35);
+  color: rgba(var(--v-theme-on-surface), 0.82);
+}
+
+.signature-alert strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+
+.signature-alert p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.signature-section-title {
+  margin: 20px 28px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.78);
+}
+
+.signature-box {
+  margin: 0 28px;
+  width: auto;
+  height: 240px;
+  border: 2px dashed rgb(var(--v-theme-primary));
+  border-radius: 18px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.signature-canvas {
+  width: 100%;
+  height: 240px;
+  display: block;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.signature-action-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 28px 0;
+}
+
+.signature-hint {
+  font-size: 12px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+}
+
+.signature-agreement {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 18px 28px 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(var(--v-theme-on-surface), 0.78);
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+.signature-error {
+  margin: 10px 28px 0;
+  font-size: 13px;
+  color: rgb(var(--v-theme-error));
+}
+
+.signature-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 28px;
+}
+
+@media (max-width: 600px) {
+  .signature-header {
+    padding: 20px 18px 14px;
+  }
+
+  .signature-title {
+    font-size: 18px;
+  }
+
+  .signature-subtitle {
+    font-size: 13px;
+  }
+
+  .signature-alert,
+  .signature-section-title,
+  .signature-box,
+  .signature-action-row,
+  .signature-agreement,
+  .signature-error {
+    margin-left: 18px;
+    margin-right: 18px;
+  }
+
+  .signature-box {
+    height: 190px;
+  }
+
+  .signature-canvas {
+    height: 190px;
+  }
+
+  .signature-footer {
+    padding: 14px 18px;
+    flex-direction: column-reverse;
+  }
+
+  .signature-footer .v-btn {
+    width: 100%;
+  }
 }
 </style>

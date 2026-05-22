@@ -12,8 +12,8 @@ class AuthController extends Controller
     public function login(Request $request)
     {
         $request->validate([
-            'email' => ['required','email'],
-            'password' => ['required','string'],
+            'email' => ['required', 'email'],
+            'password' => ['required', 'string'],
         ]);
 
         $user = User::where('email', $request->email)->first();
@@ -35,7 +35,41 @@ class AuthController extends Controller
 
     public function me(Request $request)
     {
-        return response()->json($request->user());
+        $user = $request->user()->load([
+            'roles:id,nama',
+            'cabangData:id,nama_cabang,inisial_cabang',
+            'departmentData:id,kode,nama',
+        ]);
+
+        $primaryRole = $user->roles->first();
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+
+                'role_id' => $primaryRole->id ?? null,
+                'role' => $primaryRole->nama ?? null,
+                'roles' => $user->roles->map(function ($role) {
+                    return [
+                        'id' => $role->id,
+                        'name' => $role->nama,
+                    ];
+                })->values(),
+
+                'cabang_id' => $user->cabang_id,
+                'cabang' => $user->cabangData
+                    ? trim(($user->cabangData->inisial_cabang ?? '-') . ' - ' . ($user->cabangData->nama_cabang ?? '-'))
+                    : null,
+
+                'department_id' => $user->departemen_id,
+                'department' => $user->departmentData
+                    ? trim(($user->departmentData->kode ?? '-') . ' - ' . ($user->departmentData->nama ?? '-'))
+                    : null,
+            ],
+        ]);
     }
 
     public function logout(Request $request)

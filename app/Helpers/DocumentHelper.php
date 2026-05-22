@@ -2,52 +2,48 @@
 
 use App\Models\DocumentCounter;
 use Illuminate\Support\Facades\Log;
-
-/*
-|--------------------------------------------------------------------------
-| MAP DEPARTMENT ID → KODE DOKUMEN
-|--------------------------------------------------------------------------
-| Berdasarkan:
-| 1 IT
-| 2 GA
-| 3 LOGISTIK
-| 4 HRD
-| 5 ADMIN
-*/
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 if (!function_exists('mapDepartmentCodeById')) {
-
     function mapDepartmentCodeById(int $departmentId): string
     {
-        return match ($departmentId) {
-            1 => 'IT',
-            2 => 'GA',
-            3 => 'LOG',
-            4 => 'HRD',
-            5 => 'ADM',
-            6 => 'FIN',
-            default => throw new Exception("Department ID tidak valid: {$departmentId}"),
-        };
+        $department = DB::table('departments')
+            ->select('id', 'kode', 'nama')
+            ->where('id', $departmentId)
+            ->first();
+
+        if (!$department) {
+            throw new Exception("Department ID tidak ditemukan: {$departmentId}");
+        }
+
+        $kode = trim((string) ($department->kode ?? ''));
+
+        if ($kode !== '') {
+            return strtoupper($kode);
+        }
+
+        $nama = trim((string) ($department->nama ?? ''));
+
+        if ($nama !== '') {
+            return strtoupper(Str::slug($nama, ''));
+        }
+
+        throw new Exception("Kode department belum tersedia untuk Department ID: {$departmentId}");
     }
 }
 
-/*
-|--------------------------------------------------------------------------
-| MAP CABANG → KODE DOKUMEN
-|--------------------------------------------------------------------------
-*/
 if (!function_exists('mapBranchCode')) {
-
     function mapBranchCode(string $cabang): string
     {
         $map = [
-            'JAKARTA'      => 'JKT',
-            'SURABAYA'     => 'SBY',
-            'SAMARINDA'    => 'SMD',
-            'BANJARMASIN'  => 'BJM',
-            'PALEMBANG'    => 'PLB',
-            'SULAWESI'     => 'SLW',
-            'HO'           => 'HO',
+            'JAKARTA'     => 'JKT',
+            'SURABAYA'    => 'SBY',
+            'SAMARINDA'   => 'SMD',
+            'BANJARMASIN' => 'BJM',
+            'PALEMBANG'   => 'PLB',
+            'SULAWESI'    => 'SLW',
+            'HO'          => 'HO',
         ];
 
         $key = strtoupper(trim($cabang));
@@ -56,14 +52,7 @@ if (!function_exists('mapBranchCode')) {
     }
 }
 
-
-/*
-|--------------------------------------------------------------------------
-| CONVERT BULAN → ROMAWI
-|--------------------------------------------------------------------------
-*/
 if (!function_exists('getRomanMonth')) {
-
     function getRomanMonth(int $month): string
     {
         return [
@@ -83,75 +72,61 @@ if (!function_exists('getRomanMonth')) {
     }
 }
 
-/*
-|--------------------------------------------------------------------------
-| GENERATE DOCUMENT NUMBER (UMUM)
-|--------------------------------------------------------------------------
-| Format:
-| 01.0001.LOG/HO/XII/2025
-|
-| Reset counter per:
-| - doc_code
-| - department
-| - branch
-| - year
-*/
-if (!function_exists('generateDocumentNumber')) {
+function generateDocumentNumber(
+    string $docCode,
+    string $department,
+    ?string $branch,
+    int $month,
+    int $year
+): string {
 
-    function generateDocumentNumber(
-        string $docCode,
-        string $department,
-        ?string $branch,
-        int $month,
-        int $year
-    ): string {
+    $counter = DocumentCounter::firstOrCreate(
+        [
+            'doc_code'   => $docCode,
+            'department' => $department,
+            'branch'     => $branch,
+            'year'       => $year,
+        ],
+        [
+            'last_number' => 0
+        ]
+    );
 
-        $counter = DocumentCounter::firstOrCreate(
-            [
-                'doc_code'   => $docCode,
-                'department' => $department,
-                'branch'     => $branch,
-                'year'       => $year,
-            ],
-            [
-                'last_number' => 0
-            ]
-        );
+    $counter->increment('last_number');
+    $counter->refresh();
 
-        $counter->increment('last_number');
+    $number = str_pad($counter->last_number, 4, '0', STR_PAD_LEFT);
+    $roman  = getRomanMonth($month);
 
-        $number = str_pad($counter->last_number, 4, '0', STR_PAD_LEFT);
-        $roman  = getRomanMonth($month);
-
-        // FORMAT KHUSUS PO (tanpa branch)
-        if ($branch === null) {
-            return "{$docCode}.{$number}.{$department}/{$roman}/{$year}";
-        }
-
-        // FORMAT PR / DOKUMEN LAIN
-        return "{$docCode}.{$number}.{$department}/{$branch}/{$roman}/{$year}";
+    /*
+    |--------------------------------------------------------------------------
+    | FORMAT PO
+    |--------------------------------------------------------------------------
+    | GA/V/2026/02.0001
+    |--------------------------------------------------------------------------
+    */
+    if ($docCode === '02') {
+        return "{$department}/{$roman}/{$year}/{$docCode}.{$number}";
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | FORMAT PR
+    |--------------------------------------------------------------------------
+    | GA/HO/V/2026/01.0001
+    |--------------------------------------------------------------------------
+    */
+    return "{$department}/{$branch}/{$roman}/{$year}/{$docCode}.{$number}";
 }
 
-/*
-|--------------------------------------------------------------------------
-| GENERATE NOMOR PR RESMI
-|--------------------------------------------------------------------------
-| Dipanggil saat:
-| - PR SUBMIT ke approval
-|
-| Contoh hasil:
-| 01.0001.LOG/HO/XII/2025
-*/
 if (!function_exists('generatePRNumber')) {
-
     function generatePRNumber($pr): string
     {
         if (!$pr->tanggal_pr || !$pr->id_department || !$pr->cabang) {
             throw new Exception('Data PR tidak lengkap untuk generate nomor PR');
         }
 
-        $docCode = '01'; // Kode PR
+        $docCode = '01';
 
         $department = mapDepartmentCodeById((int) $pr->id_department);
         $branch     = mapBranchCode($pr->cabang);
@@ -170,14 +145,13 @@ if (!function_exists('generatePRNumber')) {
 }
 
 if (!function_exists('generatePONumber')) {
-
     function generatePONumber($po): string
     {
         if (!$po->tanggal_po || !$po->id_department) {
             throw new Exception('Data PO tidak lengkap untuk generate nomor PO');
         }
 
-        $docCode = '02'; // PO
+        $docCode = '02';
 
         $department = mapDepartmentCodeById((int) $po->id_department);
         $branch     = null;

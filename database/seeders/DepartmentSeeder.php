@@ -73,6 +73,14 @@ class DepartmentSeeder extends Seeder
                 'updated_at' => now(),
             ],
 
+            [
+                'kode' => 'BOD',
+                'nama' => 'Board of Director',
+                'is_active' => true,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ],
+
         ]);
     }
 }

@@ -17,6 +17,8 @@ class User extends Authenticatable
         'cabang_id',
         'departemen_id',
         'is_active',
+        'signature_path',
+        'signature_uploaded_at'
     ];
 
     protected $hidden = [
@@ -33,13 +35,13 @@ class User extends Authenticatable
         return $this->belongsToMany(Role::class, 'user_roles', 'user_id', 'role_id');
     }
 
-    public function cabang()
+    public function cabangData()
     {
         return $this->belongsTo(Cabang::class, 'cabang_id');
     }
 
-    public function departemen()
+    public function departmentData()
     {
-        return $this->belongsTo(Departemen::class, 'departemen_id');
+        return $this->belongsTo(Department::class, 'departemen_id');
     }
 }

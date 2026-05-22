@@ -23,6 +23,7 @@ class DatabaseSeeder extends Seeder
             GroupCabangSeeder::class,
             CabangSeeder::class,
             DepartmentSeeder::class,
+            ApprovalFlowSeeder::class,
         ]);
     }
 }

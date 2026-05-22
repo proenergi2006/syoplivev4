@@ -5,8 +5,12 @@ namespace App\Http\Controllers\Api\Master;
 use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+
 
 class UserController extends Controller
 {
@@ -24,7 +28,7 @@ class UserController extends Controller
             $q->where(function ($qq) use ($s) {
                 // PostgreSQL: ilike
                 $qq->where('name', 'ilike', "%{$s}%")
-                   ->orWhere('email', 'ilike', "%{$s}%");
+                    ->orWhere('email', 'ilike', "%{$s}%");
             });
         }
 
@@ -142,5 +146,67 @@ class UserController extends Controller
         $user->delete();
 
         return response()->json(['message' => 'Deleted']);
+    }
+
+    public function checkUserSignature()
+    {
+        $user = auth()->user();
+
+        return response()->json([
+            'success' => true,
+            'has_signature' => !empty($user->signature_path),
+            'signature_path' => $user->signature_path,
+        ]);
+    }
+
+    public function storeUserSignature(Request $request)
+    {
+        $request->validate([
+            'signature' => ['required', 'string'],
+        ]);
+
+        $user = User::find(Auth::id());
+
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'User tidak ditemukan.',
+            ], 404);
+        }
+
+        $signatureData = $request->signature;
+
+        if (!str_contains($signatureData, 'base64')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Format tanda tangan tidak valid.',
+            ], 422);
+        }
+
+        $image = str_replace('data:image/png;base64,', '', $signatureData);
+        $image = str_replace(' ', '+', $image);
+
+        $folderName = $user->id . '_' . Str::slug($user->name, '_');
+        $folderPath = 'syopv4/uploads/users/signature/' . $folderName;
+
+        Storage::disk('public')->makeDirectory($folderPath);
+
+        $fileName = 'signature.png';
+        $filePath = $folderPath . '/' . $fileName;
+
+        Storage::disk('public')->put($filePath, base64_decode($image));
+
+        $user->signature_path = $filePath;
+        $user->signature_uploaded_at = now();
+        $user->save();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Tanda tangan berhasil disimpan.',
+            'data' => [
+                'signature_path' => $filePath,
+                'signature_url' => asset('storage/' . $filePath),
+            ],
+        ], 201);
     }
 }

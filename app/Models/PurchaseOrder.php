@@ -23,6 +23,9 @@ class PurchaseOrder extends Model
         'approved_by',
         'dpp',
         'ppn',
+        'requester_signature_path',
+        'requester_signed_at',
+        'requester_signed_by',
     ];
 
     /* ===============================
@@ -83,5 +86,16 @@ class PurchaseOrder extends Model
     public function getEncryptedIdAttribute()
     {
         return Crypt::encryptString($this->id);
+    }
+
+    public function requesterSignedBy()
+    {
+        return $this->belongsTo(User::class, 'requester_signed_by', 'id');
+    }
+
+    public function approvals()
+    {
+        return $this->hasMany(PurchaseOrderApproval::class, 'purchase_order_id')
+            ->orderBy('step_order');
     }
 }

@@ -105,3 +105,58 @@
   padding: 10px 24px;
   font-weight: 600;
 }
+
+.signature-submit-card {
+  border-radius: 18px !important;
+}
+
+.signature-label {
+  font-weight: 700;
+  color: rgba(var(--v-theme-on-surface), 0.78);
+}
+
+.signature-canvas-wrapper {
+  width: 100%;
+  height: 220px;
+  border: 2px dashed rgba(var(--v-theme-primary), 0.32);
+  border-radius: 16px;
+  background:
+    linear-gradient(
+      135deg,
+      rgba(var(--v-theme-primary), 0.04),
+      rgba(var(--v-theme-surface), 1)
+    );
+  overflow: hidden;
+}
+
+.signature-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.signature-agreement-checkbox {
+  align-items: flex-start;
+}
+
+.signature-agreement-text {
+  font-size: 0.9rem;
+  line-height: 1.45;
+  white-space: normal;
+  word-break: break-word;
+  display: inline-block;
+  color: rgba(var(--v-theme-on-surface), 0.78);
+}
+
+@media (max-width: 600px) {
+  .signature-agreement-text {
+    font-size: 0.82rem;
+    line-height: 1.4;
+  }
+
+  .signature-agreement-checkbox :deep(.v-label) {
+    align-items: flex-start;
+  }
+}

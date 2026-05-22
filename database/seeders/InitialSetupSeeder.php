@@ -70,6 +70,7 @@ class InitialSetupSeeder extends Seeder
                 ['kode' => 'BM', 'nama' => 'Branch Manager'],
                 ['kode' => 'OM', 'nama' => 'Operation Manager'],
                 ['kode' => 'PROC', 'nama' => 'Procurement'],
+                ['kode' => 'CEO', 'nama' => 'Chief Executive Officer'],
             ];
 
             $roleIds = [];

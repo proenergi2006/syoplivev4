@@ -36,6 +36,7 @@ use App\Http\Controllers\Api\Master\MasterDokumenPendukungController;
 use App\Http\Controllers\Api\Master\MasterKeteranganTransaksiController;
 use App\Http\Controllers\Api\Master\MasterVendorController;
 use App\Http\Controllers\Api\Master\UnitController as MasterUnitController;
+use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\PurchaseOrderController;
 use App\Http\Controllers\Api\PurchaseRequestController;
 use App\Http\Controllers\MasterBankController;
@@ -49,6 +50,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/auth/my-menus', [MenuController::class, 'myMenus']);
     Route::get('master/cabang/options', [CabangController::class, 'options']);
 
+    Route::get('/notifications', [NotificationController::class, 'index']);
+    Route::patch('/notifications/read-all', [NotificationController::class, 'readAll']);
+    Route::patch('/notifications/{id}/read', [NotificationController::class, 'read']);
+    Route::delete('/notifications/read', [NotificationController::class, 'deleteRead']);
 
     Route::apiResource('master/wilayah', WilayahController::class);
     Route::apiResource('master/provinsi', ProvinsiController::class);
@@ -57,6 +62,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('master/area', AreaController::class);
     Route::apiResource('master/terminal', TerminalController::class);
     Route::get('master/roles', [RoleController::class, 'index']);
+    Route::prefix('master/user')->middleware('auth:sanctum')->group(function () {
+        Route::get('/check-signature', [UserController::class, 'checkUserSignature']);
+        Route::post('/store-signature', [UserController::class, 'storeUserSignature']);
+    });
     Route::apiResource('master/users', UserController::class);
     Route::apiResource('master/roles', RoleController::class);
 
@@ -138,7 +147,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // ===================== PURCHASE ORDER =========================
         Route::get('purchase-order/{publicId}/edit', [PurchaseOrderController::class, 'edit']);
+        Route::get('purchase-order/{publicId}/print', [PurchaseOrderController::class, 'print']);
         Route::patch('purchase-order/{publicId}/submit', [PurchaseOrderController::class, 'submit']);
+        Route::patch('purchase-order/{publicId}/approve', [PurchaseOrderController::class, 'approve']);
         Route::apiResource('purchase-order', PurchaseOrderController::class)
             ->parameters([
                 'purchase-order' => 'publicId',
