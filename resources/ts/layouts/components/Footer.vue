@@ -4,6 +4,16 @@
     <span class="d-flex align-center">
       &copy;
       {{ new Date().getFullYear() }}
+      <a
+        href="https://proenergi.com"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="text-primary ms-1"
+      >proenergi.com</a>. All rights reserved.
+    </span>
+    <!-- <span class="d-flex align-center">
+      &copy;
+      {{ new Date().getFullYear() }}
       Made With
       
       By <a
@@ -12,7 +22,7 @@
         rel="noopener noreferrer"
         class="text-primary ms-1"
       >IT PROENERGI</a>
-    </span>
+    </span> -->
     <!-- 👉 Footer: right content -->
     <span class="d-md-flex gap-x-4 text-primary d-none">
       

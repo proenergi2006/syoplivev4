@@ -31,4 +31,8 @@ return [
         'region' => env('AWS_DEFAULT_REGION', 'us-east-1'),
     ],
 
+    'accurate' => [
+        'token' => env('ACCURATE_API_TOKEN'),
+        'secret' => env('ACCURATE_API_SECRET'),
+    ],
 ];

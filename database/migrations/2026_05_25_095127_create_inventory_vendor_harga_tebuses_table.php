@@ -13,7 +13,7 @@ return new class extends Migration
      */
     public function up()
     {
-        Schema::create('master_banks', function (Blueprint $table) {
+        Schema::create('inventory_vendor_harga_tebuses', function (Blueprint $table) {
             $table->id();
             $table->timestamps();
         });
@@ -26,6 +26,6 @@ return new class extends Migration
      */
     public function down()
     {
-        Schema::dropIfExists('master_banks');
+        Schema::dropIfExists('inventory_vendor_harga_tebuses');
     }
 };

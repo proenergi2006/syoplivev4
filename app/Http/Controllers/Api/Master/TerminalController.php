@@ -10,6 +10,9 @@ use Illuminate\Validation\Rule;
 
 class TerminalController extends Controller
 {
+    public function terminal() {
+        return response()->json(Terminal::all(['id', 'nama_terminal','lokasi_terminal']));
+    }
     public function index(Request $request)
     {
         $q = Terminal::query()

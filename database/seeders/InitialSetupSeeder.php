@@ -139,6 +139,22 @@ class InitialSetupSeeder extends Seeder
                     'is_active' => true,
                 ]
             );
+             /*
+            |--------------------------------------------------------------------------
+            | 7) Procurement Menu
+            |--------------------------------------------------------------------------
+            */
+            $purchSupplierMenuId = $this->upsertMenu(
+                ['name' => 'Purchase', 'parent_id' => null],
+                [
+                    'path' => null,
+                    'route_name' => null,
+                    'icon' => 'tabler-truck',
+                    'order_no' => 5,
+                    'permission_key' => null,
+                    'is_active' => true,
+                ]
+            );
 
             // Purchase children
             $purchaseRequestMenuId = $this->upsertMenu(
@@ -475,6 +491,31 @@ class InitialSetupSeeder extends Seeder
                 ]
             );
 
+            // Purchases Supplier children
+            $poSupplierMenuId = $this->upsertMenu(
+                ['name' => 'PO Supplier', 'parent_id' =>$purchSupplierMenuId],
+                [
+                    'path' => '/purchaseSupplier/po-supplier',
+                    'route_name' => 'po-supplier',
+                    'icon' => 'tabler-cube-plus',
+                    'order_no' => 1,
+                    'permission_key' => null,
+                    'is_active' => true,
+                ]
+            );
+
+            $receiveItemMenuId = $this->upsertMenu(
+                ['name' => 'Received Item', 'parent_id' =>$purchSupplierMenuId],
+                [
+                    'path' => '/purchaseSupplier/receive-item',
+                    'route_name' => 'receive-item',
+                    'icon' => 'tabler-truck-return',
+                    'order_no' => 2,
+                    'permission_key' => null,
+                    'is_active' => true,
+                ]
+            );
+
             /*
             |--------------------------------------------------------------------------
             | 7) Attach Admin Role
@@ -484,7 +525,6 @@ class InitialSetupSeeder extends Seeder
                 'user_id' => $adminUserId,
                 'role_id' => $roleIds['ADMIN'],
             ]);
-
             /*
             |--------------------------------------------------------------------------
             | 8) Attach menus to ADMIN role
@@ -521,6 +561,9 @@ class InitialSetupSeeder extends Seeder
                 $wilAngkutId,
                 $hargaJualId,
                 $hargaPertaminaId,
+                $purchSupplierMenuId,
+                $poSupplierMenuId,
+                $receiveItemMenuId
             ];
 
             foreach ($menuIds as $menuId) {
