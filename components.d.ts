@@ -13,6 +13,7 @@ declare module '@vue/runtime-core' {
     AppDateTimePicker: typeof import('./resources/ts/@core/components/AppDateTimePicker.vue')['default']
     AppOtpInput: typeof import('./resources/ts/@core/components/AppOtpInput.vue')['default']
     AppPricing: typeof import('./resources/ts/@core/components/AppPricing.vue')['default']
+    ApprovalHistoryPODialog: typeof import('./resources/ts/@core/components/ApprovalHistoryPODialog.vue')['default']
     AppSearchHeader: typeof import('./resources/ts/@core/components/AppSearchHeader.vue')['default']
     BuyNow: typeof import('./resources/ts/@core/components/BuyNow.vue')['default']
     CardAddEditDialog: typeof import('./resources/ts/@core/components/CardAddEditDialog.vue')['default']

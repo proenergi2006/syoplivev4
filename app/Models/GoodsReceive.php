@@ -73,6 +73,11 @@ class GoodsReceive extends Model
         return $this->belongsTo(User::class, 'cancelled_by');
     }
 
+    public function attachments()
+    {
+        return $this->hasMany(GoodsReceiveAttachment::class, 'goods_receive_id');
+    }
+
     public const STATUS_DRAFT = 'DRAFT';
     public const STATUS_POSTED = 'POSTED';
     public const STATUS_CANCELLED = 'CANCELLED';

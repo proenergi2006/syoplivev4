@@ -116,7 +116,59 @@ const getStatusColor = (status?: string | null): string => {
 
 const { openDeleteConfirm } = useDeleteConfirm()
 
-const openDelete = (row: any): void => {
+const datePickerKey = ref(0)
+const isResettingDateFilter = ref(false)
+
+const resetDatePickerValue = async (field: 'mulai' | 'selesai') => {
+  isResettingDateFilter.value = true
+
+  if (field === 'mulai') {
+    tanggalMulai.value = null
+  } else {
+    tanggalSelesai.value = null
+  }
+
+  // Force re-render AppDateTimePicker supaya display value ikut kosong
+  datePickerKey.value += 1
+
+  await nextTick()
+
+  setTimeout(() => {
+    isResettingDateFilter.value = false
+  }, 150)
+}
+
+const validateTanggalFilter = async (changedField: 'mulai' | 'selesai') => {
+  if (isResettingDateFilter.value) return
+  if (!tanggalMulai.value || !tanggalSelesai.value) return
+
+  const startDate = new Date(tanggalMulai.value)
+  const endDate = new Date(tanggalSelesai.value)
+
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return
+
+  if (changedField === 'mulai' && startDate > endDate) {
+    await resetDatePickerValue('mulai')
+
+    showErrorToast({
+        title: 'Tanggal Tidak Valid',
+        text: 'Tanggal awal tidak boleh lebih besar dari tanggal akhir.',
+    })
+
+    return
+  }
+
+  if (changedField === 'selesai' && endDate < startDate) {
+    await resetDatePickerValue('selesai')
+
+    showErrorToast({
+        title: 'Tanggal Tidak Valid',
+        text: 'Tanggal akhir tidak boleh lebih kecil dari tanggal awal.',
+    })
+  }
+}
+
+const openDelete = async (row: any): Promise<void> => {
   if (String(row.status || '').toUpperCase() !== 'DRAFT') {
     showErrorToast({
       title: 'Tidak dapat dihapus',
@@ -126,15 +178,65 @@ const openDelete = (row: any): void => {
     return
   }
 
-  openDeleteConfirm({
+  const confirm = await showConfirmAlert({
+    icon: 'question',
     title: 'Hapus Goods Receive?',
-    message: `Apakah Anda yakin ingin menghapus Goods Receive <strong>${row.nomor_gr}</strong>?`,
-    loadingTitle: 'Menghapus Goods Receive...',
-    successText: `Goods Receive "${row.nomor_gr}" berhasil dihapus`,
-    errorText: 'Gagal menghapus Goods Receive',
-    url: `/transaction/goods-receive/${encodeURIComponent(row.public_id)}`,
-    onSuccess: fetchGoodsReceives,
+    html: `Apakah Anda yakin ingin menghapus Goods Receive <strong>${row.nomor_gr}</strong>?`,
+    confirmButtonText: 'Ya, hapus',
+    cancelButtonText: 'Batal',
   })
+
+  if (!confirm.isConfirmed) return
+
+  try {
+    showLoadingAlert('Menghapus Goods Receive...', 'Mohon tunggu sebentar.')
+
+    const response = await axios.delete(
+      `/transaction/goods-receive/${encodeURIComponent(row.public_id)}`,
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+    )
+
+    closeAlert()
+
+    if (response.data?.success) {
+      showSuccessToast({
+        title: 'Berhasil',
+        text: `Goods Receive "${row.nomor_gr}" berhasil dihapus`,
+      })
+
+      await fetchGoodsReceives()
+
+      return
+    }
+
+    showErrorToast({
+      title: 'Gagal',
+      text: response.data?.message || 'Gagal menghapus Goods Receive',
+    })
+  } catch (error: any) {
+    closeAlert()
+
+    showErrorToast({
+      title: 'Gagal',
+      text: error.response?.data?.message || 'Gagal menghapus Goods Receive',
+    })
+  }
+}
+
+const formatFileSize = (size: number | string | null | undefined): string => {
+  const bytes = Number(size || 0)
+
+  if (!bytes) return '-'
+
+  const kb = bytes / 1024
+
+  if (kb < 1024) return `${kb.toFixed(2)} KB`
+
+  return `${(kb / 1024).toFixed(2)} MB`
 }
 
 const openDetail = async (publicId: string): Promise<void> => {
@@ -250,7 +352,7 @@ const resetFilters = async (): Promise<void> => {
 }
 
 const goToCreate = (): void => {
-  window.location.href = '/non_trade/goods_receive/create'
+  router.push('/non_trade/goods_receive/create')
 }
 
 const goToEdit = (publicId: string): void => {
@@ -393,12 +495,14 @@ onMounted(async () => {
             cols="12"
             sm="3"
           >
-            <VTextField
+            <AppDateTimePicker
+              :key="`tanggal-mulai-${datePickerKey}`"
               v-model="tanggalMulai"
               label="Tanggal Awal"
-              type="date"
               density="compact"
               clearable
+              :config="{ dateFormat: 'Y-m-d' }"
+              @update:model-value="validateTanggalFilter('mulai')"
             />
           </VCol>
 
@@ -406,12 +510,14 @@ onMounted(async () => {
             cols="12"
             sm="3"
           >
-            <VTextField
+            <AppDateTimePicker
+              :key="`tanggal-selesai-${datePickerKey}`"
               v-model="tanggalSelesai"
               label="Tanggal Akhir"
-              type="date"
               density="compact"
               clearable
+              :config="{ dateFormat: 'Y-m-d' }"
+              @update:model-value="validateTanggalFilter('selesai')"
             />
           </VCol>
 
@@ -528,12 +634,6 @@ onMounted(async () => {
             <th
               scope="col"
               class="text-center"
-            >
-              Dibuat Oleh
-            </th>
-            <th
-              scope="col"
-              class="text-center"
               style="width: 5rem;"
             >
               Actions
@@ -574,10 +674,6 @@ onMounted(async () => {
               >
                 {{ toTitleCase(v.status) }}
               </VChip>
-            </td>
-
-            <td class="text-medium-emphasis text-center">
-              {{ v.created_by}}
             </td>
 
             <td
@@ -851,15 +947,6 @@ onMounted(async () => {
             <VRow class="mt-2">
               <VCol cols="12" md="4">
                 <div class="text-caption text-medium-emphasis">
-                  No Surat Jalan
-                </div>
-                <div class="font-weight-medium">
-                  {{ selectedGr.nomor_surat_jalan || '-' }}
-                </div>
-              </VCol>
-
-              <VCol cols="12" md="4">
-                <div class="text-caption text-medium-emphasis">
                   Cabang
                 </div>
                 <div class="font-weight-medium">
@@ -876,7 +963,7 @@ onMounted(async () => {
                 </div>
               </VCol>
 
-              <VCol cols="12">
+              <VCol cols="12" md="4">
                 <div class="text-caption text-medium-emphasis">
                   Catatan
                 </div>
@@ -885,6 +972,104 @@ onMounted(async () => {
                 </div>
               </VCol>
             </VRow>
+
+            <VDivider class="my-6" />
+
+              <div class="d-flex align-center justify-space-between mb-4">
+                <div>
+                  <h3 class="text-h6 font-weight-bold mb-1">
+                    Lampiran
+                  </h3>
+                  <div class="text-body-2 text-medium-emphasis">
+                    Dokumen pendukung Goods Receipt seperti Surat Jalan, DO, atau foto barang.
+                  </div>
+                </div>
+
+                <VChip
+                  color="primary"
+                  variant="tonal"
+                  prepend-icon="tabler-paperclip"
+                >
+                  {{ selectedGr.attachments?.length || 0 }} File
+                </VChip>
+              </div>
+
+              <VAlert
+                v-if="!selectedGr.attachments?.length"
+                type="info"
+                variant="tonal"
+                density="compact"
+              >
+                Tidak ada Lampiran.
+              </VAlert>
+
+              <VTable
+                v-else
+                class="text-no-wrap rounded border"
+              >
+                <thead>
+                  <tr>
+                    <th width="60">No</th>
+                    <th>Nama File</th>
+                    <th width="160">Ukuran</th>
+                    <th width="180">Tipe</th>
+                    <th width="120" class="text-center">Aksi</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  <tr
+                    v-for="(attachment, index) in selectedGr.attachments"
+                    :key="attachment.id || index"
+                  >
+                    <td>{{ Number(index) + 1 }}</td>
+
+                    <td>
+                      <div class="d-flex align-center">
+                        <VIcon
+                          icon="tabler-file"
+                          size="18"
+                          class="me-2"
+                        />
+
+                        <div>
+                          <div class="font-weight-medium">
+                            {{ attachment.file_original_name || attachment.file_name || '-' }}
+                          </div>
+                          <div class="text-caption text-medium-emphasis">
+                            {{ attachment.file_name || '-' }}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+
+                    <td>
+                      {{ formatFileSize(attachment.file_size) }}
+                    </td>
+
+                    <td>
+                      {{ attachment.file_mime_type || '-' }}
+                    </td>
+
+                    <td class="text-center">
+                      <VBtn
+                        v-if="attachment.file_url"
+                        icon
+                        size="small"
+                        variant="text"
+                        color="primary"
+                        :href="attachment.file_url"
+                        target="_blank"
+                      >
+                        <VIcon icon="tabler-eye" />
+                        <VTooltip activator="parent" location="top">
+                          Lihat File
+                        </VTooltip>
+                      </VBtn>
+                    </td>
+                  </tr>
+                </tbody>
+              </VTable>
 
             <VDivider class="my-6" />
 

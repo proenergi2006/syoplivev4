@@ -3,21 +3,27 @@
     $poUrl = $frontendUrl . '/non_trade/purchase_order';
     $logoUrl = 'https://syop.proenergi.com/proEnergi/libraries/themes/images/logo-proenergi.png';
 
-    $title = match ($mode ?? 'approval_request') {
+    $currentMode = $mode ?? 'approval_request';
+
+    $title = match ($currentMode) {
         'final_approved' => 'Purchase Order Telah Disetujui',
         'step_approved' => 'Update Approval Purchase Order',
+        'rejected' => 'Purchase Order Ditolak',
         default => 'Approval Purchase Order',
     };
 
-    $description = match ($mode ?? 'approval_request') {
+    $description = match ($currentMode) {
         'final_approved' => 'Purchase Order Anda telah mendapatkan final approval oleh ' . optional($actor)->name . '.',
         'step_approved' => 'Purchase Order Anda telah disetujui oleh ' . optional($actor)->name . ' dan masih menunggu approval berikutnya.',
+        'rejected' => 'Purchase Order Anda telah ditolak oleh ' . optional($actor)->name . '.',
         default => 'Terdapat Purchase Order yang membutuhkan approval Anda.',
     };
 
-    $displayStatus = match ($mode ?? 'approval_request') {
+    $displayStatus = match ($currentMode) {
+        'approval_request' => 'IN PROGRESS',
         'final_approved' => 'APPROVED',
         'step_approved' => 'IN PROGRESS',
+        'rejected' => 'REJECTED',
         default => $po->status,
     };
 
@@ -53,7 +59,7 @@
             <td align="center">
                 <table width="620" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #e5e7eb;">
                     <tr>
-                        <td style="padding:24px 28px;background:#0f172a;">
+                        <td style="padding:24px 28px;background:#a5abb9;">
                             <img src="{{ $logoUrl }}" alt="Pro Energi" style="height:42px;display:block;">
                         </td>
                     </tr>
@@ -76,7 +82,7 @@
                                 </tr>
                                 <tr>
                                     <td style="padding:12px;background:#f9fafb;border:1px solid #e5e7eb;font-size:13px;color:#6b7280;">Tanggal PO</td>
-                                    <td style="padding:12px;border:1px solid #e5e7eb;font-size:13px;">{{ $po->tanggal_po }}</td>
+                                    <td style="padding:12px;border:1px solid #e5e7eb;font-size:13px;">{{ date('d/m/Y', strtotime($po->tanggal_po)) }}</td>
                                 </tr>
                                 <tr>
                                     <td style="padding:12px;background:#f9fafb;border:1px solid #e5e7eb;font-size:13px;color:#6b7280;">Total Nilai</td>
@@ -101,6 +107,14 @@
                                         </span>
                                     </td>
                                 </tr>
+                                @if (!empty($notes))
+                                    <tr>
+                                        <td style="padding:12px;background:#f9fafb;border:1px solid #e5e7eb;font-size:13px;color:#6b7280;">Catatan Penolakan</td>
+                                        <td style="padding:12px;border:1px solid #e5e7eb;font-size:13px;color:#991b1b;line-height:1.5;">
+                                            {!! nl2br(e($notes)) !!}
+                                        </td>
+                                    </tr>
+                                @endif
                             </table>
 
                             <p style="margin:18px 0;font-size:14px;line-height:1.6;color:#4b5563;">

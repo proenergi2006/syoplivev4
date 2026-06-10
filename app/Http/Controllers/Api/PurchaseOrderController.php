@@ -51,6 +51,41 @@ class PurchaseOrderController extends Controller
         try {
             $user = $request->user();
 
+            $userRoleIds = collect();
+
+            if (isset($user->role_id) && $user->role_id) {
+                $userRoleIds->push((int) $user->role_id);
+            }
+
+            /**
+             * Kalau suatu saat user-role memakai pivot role_user.
+             */
+            if (\Illuminate\Support\Facades\Schema::hasTable('role_user')) {
+                $pivotRoleIds = DB::table('role_user')
+                    ->where('user_id', $user->id)
+                    ->pluck('role_id')
+                    ->map(fn($id) => (int) $id);
+
+                $userRoleIds = $userRoleIds->merge($pivotRoleIds);
+            }
+
+            /**
+             * Kalau suatu saat user-role memakai pivot user_roles.
+             */
+            if (\Illuminate\Support\Facades\Schema::hasTable('user_roles')) {
+                $pivotRoleIds = DB::table('user_roles')
+                    ->where('user_id', $user->id)
+                    ->pluck('role_id')
+                    ->map(fn($id) => (int) $id);
+
+                $userRoleIds = $userRoleIds->merge($pivotRoleIds);
+            }
+
+            $userRoleIds = $userRoleIds
+                ->filter()
+                ->unique()
+                ->values();
+
             $query = PurchaseOrder::with([
                 'vendor:id,nama_vendor,status_pkp,jenis_pembayaran,top',
                 'cabangData:id,nama_cabang,inisial_cabang',
@@ -63,78 +98,72 @@ class PurchaseOrderController extends Controller
         |--------------------------------------------------------------------------
         | Filter Visibility PO
         |--------------------------------------------------------------------------
-        | - Requester / creator dapat melihat PO miliknya termasuk DRAFT.
-        | - Approver melihat PO yang sudah submit saja.
-        | - Role diambil dari table roles berdasarkan kode role.
+        | - Creator/requester melihat PO miliknya.
+        | - Approver USER melihat PO jika approver_id = user id.
+        | - Approver ROLE melihat PO jika approver_id ada di role_id user.
         |--------------------------------------------------------------------------
         */
 
-            $userRoleCode = null;
-
-            if (isset($user->role_id)) {
-                $userRoleCode = DB::table('roles')
-                    ->where('id', $user->role_id)
-                    ->value('kode');
-            }
-
-            $userRoleCode = strtoupper((string) $userRoleCode);
-
-            $isApproverByUser = PurchaseOrderApproval::where('approver_type', 'USER')
-                ->where('approver_id', $user->id)
-                ->exists();
-
-            $isApproverByRole = false;
-
-            if ($userRoleCode !== '') {
-                $isApproverByRole = PurchaseOrderApproval::where('approver_type', 'ROLE')
-                    ->where(function ($q) use ($userRoleCode) {
-                        $q->where('approver_role', $userRoleCode)
-                            ->orWhere('approver_role_code', $userRoleCode)
-                            ->orWhere('approver_code', $userRoleCode);
-                    })
-                    ->exists();
-            }
-
-            $isApprover = $isApproverByUser || $isApproverByRole;
-
-            if ($isApprover) {
-                $query->whereIn('status', ['IN PROGRESS', 'APPROVED', 'REJECTED'])
-                    ->whereHas('approvals', function ($q) use ($user, $userRoleCode) {
-                        $q->where(function ($qq) use ($user, $userRoleCode) {
-                            $qq->where(function ($qqq) use ($user) {
-                                $qqq->where('approver_type', 'USER')
-                                    ->where('approver_id', $user->id);
-                            });
-
-                            if ($userRoleCode !== '') {
-                                $qq->orWhere(function ($qqq) use ($userRoleCode) {
-                                    $qqq->where('approver_type', 'ROLE')
-                                        ->where(function ($r) use ($userRoleCode) {
-                                            $r->where('approver_role', $userRoleCode)
-                                                ->orWhere('approver_role_code', $userRoleCode)
-                                                ->orWhere('approver_code', $userRoleCode);
-                                        });
-                                });
-                            }
-                        });
-                    });
-            } else {
-                $query->where(function ($q) use ($user) {
+            $query->where(function ($visibilityQuery) use ($user, $userRoleIds) {
+                /**
+                 * PO milik requester / creator.
+                 */
+                $visibilityQuery->where(function ($q) use ($user) {
                     $q->where('created_by', $user->id)
                         ->orWhere('requester_signed_by', $user->id);
                 });
-            }
+
+                /**
+                 * PO yang user ini menjadi approver langsung.
+                 */
+                $visibilityQuery->orWhereHas('approvals', function ($q) use ($user) {
+                    $q->where('approver_type', 'USER')
+                        ->where('approver_id', $user->id);
+                });
+
+                /**
+                 * PO yang user ini menjadi approver berdasarkan role.
+                 */
+                if ($userRoleIds->isNotEmpty()) {
+                    $visibilityQuery->orWhereHas('approvals', function ($q) use ($userRoleIds) {
+                        $q->where('approver_type', 'ROLE')
+                            ->whereIn('approver_id', $userRoleIds->toArray());
+                    });
+                }
+            });
+
+            /*
+        |--------------------------------------------------------------------------
+        | Search
+        |--------------------------------------------------------------------------
+        */
 
             if ($request->search) {
-                $search = $request->search;
+                $search = trim((string) $request->search);
 
-                $query->where(function ($q) use ($search) {
-                    $q->where('nomor_po', 'ILIKE', "%{$search}%");
-                });
+                if ($search !== '') {
+                    $query->where(function ($q) use ($search) {
+                        $q->where('nomor_po', 'ILIKE', "%{$search}%");
+                    });
+                }
             }
 
-            if ($request->status) {
-                $query->where('status', $request->status);
+            /*
+        |--------------------------------------------------------------------------
+        | Filter Status
+        |--------------------------------------------------------------------------
+        | Jangan filter kalau status = semua / all / kosong.
+        |--------------------------------------------------------------------------
+        */
+
+            $status = strtoupper(trim((string) $request->status));
+
+            if (
+                $status !== ''
+                && $status !== 'ALL'
+                && $status !== 'SEMUA'
+            ) {
+                $query->whereRaw('UPPER(status) = ?', [$status]);
             }
 
             if ($request->tanggal_mulai) {
@@ -150,20 +179,45 @@ class PurchaseOrderController extends Controller
             $query->whereYear('tanggal_po', $year);
 
             $perPage = (int) ($request->per_page ?? 10);
+            $perPage = $perPage > 0 ? $perPage : 10;
+
             $pos = $query->paginate($perPage);
 
-            $pos->getCollection()->transform(function ($po) use ($user) {
+            $pos->getCollection()->transform(function ($po) use ($user, $userRoleIds) {
+                /*
+            |--------------------------------------------------------------------------
+            | Current Approval
+            |--------------------------------------------------------------------------
+            | Step aktif sekarang statusnya WAITING.
+            | PENDING artinya belum waktunya approve.
+            |--------------------------------------------------------------------------
+            */
+
                 $currentApproval = $po->approvals
-                    ->where('status', 'PENDING')
+                    ->where('status', 'WAITING')
                     ->sortBy('step_order')
                     ->first();
 
                 $canApprove = false;
 
                 if ($currentApproval) {
-                    $canApprove = $currentApproval->approver_type === 'USER'
-                        && (int) $currentApproval->approver_id === (int) $user->id;
+                    $approverType = strtoupper((string) $currentApproval->approver_type);
+
+                    if (
+                        $approverType === 'USER'
+                        && (int) $currentApproval->approver_id === (int) $user->id
+                    ) {
+                        $canApprove = true;
+                    }
+
+                    if (
+                        $approverType === 'ROLE'
+                        && $userRoleIds->contains((int) $currentApproval->approver_id)
+                    ) {
+                        $canApprove = true;
+                    }
                 }
+
                 return [
                     'id' => $po->id,
                     'public_id' => $po->encrypted_id,
@@ -188,8 +242,17 @@ class PurchaseOrderController extends Controller
                     'total_nilai' => $po->total_nilai,
                     'status' => $po->status,
                     'notes' => $po->notes,
+                    'status_receive' => $po->status_receive,
 
                     'can_approve' => $canApprove,
+
+                    'current_approval' => $currentApproval ? [
+                        'id' => $currentApproval->id,
+                        'step_order' => $currentApproval->step_order,
+                        'approver_type' => $currentApproval->approver_type,
+                        'approver_id' => $currentApproval->approver_id,
+                        'status' => $currentApproval->status,
+                    ] : null,
 
                     'purchase_requests' => $po->purchaseRequests
                         ->pluck('nomor_pr')
@@ -330,19 +393,28 @@ class PurchaseOrderController extends Controller
         }
     }
 
+    public function edit($publicId)
+    {
+        return $this->show($publicId);
+    }
+
     public function show($publicId)
     {
         try {
             $id = Crypt::decryptString($publicId);
 
             $po = PurchaseOrder::with([
-                'vendor:id,nama_vendor,status_pkp',
+                'vendor:id,nama_vendor,status_pkp,jenis_pembayaran,top',
                 'cabangData:id,nama_cabang,inisial_cabang',
                 'departmentData:id,kode,nama',
-                'purchaseRequests:id,nomor_pr,tanggal_pr,total_amount,recommended_vendor_id',
+                'purchaseRequests:id,nomor_pr,tanggal_pr,total_amount,recommended_vendor_id,cabang,id_department',
                 'purchaseRequests.recommendedVendor:id,nama_vendor,status_pkp,jenis_pembayaran,top',
+                'purchaseRequests.items.unit',
                 'items.unit:id,kode,nama',
                 'items.purchaseRequestItem.unit',
+                'creator',
+                'requesterSigner',
+                'approvals',
             ])->findOrFail($id);
 
             $items = $po->getRelation('items');
@@ -355,11 +427,18 @@ class PurchaseOrderController extends Controller
                     'id' => $po->id,
                     'public_id' => $po->encrypted_id,
                     'nomor_po' => $po->nomor_po,
-                    'tanggal_po' => $po->tanggal_po,
+                    'tanggal_pr' => $po->tanggal_po
+                        ? \Carbon\Carbon::parse($po->tanggal_po)->format('Y-m-d')
+                        : null,
 
-                    'vendor_id' => $po->vendor_id,
-                    'vendor' => $po->vendor->nama_vendor ?? '-',
-                    'status_pkp' => $po->vendor->status_pkp ?? 'NON_PKP',
+                    'vendor_data' => $po->vendor ? [
+                        'vendor_id' => $po->vendor->id,
+                        'id' => $po->vendor->id,
+                        'nama_vendor' => $po->vendor->nama_vendor ?? '-',
+                        'status_pkp' => $po->vendor->status_pkp ?? 'NON_PKP',
+                        'jenis_pembayaran' => $po->vendor->jenis_pembayaran ?? null,
+                        'top' => $po->vendor->top ?? null,
+                    ] : null,
 
                     'cabang_id' => $po->cabang,
                     'cabang' => $po->cabangData
@@ -375,9 +454,18 @@ class PurchaseOrderController extends Controller
                     'ppn' => $po->ppn,
                     'total_nilai' => $po->total_nilai,
                     'status' => $po->status,
+                    'status_receive' => $po->status_receive,
                     'notes' => $po->notes,
 
-                    'purchase_requests' => $purchaseRequests->map(function ($pr) {
+                    'created_at' => $po->created_at,
+                    'created_by' => $po->created_by,
+                    'created_by_name' => $po->creator?->name ?? '-',
+
+                    'submitted_at' => $po->submitted_at,
+                    'submitted_by' => $po->requester_signed_by,
+                    'submitted_by_name' => $po->requesterSigner?->name ?? '-',
+
+                    'purchase_requests' => $purchaseRequests->map(function ($pr) use ($items) {
                         return [
                             'id' => $pr->id,
                             'public_id' => $pr->encrypted_id ?? null,
@@ -393,16 +481,87 @@ class PurchaseOrderController extends Controller
                                 'jenis_pembayaran' => $pr->recommendedVendor->jenis_pembayaran ?? null,
                                 'top' => $pr->recommendedVendor->top ?? null,
                             ] : null,
+
+                            'items' => $pr->items->map(function ($prItem) use ($items) {
+                                $currentPoItem = $items
+                                    ->where('purchase_request_item_id', $prItem->id)
+                                    ->first();
+
+                                $currentPoQty = $currentPoItem
+                                    ? (float) ($currentPoItem->qty ?? 0)
+                                    : 0;
+
+                                $qtyPr = (float) ($prItem->qty ?? 0);
+                                $qtyPoRaw = (float) ($prItem->qty_po ?? 0);
+                                $qtyOutstandingRaw = (float) ($prItem->qty_outstanding ?? 0);
+
+                                $qtyPoExisting = max($qtyPoRaw - $currentPoQty, 0);
+                                $editableOutstanding = $qtyOutstandingRaw + $currentPoQty;
+
+                                return [
+                                    'id' => $prItem->id,
+                                    'purchase_request_item_id' => $prItem->id,
+                                    'purchase_request_id' => $prItem->purchase_request_id,
+
+                                    'nama_item' => $prItem->nama_item ?? '-',
+                                    'qty' => $qtyPr,
+                                    'qty_pr' => $qtyPr,
+                                    'qty_po' => $qtyPoExisting,
+                                    'qty_po_existing' => $qtyPoExisting,
+                                    'qty_outstanding' => $editableOutstanding,
+
+                                    'satuan_id' => $prItem->satuan,
+                                    'satuan' => [
+                                        'id' => $prItem->unit?->id,
+                                        'kode' => $prItem->unit?->kode ?? '-',
+                                        'nama' => $prItem->unit?->nama ?? '-',
+                                    ],
+                                    'unit' => [
+                                        'id' => $prItem->unit?->id,
+                                        'kode' => $prItem->unit?->kode ?? '-',
+                                        'nama' => $prItem->unit?->nama ?? '-',
+                                    ],
+
+                                    'harga_unit' => (float) ($prItem->harga_unit ?? $currentPoItem?->harga_unit ?? 0),
+                                    'subtotal' => (float) ($prItem->subtotal ?? 0),
+                                    'keterangan' => $prItem->keterangan ?? '-',
+
+                                    /*
+                                |--------------------------------------------------------------------------
+                                | Penanda tambahan untuk FE
+                                |--------------------------------------------------------------------------
+                                | Tidak wajib dipakai, tapi aman untuk debugging.
+                                |--------------------------------------------------------------------------
+                                */
+                                    'is_in_current_po' => $currentPoItem ? true : false,
+                                    'current_po_qty' => $currentPoQty,
+                                ];
+                            })->values(),
                         ];
                     })->values(),
 
                     'items' => $items->map(function ($item) {
+                        $prItem = $item->purchaseRequestItem;
+
+                        $qtyPo = (float) ($item->qty ?? 0);
+                        $qtyReceived = (float) ($item->qty_received ?? 0);
+                        $qtyOutstandingReceive = $item->qty_outstanding_receive !== null
+                            ? (float) $item->qty_outstanding_receive
+                            : max($qtyPo - $qtyReceived, 0);
+
                         return [
                             'id' => $item->id,
-                            'purchase_request_id' => $item->purchaseRequestItem->purchase_request_id ?? null,
+                            'purchase_order_item_id' => $item->id,
+
+                            'purchase_request_id' => $prItem->purchase_request_id ?? $item->purchase_request_id ?? null,
                             'purchase_request_item_id' => $item->purchase_request_item_id,
+
                             'nama_item' => $item->nama_item,
-                            'qty' => $item->qty,
+                            'qty' => $qtyPo,
+
+                            'qty_received' => $qtyReceived,
+                            'qty_outstanding_receive' => $qtyOutstandingReceive,
+
                             'satuan_id' => $item->satuan,
                             'satuan' => $item->unit->nama ?? $item->unit->kode ?? $item->satuan,
                             'unit' => [
@@ -410,37 +569,65 @@ class PurchaseOrderController extends Controller
                                 'kode' => $item->unit->kode ?? '-',
                                 'nama' => $item->unit->nama ?? '-',
                             ],
+
                             'harga_unit' => $item->harga_unit,
                             'subtotal' => $item->subtotal,
                             'keterangan' => $item->keterangan,
 
-                            'purchase_request_item' => $item->purchaseRequestItem ? [
-                                'purchase_request_id' => $item->purchaseRequestItem->purchase_request_id,
-                                'qty' => $item->purchaseRequestItem->qty,
-                                'qty_po' => $item->purchaseRequestItem->qty_po,
-                                'qty_outstanding' => $item->purchaseRequestItem->qty_outstanding,
+                            'purchase_request_item' => $prItem ? [
+                                'id' => $prItem->id,
+                                'purchase_request_item_id' => $prItem->id,
+                                'purchase_request_id' => $prItem->purchase_request_id,
+                                'nama_item' => $prItem->nama_item ?? $item->nama_item,
+                                'qty' => $prItem->qty,
+                                'qty_pr' => $prItem->qty,
+                                'qty_po' => $prItem->qty_po,
+                                'qty_outstanding' => $prItem->qty_outstanding,
+                                'satuan_id' => $prItem->satuan,
+                                'unit' => [
+                                    'id' => $prItem->unit?->id,
+                                    'kode' => $prItem->unit?->kode ?? '-',
+                                    'nama' => $prItem->unit?->nama ?? '-',
+                                ],
                             ] : null,
                         ];
                     })->values(),
+
+                    'approvals' => $po->approvals
+                        ->sortBy('step_order')
+                        ->map(function ($approval) {
+                            return [
+                                'id' => $approval->id,
+                                'step_order' => $approval->step_order,
+                                'label' => $approval->label,
+                                'approver_type' => $approval->approver_type,
+                                'approver_id' => $approval->approver_id,
+                                'approver_name_snapshot' => $approval->approver_name_snapshot,
+                                'status' => $approval->status,
+                                'approved_at' => $approval->approved_at,
+                                'rejected_at' => $approval->rejected_at,
+                                'signed_at' => $approval->signed_at,
+                                'notes' => $approval->notes,
+                            ];
+                        })
+                        ->values(),
                 ],
             ]);
         } catch (\Throwable $e) {
             Log::error('[Purchase Order] Show error', [
                 'public_id' => $publicId,
                 'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
             ]);
 
             return response()->json([
                 'success' => false,
                 'message' => 'Gagal memuat detail Purchase Order.',
                 'data' => null,
+                'debug' => app()->environment('local') ? $e->getMessage() : null,
             ], 500);
         }
-    }
-
-    public function edit($publicId)
-    {
-        return $this->show($publicId);
     }
 
     public function update(Request $request, $publicId)
@@ -480,7 +667,7 @@ class PurchaseOrderController extends Controller
                 'items.*.purchase_request_item_id' => ['required', 'integer'],
                 'items.*.nama_item' => ['required', 'string'],
                 'items.*.qty' => ['required', 'numeric', 'gt:0'],
-                'items.*.satuan' => ['nullable', 'string'],
+                'items.*.satuan' => ['required', 'integer', 'exists:units,id'],
                 'items.*.harga_unit' => ['required', 'numeric', 'gte:0'],
             ]);
 
@@ -598,9 +785,12 @@ class PurchaseOrderController extends Controller
         try {
             $id = Crypt::decryptString($publicId);
 
-            $po = PurchaseOrder::with(['items.purchaseRequestItem'])->findOrFail($id);
+            $po = PurchaseOrder::with([
+                'items.purchaseRequestItem',
+                'purchaseRequests',
+            ])->lockForUpdate()->findOrFail($id);
 
-            if ($po->status !== 'DRAFT') {
+            if (strtoupper((string) $po->status) !== 'DRAFT') {
                 DB::rollBack();
 
                 return response()->json([
@@ -609,26 +799,30 @@ class PurchaseOrderController extends Controller
                 ], 422);
             }
 
-            $poItems = $po->getRelation('items');
+            /*
+        |--------------------------------------------------------------------------
+        | Rollback PR item allocation sebelum PO dihapus
+        |--------------------------------------------------------------------------
+        | Ini penting:
+        | - qty_po PR item dikurangi qty PO
+        | - qty_outstanding dihitung ulang
+        | - status_po PR disesuaikan OPEN / PARTIAL / COMPLETED
+        |--------------------------------------------------------------------------
+        */
+            $this->poRollbackService->rollbackPurchaseRequestItems($po);
 
-            $affectedPrIds = $poItems
-                ->map(fn($item) => $item->purchaseRequestItem?->purchase_request_id)
-                ->filter()
-                ->map(fn($id) => (int) $id)
-                ->unique()
-                ->values();
-
+            /*
+        |--------------------------------------------------------------------------
+        | Hapus PO item, detach PR, lalu hapus PO
+        |--------------------------------------------------------------------------
+        */
             PurchaseOrderItem::where('purchase_order_id', $po->id)
                 ->whereNull('deleted_at')
                 ->delete();
 
             $po->purchaseRequests()->detach();
-            $po->delete();
 
-            foreach ($affectedPrIds as $prId) {
-                $this->recalculatePurchaseRequestItems((int) $prId);
-                $this->refreshPurchaseRequestPOStatus((int) $prId);
-            }
+            $po->delete();
 
             DB::commit();
 
@@ -791,8 +985,12 @@ class PurchaseOrderController extends Controller
             $po->save();
 
             $this->generatePurchaseOrderApprovals($po);
-            $this->poNotificationService->notifyApprovalRequest($po);
+            DB::commit();
+
             try {
+                $po->refresh();
+
+                $this->poNotificationService->notifyApprovalRequest($po);
                 $this->poMailService->sendApprovalRequest($po);
             } catch (\Throwable $mailError) {
                 Log::error('[Purchase Order] Email approver submit gagal dikirim', [
@@ -801,7 +999,6 @@ class PurchaseOrderController extends Controller
                     'message' => $mailError->getMessage(),
                 ]);
             }
-            DB::commit();
 
             return response()->json([
                 'success' => true,
@@ -1004,7 +1201,7 @@ class PurchaseOrderController extends Controller
 
                 return response()->json([
                     'success' => false,
-                    'message' => 'Tidak ada approval pending untuk Purchase Order ini.',
+                    'message' => 'Tidak ada approval yang sedang menunggu untuk Purchase Order ini.',
                 ], 422);
             }
 
@@ -1017,20 +1214,50 @@ class PurchaseOrderController extends Controller
                 ], 403);
             }
 
+            /*
+        |--------------------------------------------------------------------------
+        | Reject current WAITING step
+        |--------------------------------------------------------------------------
+        */
             $this->poApprovalService->rejectCurrentStep(
                 $currentApproval,
                 $user,
                 $request->notes
             );
 
+            $currentApproval->refresh();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Stop approval flow
+        |--------------------------------------------------------------------------
+        | Step berikutnya yang masih PENDING/WAITING dibatalkan.
+        | Tidak ada notifikasi ke approver berikutnya.
+        |--------------------------------------------------------------------------
+        */
             $this->poApprovalService->cancelRemainingPendingApprovals($po);
 
+            /*
+        |--------------------------------------------------------------------------
+        | Rollback PR item qty_po / qty_outstanding
+        |--------------------------------------------------------------------------
+        */
             $this->poRollbackService->rollbackPurchaseRequestItems($po);
 
+            /*
+        |--------------------------------------------------------------------------
+        | Mark PO rejected
+        |--------------------------------------------------------------------------
+        */
             $this->poApprovalService->markPurchaseOrderRejected($po);
 
             $po->refresh();
 
+            /*
+        |--------------------------------------------------------------------------
+        | Notify requester only
+        |--------------------------------------------------------------------------
+        */
             $this->poNotificationService->notifyRejected($po, $user);
 
             try {
@@ -1426,26 +1653,100 @@ class PurchaseOrderController extends Controller
     {
         PurchaseOrderApproval::where('purchase_order_id', $po->id)->delete();
 
-        $flow = ApprovalFlow::with('steps')
-            ->where('module_name', 'PURCHASE_ORDER')
-            ->where('is_active', true)
-            ->first();
+        $amount = (float) ($po->total_nilai ?? 0);
 
-        if (!$flow) {
-            throw new \Exception('Approval flow Purchase Order belum disetting.');
+        if ($amount <= 0) {
+            throw new \Exception('Total nilai Purchase Order tidak valid untuk approval.');
         }
 
-        foreach ($flow->steps as $step) {
+        $flows = ApprovalFlow::with(['steps'])
+            ->where('module_name', 'procurement')
+            ->where('document_type', 'PO')
+            ->where('is_active', true)
+            ->where(function ($query) use ($amount) {
+                $query
+                    ->where(function ($q) {
+                        $q->where(function ($qq) {
+                            $qq->whereNull('min_amount')
+                                ->orWhere('min_amount', '<=', 0);
+                        })
+                            ->where(function ($qq) {
+                                $qq->whereNull('max_amount')
+                                    ->orWhere('max_amount', '<=', 0);
+                            });
+                    })
+                    ->orWhere(function ($q) use ($amount) {
+                        $q->where(function ($qq) use ($amount) {
+                            $qq->whereNull('min_amount')
+                                ->orWhere('min_amount', '<=', $amount);
+                        })
+                            ->where(function ($qq) {
+                                $qq->whereNotNull('min_amount')
+                                    ->orWhereNotNull('max_amount');
+                            });
+                    });
+            })
+            ->orderByRaw('COALESCE(min_amount, 0) ASC')
+            ->orderByRaw('COALESCE(max_amount, 0) ASC')
+            ->get();
+
+        if ($flows->isEmpty()) {
+            throw new \Exception('Approval flow Purchase Order belum disetting untuk nominal PO ini.');
+        }
+
+        $approvalSteps = collect();
+        $usedApproverKeys = [];
+
+        foreach ($flows as $flow) {
+            foreach ($flow->steps->sortBy('step_order') as $step) {
+                $approverType = strtoupper((string) $step->approver_type);
+                $approverKey = $approverType . '-' . $step->approver_id;
+
+                if (in_array($approverKey, $usedApproverKeys, true)) {
+                    continue;
+                }
+
+                $usedApproverKeys[] = $approverKey;
+
+                $approvalSteps->push([
+                    'approval_flow_id' => $flow->id,
+                    'approval_flow_step_id' => $step->id,
+                    'approver_type' => $approverType,
+                    'approver_id' => $step->approver_id,
+                    'label' => $step->label,
+                ]);
+            }
+        }
+
+        if ($approvalSteps->isEmpty()) {
+            throw new \Exception('Step approval Purchase Order belum disetting.');
+        }
+
+        foreach ($approvalSteps->values() as $index => $step) {
             PurchaseOrderApproval::create([
                 'purchase_order_id' => $po->id,
-                'step_order' => $step->step_order,
-                'approver_type' => $step->approver_type,
-                'approver_id' => $step->approver_id,
+                'step_order' => $index + 1,
+                'approver_type' => $step['approver_type'],
+                'approver_id' => $step['approver_id'],
                 'approver_name_snapshot' => null,
-                'label' => $step->label,
-                'status' => 'PENDING',
+                'label' => $step['label'],
+                'status' => $index === 0 ? 'WAITING' : 'PENDING',
             ]);
         }
+
+        Log::info('[Purchase Order] Approval generated', [
+            'po_id' => $po->id,
+            'nomor_po' => $po->nomor_po,
+            'amount' => $amount,
+            'flows' => $flows->map(fn($flow) => [
+                'id' => $flow->id,
+                'name' => $flow->name,
+                'document_type' => $flow->document_type,
+                'min_amount' => $flow->min_amount,
+                'max_amount' => $flow->max_amount,
+            ])->values()->toArray(),
+            'steps' => $approvalSteps->values()->toArray(),
+        ]);
     }
 
     private function terbilang($angka): string
@@ -1506,59 +1807,63 @@ class PurchaseOrderController extends Controller
                 ->where('purchase_order_items.purchase_request_item_id', $prItem->id)
                 ->whereNull('purchase_order_items.deleted_at')
                 ->whereNull('purchase_orders.deleted_at')
+
+                /*
+            |--------------------------------------------------------------------------
+            | Jangan hitung PO yang sudah reject/cancel
+            |--------------------------------------------------------------------------
+            */
+                ->whereNotIn('purchase_orders.status', [
+                    'REJECTED',
+                    'CANCELLED',
+                ])
                 ->sum('purchase_order_items.qty');
 
-            $prItem->qty_po = (float) $qtyPo;
-            $prItem->qty_outstanding = max((float) $prItem->qty - (float) $qtyPo, 0);
-            $prItem->save();
+            $qtyRequest = (float) ($prItem->qty ?? 0);
+            $qtyPo = (float) $qtyPo;
+
+            $prItem->update([
+                'qty_po' => $qtyPo,
+                'qty_outstanding' => max($qtyRequest - $qtyPo, 0),
+            ]);
         }
     }
 
     private function refreshPurchaseRequestPOStatus(int $purchaseRequestId): void
     {
-        $pr = PurchaseRequest::find($purchaseRequestId);
+        $pr = PurchaseRequest::where('id', $purchaseRequestId)
+            ->lockForUpdate()
+            ->first();
 
-        if (!$pr instanceof PurchaseRequest) {
+        if (!$pr) {
             return;
         }
 
-        $items = PurchaseRequestItem::where('purchase_request_id', $pr->id)
+        $summary = PurchaseRequestItem::query()
+            ->where('purchase_request_id', $purchaseRequestId)
             ->whereNull('deleted_at')
-            ->get();
+            ->selectRaw('
+            COALESCE(SUM(qty), 0) as total_qty_request,
+            COALESCE(SUM(qty_po), 0) as total_qty_po,
+            COALESCE(SUM(qty_outstanding), 0) as total_qty_outstanding
+        ')
+            ->first();
 
-        $totalQty = (float) $items->sum(function ($item) {
-            return (float) ($item->qty ?? 0);
-        });
-
-        $totalQtyPo = (float) $items->sum(function ($item) {
-            return (float) ($item->qty_po ?? 0);
-        });
-
-        $totalOutstanding = (float) $items->sum(function ($item) {
-            return (float) ($item->qty_outstanding ?? 0);
-        });
-
-        /*
-    |--------------------------------------------------------------------------
-    | STATUS PO
-    |--------------------------------------------------------------------------
-    */
+        $totalQtyRequest = (float) ($summary->total_qty_request ?? 0);
+        $totalQtyPo = (float) ($summary->total_qty_po ?? 0);
+        $totalOutstanding = (float) ($summary->total_qty_outstanding ?? 0);
 
         if ($totalQtyPo <= 0) {
-
-            // BELUM ADA PO
-            $pr->status_po = 'OPEN';
-        } elseif ($totalOutstanding > 0) {
-
-            // SUDAH ADA PO TAPI MASIH ADA OUTSTANDING
-            $pr->status_po = 'PARTIAL';
+            $statusPo = 'OPEN';
+        } elseif ($totalOutstanding > 0 && $totalQtyPo < $totalQtyRequest) {
+            $statusPo = 'PARTIAL';
         } else {
-
-            // SEMUA QTY SUDAH MASUK PO
-            $pr->status_po = 'COMPLETED';
+            $statusPo = 'COMPLETED';
         }
 
-        $pr->save();
+        $pr->update([
+            'status_po' => $statusPo,
+        ]);
     }
 
     private function generateDraftPONumber(): string

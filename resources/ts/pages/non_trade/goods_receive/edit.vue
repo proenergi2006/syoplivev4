@@ -2,17 +2,22 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from '@axios'
-import Swal from 'sweetalert2'
 import {
   showLoadingAlert,
-  showSuccessToast,
-  showWarningToast,
   showErrorToast,
   closeAlert,
   showConfirmAlert,
 } from '@/utils/alert'
 import { getApiErrorMessage } from '@/utils/apiHelper'
-import { formatDate, formatStatusPKP, formatNumberWithoutRp, toTitleCase, formatDecimalQty, sanitizeDecimalInput, parseDecimalInput, } from '@/utils/textFormatter'
+import {
+  formatDate,
+  formatStatusPKP,
+  formatNumberWithoutRp,
+  toTitleCase,
+  formatDecimalQty,
+  sanitizeDecimalInput,
+  parseDecimalInput,
+} from '@/utils/textFormatter'
 
 interface AxiosErrorShape {
   response?: {
@@ -41,16 +46,35 @@ interface GrItem {
   notes: string
 }
 
+interface GrAttachmentItem {
+  id?: number | string
+  public_id?: string
+  file?: File
+  file_name: string
+  file_original_name: string
+  file_url?: string
+  file_mime_type?: string
+  file_size: number
+  is_existing: boolean
+}
+
 const route = useRoute()
 const router = useRouter()
 
 const publicId = computed(() =>
-  String(route.query.id || '')
+  String(route.query.id || ''),
 )
 
 const isLoadingDetail = ref(false)
 const loadError = ref('')
 const submitLoading = ref(false)
+
+const attachmentInput = ref<File[]>([])
+const attachments = ref<GrAttachmentItem[]>([])
+const deletedAttachmentIds = ref<string[]>([])
+const initialExistingAttachmentCount = ref(0)
+
+const MAX_FILE_SIZE = 3 * 1024 * 1024
 
 const form = ref({
   public_id: '',
@@ -121,9 +145,85 @@ const handleQtyReceiveInput = (value: string | number, index: number): void => {
   items.value[index].qty_receive = parseDecimalInput(sanitized)
 }
 
+const formatFileSize = (size: number): string => {
+  if (!size) return '-'
+
+  const kb = size / 1024
+  if (kb < 1024) return `${kb.toFixed(2)} KB`
+
+  return `${(kb / 1024).toFixed(2)} MB`
+}
+
+const handleAttachmentChange = (files: File[] | File | null): void => {
+  if (!files) return
+
+  const selectedFiles = Array.isArray(files) ? files : [files]
+  const validFiles: GrAttachmentItem[] = []
+
+  selectedFiles.forEach(file => {
+    const isValidType =
+      file.type === 'application/pdf'
+      || file.type.startsWith('image/')
+
+    if (!isValidType) {
+      showErrorToast({
+        title: 'Format File Tidak Valid',
+        text: `${file.name} hanya boleh PDF atau gambar.`,
+      })
+
+      return
+    }
+
+    if (file.size > MAX_FILE_SIZE) {
+      showErrorToast({
+        title: 'Ukuran File Terlalu Besar',
+        text: `${file.name} melebihi batas maksimal 3 MB.`,
+      })
+
+      return
+    }
+
+    validFiles.push({
+      file,
+      file_name: file.name,
+      file_original_name: file.name,
+      file_mime_type: file.type,
+      file_size: file.size,
+      is_existing: false,
+    })
+  })
+
+  attachments.value.push(...validFiles)
+  attachmentInput.value = []
+}
+
+const removeAttachment = (index: number): void => {
+  const attachment = attachments.value[index]
+
+  if (!attachment) return
+
+  if (attachment.is_existing && attachment.public_id) {
+    if (!deletedAttachmentIds.value.includes(attachment.public_id)) {
+      deletedAttachmentIds.value.push(attachment.public_id)
+    }
+  }
+
+  attachments.value.splice(index, 1)
+}
+
+const shouldRemoveAllExistingAttachments = (): boolean => {
+  const currentExistingAttachmentCount = attachments.value.filter(attachment => attachment.is_existing).length
+
+  return (
+    initialExistingAttachmentCount.value > 0 &&
+    currentExistingAttachmentCount === 0
+  )
+}
+
 const loadDetail = async (): Promise<void> => {
   isLoadingDetail.value = true
   loadError.value = ''
+  deletedAttachmentIds.value = []
 
   try {
     if (!publicId.value) {
@@ -172,21 +272,35 @@ const loadDetail = async (): Promise<void> => {
     }
 
     items.value = (data.items ?? []).map((row: any) => ({
-        id: row.id,
-        public_id: row.public_id,
-        purchase_order_item_id: row.purchase_order_item_id,
-        purchase_order_item_public_id: row.purchase_order_item_public_id ?? row.po_item_public_id ?? '',
-        item_name: row.item_name ?? row.nama_item ?? '-',
-        item_code: row.item_code ?? row.kode_item ?? '-',
-        unit: row.unit ?? row.satuan ?? '-',
-        qty_ordered: Number(row.qty_ordered ?? 0),
-        qty_received_before: Number(row.qty_received_before ?? 0),
-        qty_receive: Number(row.qty_receive ?? 0),
-        original_qty_receive: Number(row.qty_receive ?? 0),
-        qty_received_after: Number(row.qty_received_after ?? 0),
-        qty_outstanding: Number(row.qty_outstanding ?? 0),
-        notes: row.notes ?? '',
+      id: row.id,
+      public_id: row.public_id,
+      purchase_order_item_id: row.purchase_order_item_id,
+      purchase_order_item_public_id: row.purchase_order_item_public_id ?? row.po_item_public_id ?? '',
+      item_name: row.item_name ?? row.nama_item ?? '-',
+      item_code: row.item_code ?? row.kode_item ?? '-',
+      unit: row.unit ?? row.satuan ?? '-',
+      qty_ordered: Number(row.qty_ordered ?? 0),
+      qty_received_before: Number(row.qty_received_before ?? 0),
+      qty_receive: Number(row.qty_receive ?? 0),
+      original_qty_receive: Number(row.qty_receive ?? 0),
+      qty_received_after: Number(row.qty_received_after ?? 0),
+      qty_outstanding: Number(row.qty_outstanding ?? 0),
+      notes: row.notes ?? '',
     }))
+
+    attachments.value = (data.attachments ?? []).map((row: any) => ({
+      id: row.id,
+      public_id: row.public_id,
+      file_name: row.file_name ?? '-',
+      file_original_name: row.file_original_name ?? row.file_name ?? '-',
+      file_url: row.file_url,
+      file_mime_type: row.file_mime_type,
+      file_size: Number(row.file_size ?? 0),
+      is_existing: true,
+    }))
+
+    initialExistingAttachmentCount.value = attachments.value.filter(attachment => attachment.is_existing).length
+    deletedAttachmentIds.value = []
   } catch (error: any) {
     const err = error as AxiosErrorShape
 
@@ -227,30 +341,48 @@ const validateItems = (): boolean => {
   }
 
   for (const item of items.value) {
-        const qtyReceive = Number(item.qty_receive || 0)
+    const qtyReceive = Number(item.qty_receive || 0)
 
-        if (qtyReceive <= 0) {
-            showErrorToast({
-            title: 'Qty tidak valid',
-            text: `Qty receive untuk item ${item.item_name} harus lebih dari 0.`,
-            })
+    if (qtyReceive <= 0) {
+      showErrorToast({
+        title: 'Qty tidak valid',
+        text: `Qty receive untuk item ${item.item_name} harus lebih dari 0.`,
+      })
 
-            return false
-        }
-
-        const maxReceive =
-            Number(item.original_qty_receive || 0) +
-            Number(item.qty_outstanding || 0)
-
-        if (qtyReceive > maxReceive) {
-            showErrorToast({
-            title: 'Qty melebihi sisa PO',
-            text: `Qty receive untuk item ${item.item_name} melebihi qty yang tersedia.`,
-            })
-
-            return false
-        }
+      return false
     }
+
+    const maxReceive =
+      Number(item.original_qty_receive || 0) +
+      Number(item.qty_outstanding || 0)
+
+    if (qtyReceive > maxReceive) {
+      showErrorToast({
+        title: 'Qty melebihi sisa PO',
+        text: `Qty receive untuk item ${item.item_name} melebihi qty yang tersedia.`,
+      })
+
+      return false
+    }
+
+    if (!item.public_id) {
+      showErrorToast({
+        title: 'Item tidak valid',
+        text: `Public ID item ${item.item_name} tidak ditemukan.`,
+      })
+
+      return false
+    }
+
+    if (!item.purchase_order_item_public_id) {
+      showErrorToast({
+        title: 'Item PO tidak valid',
+        text: `Purchase Order Item ID untuk ${item.item_name} tidak ditemukan.`,
+      })
+
+      return false
+    }
+  }
 
   return true
 }
@@ -283,7 +415,7 @@ const submit = async (): Promise<void> => {
 
   const confirm = await showConfirmAlert({
     title: 'Yakin Simpan?',
-    text: `Data perubahan akan disimpan.`,
+    text: 'Data perubahan akan disimpan.',
     confirmButtonText: 'Ya, simpan',
     cancelButtonText: 'Batal',
   })
@@ -295,21 +427,56 @@ const submit = async (): Promise<void> => {
   try {
     showLoadingAlert('Menyimpan Goods Receipt', 'Mohon tunggu sebentar')
 
-    const payload = {
-      tanggal_gr: form.value.tanggal_gr,
-      nomor_surat_jalan: form.value.nomor_surat_jalan,
-      notes: form.value.notes,
-      items: items.value.map(item => ({
-        goods_receive_item_public_id: item.public_id,
-        purchase_order_item_public_id: item.purchase_order_item_public_id,
-        qty_receive: Number(item.qty_receive || 0),
-        notes: item.notes ?? '',
-      })),
-    }
+    const payload = new FormData()
 
-    await axios.put(`/transaction/goods-receive/${encodeURIComponent(form.value.public_id)}`, payload, {
-      headers: { Accept: 'application/json' },
+    payload.append('tanggal_gr', String(form.value.tanggal_gr ?? ''))
+    payload.append('nomor_surat_jalan', String(form.value.nomor_surat_jalan ?? ''))
+    payload.append('notes', String(form.value.notes ?? ''))
+
+    items.value.forEach((item, index) => {
+      payload.append(`items[${index}][goods_receive_item_public_id]`, String(item.public_id ?? ''))
+      payload.append(`items[${index}][purchase_order_item_public_id]`, String(item.purchase_order_item_public_id ?? ''))
+      payload.append(`items[${index}][qty_receive]`, String(Number(item.qty_receive || 0).toFixed(2)))
+      payload.append(`items[${index}][notes]`, String(item.notes ?? ''))
     })
+
+    /**
+     * Kirim hanya attachment lama yang user hapus.
+     * Kalau user tidak menghapus file lama, array ini kosong.
+     * Backend tidak akan menghapus attachment existing.
+     */
+    deletedAttachmentIds.value.forEach((attachmentPublicId, index) => {
+      payload.append(`deleted_attachment_ids[${index}]`, attachmentPublicId)
+    })
+
+    payload.append(
+      'remove_all_attachments',
+      shouldRemoveAllExistingAttachments() ? '1' : '0',
+    )
+
+    /**
+     * Kirim hanya file baru.
+     * Attachment existing tidak perlu dikirim ulang.
+     */
+    let newAttachmentIndex = 0
+
+    attachments.value.forEach(attachment => {
+      if (!attachment.is_existing && attachment.file) {
+        payload.append(`attachments[${newAttachmentIndex}]`, attachment.file)
+        newAttachmentIndex += 1
+      }
+    })
+
+    await axios.post(
+      `/transaction/goods-receive/${encodeURIComponent(form.value.public_id)}?_method=PUT`,
+      payload,
+      {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'multipart/form-data',
+        },
+      },
+    )
 
     closeAlert()
 
@@ -459,7 +626,7 @@ onMounted(async () => {
 
         <VCard class="rounded-lg">
           <VCardText>
-            <VRow>
+            <VRow class="mb-3">
               <VCol cols="12" md="4">
                 <AppDateTimePicker
                   v-model="form.tanggal_gr"
@@ -480,7 +647,7 @@ onMounted(async () => {
                 />
               </VCol>
             </VRow>
-            <VRow>
+            <VRow class="mb-3">
                 <VCol cols="12" md="4">
                     <VTextField
                     v-model="form.nomor_po"
@@ -491,7 +658,7 @@ onMounted(async () => {
                     />
                 </VCol>
 
-                <VCol cols="12" md="4">
+                <!-- <VCol cols="12" md="4">
                     <VTextField
                     v-model="form.nomor_surat_jalan"
                     label="No Surat Jalan"
@@ -499,7 +666,7 @@ onMounted(async () => {
                     density="compact"
                     :readonly="!isDraft"
                     />
-                </VCol>
+                </VCol> -->
 
                 <VCol cols="12" md="4">
                     <VTextField
@@ -509,7 +676,9 @@ onMounted(async () => {
                     density="compact"
                     />
                 </VCol>
+              </VRow>
 
+              <VRow>
                 <VCol cols="12" md="4">
                     <VTextField
                     v-model="form.cabang_name"
@@ -548,7 +717,145 @@ onMounted(async () => {
                     :readonly="!isDraft"
                     />
                 </VCol>
-            </VRow>
+              </VRow>
+          </VCardText>
+        </VCard>
+      </VCol>
+
+      <VCol cols="12">
+        <VCard class="rounded-lg">
+          <VCardText>
+            <div class="d-flex flex-wrap align-center justify-space-between gap-4 mb-4">
+              <div>
+                <h3 class="text-h6 font-weight-bold mb-1">
+                  Lampiran
+                </h3>
+
+                <div class="text-body-2 text-medium-emphasis">
+                  Upload dokumen pendukung seperti Surat Jalan, Delivery Order, atau Foto Barang.
+                </div>
+              </div>
+
+              <VChip
+                color="primary"
+                variant="tonal"
+                prepend-icon="tabler-paperclip"
+              >
+                {{ attachments.length }} File
+              </VChip>
+            </div>
+
+            <VFileInput
+              v-model="attachmentInput"
+              multiple
+              show-size
+              clearable
+              density="comfortable"
+              variant="outlined"
+              prepend-icon=""
+              prepend-inner-icon="tabler-upload"
+              label="Upload Attachment"
+              placeholder="Pilih file PDF atau gambar"
+              accept="application/pdf,image/*"
+              :disabled="!isDraft"
+              @update:model-value="handleAttachmentChange"
+            />
+
+            <VAlert
+              type="info"
+              variant="tonal"
+              class="mt-3"
+            >
+              Format yang diperbolehkan: PDF, JPG, JPEG, PNG.
+              Maksimal ukuran file 3 MB per file.
+            </VAlert>
+
+            <VAlert
+              v-if="!attachments.length"
+              type="info"
+              variant="tonal"
+              density="compact"
+              class="mt-4"
+            >
+              Tidak ada Lampiran.
+            </VAlert>
+
+            <VTable
+              v-else
+              class="text-no-wrap mt-4 rounded border"
+            >
+              <thead>
+                <tr>
+                  <th width="60">No</th>
+                  <th>Nama File</th>
+                  <th width="160">Ukuran</th>
+                  <th width="180">Tipe</th>
+                  <th width="120" class="text-center">Aksi</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                <tr
+                  v-for="(attachment, index) in attachments"
+                  :key="`${attachment.file_name}-${index}`"
+                >
+                  <td>{{ index + 1 }}</td>
+
+                  <td>
+                    <div class="d-flex align-center">
+                      <VIcon
+                        :icon="attachment.file_mime_type === 'application/pdf' ? 'tabler-file-type-pdf' : 'tabler-photo'"
+                        size="20"
+                        class="me-2"
+                      />
+
+                      <div>
+                        <div class="font-weight-medium">
+                          {{ attachment.file_original_name || attachment.file_name }}
+                        </div>
+
+                        <div class="text-caption text-medium-emphasis">
+                          {{ attachment.is_existing ? 'File tersimpan' : 'File baru' }}
+                        </div>
+                      </div>
+                    </div>
+                  </td>
+
+                  <td>
+                    {{ formatFileSize(attachment.file_size) }}
+                  </td>
+
+                  <td>
+                    {{ attachment.file_mime_type || '-' }}
+                  </td>
+
+                  <td class="text-center">
+                    <VBtn
+                      v-if="attachment.file_url"
+                      icon
+                      size="small"
+                      variant="text"
+                      color="primary"
+                      :href="attachment.file_url"
+                      target="_blank"
+                    >
+                      <VIcon icon="tabler-eye" />
+                    </VBtn>
+
+                    <VBtn
+                      icon
+                      size="small"
+                      variant="text"
+                      color="error"
+                      :disabled="!isDraft"
+                      @click="removeAttachment(index)"
+                    >
+                      <VIcon icon="tabler-trash" />
+                    </VBtn>
+                  </td>
+                </tr>
+              </tbody>
+            </VTable>
           </VCardText>
         </VCard>
       </VCol>

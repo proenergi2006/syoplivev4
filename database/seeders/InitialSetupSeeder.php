@@ -351,6 +351,18 @@ class InitialSetupSeeder extends Seeder
                 ]
             );
 
+            $approvalFlowMenuId = $this->upsertMenu(
+                ['name' => 'Approval Flow', 'parent_id' => $masterMenuId],
+                [
+                    'path' => '/master/approval-flow',
+                    'route_name' => 'master-approval-flow',
+                    'icon' => 'tabler-user-check',
+                    'order_no' => 20,
+                    'permission_key' => null,
+                    'is_active' => true,
+                ]
+            );
+
             // Fleet children
             $transportirMenuId = $this->upsertMenu(
                 ['name' => 'Transportir', 'parent_id' => $fleetMenuId],
@@ -560,6 +572,7 @@ class InitialSetupSeeder extends Seeder
                 $sopirMenuId,
                 $mobilMenuId,
                 $ongkosAngkutMenuId,
+                $approvalFlowMenuId,
                 $cabangMenuId,
                 $deptMenuId,
                 $vendorMenuId,

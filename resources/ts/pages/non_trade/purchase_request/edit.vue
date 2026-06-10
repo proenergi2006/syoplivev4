@@ -947,6 +947,7 @@ onMounted(async () => {
             color="secondary"
             prepend-icon="tabler-arrow-left"
             @click="goBack"
+            class="text-none"
           >
             Kembali
           </VBtn>
@@ -962,7 +963,7 @@ onMounted(async () => {
           <VCardTitle class="d-flex align-center justify-space-between">
             <div>
               <div class="text-h6 font-weight-bold">
-                Form Purchase Request
+                Form Edit Purchase Request
               </div>
               <div class="text-body-2 text-medium-emphasis">
                 Silakan lengkapi data purchase request dengan benar
@@ -985,6 +986,16 @@ onMounted(async () => {
             <VRow>
 
               <VCol cols="12" md="3">
+                <AppDateTimePicker
+                  v-model="form.tanggal_pr"
+                  label="Tanggal PR *"
+                  placeholder="Pilih tanggal PR"
+                  :config="{ dateFormat: 'Y-m-d' }"
+                  :error="isSubmitted && !form.tanggal_pr"
+                  :error-messages="isSubmitted && !form.tanggal_pr ? ['Tanggal PR wajib diisi'] : []"
+                />
+              </VCol>
+              <!-- <VCol cols="12" md="3">
                 <div class="position-relative">
                   <VTextField
                     :model-value="tanggalPR.displayValue.value"
@@ -1010,7 +1021,7 @@ onMounted(async () => {
                     @change="tanggalPR.onDateChange"
                   >
                 </div>
-              </VCol>
+              </VCol> -->
 
               <VCol cols="12" md="3">
                 <VAutocomplete
@@ -1212,9 +1223,9 @@ onMounted(async () => {
 
                             <div
                               v-if="item.keterangan"
-                              class="text-caption text-medium-emphasis mt-1"
+                              class="text-caption text-medium-emphasis mt-1 text-pre-line"
                             >
-                              Keterangan: {{ item.keterangan }}
+                              Keterangan: <br> {{ item.keterangan }}
                             </div>
                           </div>
 
@@ -1470,6 +1481,7 @@ onMounted(async () => {
                 color="secondary"
                 variant="outlined"
                 @click.prevent.stop="confirmCancel"
+                class="text-none"
               >
                 Batal
               </VBtn>
@@ -1479,6 +1491,7 @@ onMounted(async () => {
                 color="primary"
                 :loading="isSaving"
                 @click.prevent.stop="updatePurchaseRequest($event)"
+                class="text-none"
               >
                 Simpan
               </VBtn>
@@ -1664,13 +1677,15 @@ onMounted(async () => {
                   </td>
 
                   <td>
-                    <VTextField
+                    <VTextarea
                       v-model="item.keterangan"
-                      placeholder="Keterangan"
+                      placeholder="Keterangan / Spesifikasi"
                       density="compact"
                       hide-details
                       variant="outlined"
-                      class="fullscreen-field"
+                      class="fullscreen-field fullscreen-textarea"
+                      rows="2"
+                      auto-grow
                     />
                   </td>
 
@@ -1831,5 +1846,14 @@ onMounted(async () => {
   .item-fullscreen-table .col-note {
     width: 180px;
   }
+}
+
+.fullscreen-textarea {
+  min-width: 260px;
+}
+
+.fullscreen-textarea :deep(textarea) {
+  line-height: 1.4;
+  resize: vertical;
 }
 </style>

@@ -525,55 +525,76 @@ const notify = (
 }
 
 // =========================
-// Delete dialog
+// Delete Vendor
 // =========================
-const deleteDialog = ref<boolean>(false)
 const deleteLoading = ref<boolean>(false)
-const deleteTarget = ref<Vendor | null>(null)
 
-const openDelete = (row: Vendor): void => {
-  deleteTarget.value = row
-  deleteDialog.value = true
-}
+const openDelete = async (row: Vendor): Promise<void> => {
+  if (deleteLoading.value) return
 
-const closeDelete = (): void => {
-  deleteDialog.value = false
-  deleteTarget.value = null
-}
+  const vendorPublicId = row.public_id
+  const vendorName = row.nama_vendor || '-'
 
-const confirmDelete = async (): Promise<void> => {
-  if (!deleteTarget.value || deleteLoading.value) return
+  if (!vendorPublicId) {
+    showErrorToast({
+      title: 'Data Tidak Valid',
+      text: 'Public ID vendor tidak ditemukan.',
+    })
+
+    return
+  }
+
+  const confirm = await showConfirmAlert({
+    icon: 'question',
+    title: 'Hapus Vendor?',
+    html: `Apakah Anda yakin ingin menghapus vendor <strong>${vendorName}</strong>?`,
+    confirmButtonText: 'Ya, hapus',
+    cancelButtonText: 'Batal',
+  })
+
+  if (!confirm.isConfirmed) return
 
   deleteLoading.value = true
 
-  const vendorPublicId = deleteTarget.value.public_id
-  const vendorName = deleteTarget.value.nama_vendor
-
   try {
-    closeDelete()
-
     showLoadingAlert(
       'Menghapus vendor...',
       'Mohon tunggu sebentar',
     )
 
-    await axios.delete(`/master/vendor/${vendorPublicId}`)
+    const response = await axios.delete(
+      `/master/vendor/${encodeURIComponent(vendorPublicId)}`,
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+    )
 
     closeAlert()
 
-    showSuccessToast({
-      title: 'Berhasil',
-      text: `Vendor "${vendorName}" berhasil dihapus`,
-    })
+    if (response.data?.success) {
+      showSuccessToast({
+        title: 'Berhasil',
+        text: `Vendor "${vendorName}" berhasil dihapus`,
+      })
 
-    await fetchRows()
+      await fetchRows()
+
+      return
+    }
+
+    showErrorToast({
+      title: 'Gagal',
+      text: response.data?.message || 'Gagal menghapus vendor',
+    })
   } catch (error: unknown) {
     closeAlert()
 
     const err = error as AxiosErrorShape
 
     showErrorToast({
-      title: 'Error',
+      title: 'Gagal',
       text: getApiErrorMessage(
         err,
         'Gagal menghapus vendor',
@@ -1035,27 +1056,6 @@ onMounted(async () => {
         </div>
       </VCardText>
     </VCard>
-
-    <!-- Confirm Delete -->
-    <VDialog v-model="deleteDialog" max-width="520">
-      <VCard>
-        <VCardTitle class="text-h6">Konfirmasi Hapus</VCardTitle>
-
-        <VCardText>
-          Kamu yakin ingin menghapus vendor
-          <b>{{ deleteTarget?.nama_vendor }}</b>
-          (kode: <b>{{ deleteTarget?.kode_vendor }}</b>)?
-          <div class="text-body-2 opacity-70 mt-2">
-            Data yang sudah dihapus tidak bisa dikembalikan.
-          </div>
-        </VCardText>
-
-        <VCardActions class="justify-end">
-          <VBtn type="button" variant="text" :disabled="deleteLoading" @click="closeDelete">Batal</VBtn>
-          <VBtn type="button" color="error" :loading="deleteLoading" @click="confirmDelete">Hapus</VBtn>
-        </VCardActions>
-      </VCard>
-    </VDialog>
 
     <!-- Confirm Update Status -->
     <VDialog v-model="statusDialog" max-width="420">

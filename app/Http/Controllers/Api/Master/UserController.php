@@ -7,6 +7,8 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
@@ -208,5 +210,55 @@ class UserController extends Controller
                 'signature_url' => asset('storage/' . $filePath),
             ],
         ], 201);
+    }
+
+    public function dropdown(Request $request)
+    {
+        try {
+            $search = trim((string) $request->input('search', ''));
+
+            $query = User::query()
+                ->select([
+                    'id',
+                    'name',
+                    'email',
+                    'id_role',
+                ])
+                ->when($search !== '', function ($query) use ($search) {
+                    $query->where(function ($q) use ($search) {
+                        $q->where('name', 'ILIKE', "%{$search}%")
+                            ->orWhere('email', 'ILIKE', "%{$search}%");
+                    });
+                })
+                ->orderBy('name');
+
+            if (Schema::hasColumn('users', 'is_active')) {
+                $query->where('is_active', true);
+            }
+
+            $users = $query
+                ->limit(100)
+                ->get();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Data user dropdown berhasil dimuat.',
+                'data' => $users,
+            ], 200);
+        } catch (\Throwable $e) {
+            Log::error('[User] Dropdown error', [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'request' => $request->all(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal memuat data user dropdown.',
+                'data' => [],
+                'debug' => app()->environment('local') ? $e->getMessage() : null,
+            ], 500);
+        }
     }
 }

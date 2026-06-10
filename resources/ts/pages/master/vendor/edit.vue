@@ -945,6 +945,7 @@ onMounted(async () => {
               color="secondary"
               prepend-icon="tabler-arrow-left"
               @click="goBack"
+              class="text-none"
             >
               Kembali
             </VBtn>
@@ -1824,6 +1825,7 @@ onMounted(async () => {
                         color="secondary"
                         variant="outlined"
                         @click="confirmCancel"
+                        class="text-none"
                     >
                         Batal
                     </VBtn>
@@ -1833,6 +1835,7 @@ onMounted(async () => {
                         color="primary"
                         :loading="isSaving"
                         @click="saveVendor"
+                        class="text-none"
                     >
                         Simpan
                     </VBtn>

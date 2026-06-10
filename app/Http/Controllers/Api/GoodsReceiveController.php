@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\GoodsReceive;
+use App\Models\GoodsReceiveAttachment;
 use App\Models\GoodsReceiveItem;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
@@ -13,6 +14,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 class GoodsReceiveController extends Controller
 {
@@ -45,16 +48,28 @@ class GoodsReceiveController extends Controller
                 });
             }
 
-            if ($request->filled('status')) {
-                $query->where('status', $request->status);
+            $status = strtoupper(trim((string) $request->status));
+
+            if (
+                $status !== ''
+                && $status !== 'ALL'
+                && $status !== 'SEMUA'
+            ) {
+                $query->whereRaw('UPPER(status) = ?', [$status]);
             }
 
-            if ($request->filled('start_date')) {
-                $query->whereDate('tanggal_gr', '>=', $request->start_date);
+            $startDate = $request->input('tanggal_mulai')
+                ?? $request->input('start_date');
+
+            $endDate = $request->input('tanggal_selesai')
+                ?? $request->input('end_date');
+
+            if (!empty($startDate)) {
+                $query->whereDate('tanggal_gr', '>=', $startDate);
             }
 
-            if ($request->filled('end_date')) {
-                $query->whereDate('tanggal_gr', '<=', $request->end_date);
+            if (!empty($endDate)) {
+                $query->whereDate('tanggal_gr', '<=', $endDate);
             }
 
             $perPage = (int) ($request->per_page ?? 10);
@@ -129,6 +144,12 @@ class GoodsReceiveController extends Controller
                 'items.*.purchase_order_item_public_id' => ['required', 'string'],
                 'items.*.qty_receive' => ['required', 'numeric', 'gt:0'],
                 'items.*.notes' => ['nullable', 'string'],
+                'attachments' => ['nullable', 'array'],
+                'attachments.*' => [
+                    'file',
+                    'mimes:pdf,jpg,jpeg,png,webp',
+                    'max:3072',
+                ],
             ]);
 
             $poId = Crypt::decryptString($validated['purchase_order_public_id']);
@@ -163,6 +184,33 @@ class GoodsReceiveController extends Controller
                 $request->user()->id
             );
 
+            if ($request->hasFile('attachments')) {
+                $basePath = "syopv4/uploads/goods_receipt/{$gr->id}";
+
+                foreach ($request->file('attachments') as $file) {
+                    $originalName = $file->getClientOriginalName();
+                    $extension = $file->getClientOriginalExtension();
+
+                    $safeOriginalName = pathinfo($originalName, PATHINFO_FILENAME);
+                    $safeOriginalName = preg_replace('/[^A-Za-z0-9_\-]/', '_', $safeOriginalName);
+
+                    $fileName = now()->format('YmdHis') . '_' . uniqid() . '_' . $safeOriginalName . '.' . $extension;
+
+                    $filePath = $file->storeAs($basePath, $fileName, 'public');
+
+                    GoodsReceiveAttachment::create([
+                        'goods_receive_id' => $gr->id,
+                        'document_type' => null,
+                        'file_name' => $fileName,
+                        'file_original_name' => $originalName,
+                        'file_path' => $filePath,
+                        'file_mime_type' => $file->getClientMimeType(),
+                        'file_size' => $file->getSize(),
+                        'uploaded_by' => $request->user()->id ?? null,
+                    ]);
+                }
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => 'Goods Receipt berhasil dibuat sebagai draft.',
@@ -192,106 +240,7 @@ class GoodsReceiveController extends Controller
 
     public function edit($publicId)
     {
-        try {
-            $id = Crypt::decryptString(urldecode($publicId));
-
-            $gr = GoodsReceive::with([
-                'purchaseOrder:id,nomor_po,tanggal_po,cabang,id_department,vendor_id,status_receive',
-                'purchaseOrder.vendor:id,nama_vendor,status_pkp',
-                'purchaseOrder.cabangData:id,nama_cabang,inisial_cabang',
-                'purchaseOrder.departmentData:id,kode,nama',
-                'items.unitData:id,kode,nama',
-                'creator:id,name',
-            ])->findOrFail($id);
-
-            $items = $gr->getRelation('items');
-
-            if (strtoupper((string) $gr->status) !== 'DRAFT') {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Goods Receive hanya dapat diedit jika status masih DRAFT.',
-                    'data' => null,
-                ], 422);
-            }
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Data Goods Receive berhasil dimuat.',
-                'data' => [
-                    'id' => $gr->id,
-                    'public_id' => Crypt::encryptString((string) $gr->id),
-
-                    'nomor_gr' => $gr->nomor_gr,
-                    'tanggal_gr' => optional($gr->tanggal_gr)->format('Y-m-d') ?? $gr->tanggal_gr,
-                    'nomor_surat_jalan' => $gr->nomor_surat_jalan,
-                    'status' => $gr->status,
-                    'notes' => $gr->notes,
-
-                    'purchase_order_id' => $gr->purchase_order_id,
-                    'purchase_order_public_id' => Crypt::encryptString((string) $gr->purchase_order_id),
-                    'nomor_po' => $gr->purchaseOrder->nomor_po ?? '-',
-                    'tanggal_po' => $gr->purchaseOrder->tanggal_po ?? null,
-
-                    'vendor_id' => $gr->purchaseOrder->vendor_id ?? null,
-                    'vendor_name' => $gr->purchaseOrder->vendor->nama_vendor ?? '-',
-                    'status_pkp' => $gr->purchaseOrder->vendor->status_pkp ?? 'NON_PKP',
-
-                    'cabang_id' => $gr->purchaseOrder->cabang ?? null,
-                    'cabang_name' => $gr->purchaseOrder->cabangData->nama_cabang
-                        ?? $gr->purchaseOrder->cabangData->inisial_cabang
-                        ?? '-',
-
-                    'department_id' => $gr->purchaseOrder->id_department ?? null,
-                    'department_name' => $gr->purchaseOrder->departmentData->nama
-                        ?? $gr->purchaseOrder->departmentData->kode
-                        ?? '-',
-
-                    'created_by_id' => $gr->created_by,
-                    'created_by' => $gr->creator->name ?? '-',
-
-                    'items' => $items->map(function ($item) {
-                        return [
-                            'id' => $item->id,
-                            'public_id' => Crypt::encryptString((string) $item->id),
-
-                            'purchase_order_item_id' => $item->purchase_order_item_id,
-                            'purchase_order_item_public_id' => Crypt::encryptString((string) $item->purchase_order_item_id),
-
-                            'purchase_request_item_id' => $item->purchase_request_item_id,
-
-                            'nama_item' => $item->nama_item,
-                            'item_name' => $item->nama_item,
-                            'item_code' => '-',
-
-                            'unit_id' => $item->unit,
-                            'unit' => $item->unitData->nama ?? $item->unitData->kode ?? '-',
-
-                            'qty_ordered' => (float) ($item->qty_ordered ?? 0),
-                            'qty_received_before' => (float) ($item->qty_received_before ?? 0),
-                            'qty_receive' => (float) ($item->qty_receive ?? 0),
-                            'qty_received_after' => (float) ($item->qty_received_after ?? 0),
-                            'qty_outstanding' => (float) ($item->qty_outstanding ?? 0),
-
-                            'notes' => $item->notes,
-                        ];
-                    })->values(),
-                ],
-            ], 200);
-        } catch (\Throwable $e) {
-            Log::error('[Goods Receive] Edit error', [
-                'public_id' => $publicId,
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-            ]);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Gagal memuat data Goods Receive.',
-                'debug' => app()->environment('local') ? $e->getMessage() : null,
-                'data' => null,
-            ], 500);
-        }
+        return $this->show($publicId);
     }
 
     public function update(Request $request, $publicId)
@@ -299,6 +248,21 @@ class GoodsReceiveController extends Controller
         DB::beginTransaction();
 
         try {
+            /**
+             * Tambahan khusus attachment:
+             * Karena upload file biasanya pakai FormData,
+             * existing_attachment_ids bisa masuk sebagai JSON string.
+             */
+            if ($request->has('deleted_attachment_ids') && is_string($request->deleted_attachment_ids)) {
+                $decodedDeletedAttachmentIds = json_decode($request->deleted_attachment_ids, true);
+
+                if (json_last_error() === JSON_ERROR_NONE) {
+                    $request->merge([
+                        'deleted_attachment_ids' => $decodedDeletedAttachmentIds,
+                    ]);
+                }
+            }
+
             $validated = $request->validate([
                 'tanggal_gr' => ['required', 'date'],
                 'nomor_surat_jalan' => ['nullable', 'string', 'max:255'],
@@ -309,9 +273,19 @@ class GoodsReceiveController extends Controller
                 'items.*.purchase_order_item_public_id' => ['required', 'string'],
                 'items.*.qty_receive' => ['required', 'numeric', 'gt:0'],
                 'items.*.notes' => ['nullable', 'string'],
+
+                /**
+                 * Tambahan validasi attachment.
+                 */
+                'deleted_attachment_ids' => ['nullable', 'array'],
+                'deleted_attachment_ids.*' => ['string'],
+
+                'attachments' => ['nullable', 'array'],
+                'attachments.*' => ['file', 'max:5120', 'mimes:jpg,jpeg,png,pdf,doc,docx,xls,xlsx'],
+                'remove_all_attachments' => ['nullable', 'boolean'],
             ]);
 
-            $grId = Crypt::decryptString(urldecode($publicId));
+            $grId = Crypt::decrypt(urldecode($publicId));
 
             $gr = GoodsReceive::with(['items'])
                 ->lockForUpdate()
@@ -320,7 +294,7 @@ class GoodsReceiveController extends Controller
             if (strtoupper((string) $gr->status) !== 'DRAFT') {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Goods Receive hanya dapat diubah jika status masih DRAFT.',
+                    'message' => 'Goods Receipt hanya dapat diubah jika status masih DRAFT.',
                 ], 422);
             }
 
@@ -351,7 +325,7 @@ class GoodsReceiveController extends Controller
                 $maxReceive = max($qtyOrdered - $qtyReceivedBefore, 0);
 
                 if ($qtyReceive > $maxReceive) {
-                    throw new \Exception("Qty receive item {$grItem->nama_item} melebihi qty yang tersedia.");
+                    throw new \Exception("Qty receipt item {$grItem->nama_item} melebihi qty yang tersedia.");
                 }
 
                 $qtyReceivedAfter = $qtyReceivedBefore + $qtyReceive;
@@ -365,11 +339,90 @@ class GoodsReceiveController extends Controller
                 ]);
             }
 
+            /**
+             * ============================================================
+             * TAMBAHAN: HAPUS ATTACHMENT LAMA YANG DIHAPUS DI FE
+             * ============================================================
+             *
+             * existing_attachment_ids berisi ID attachment lama yang masih dipertahankan.
+             * Attachment lama yang tidak ada di existing_attachment_ids akan dihapus.
+             */
+            $deletedAttachmentIds = collect($validated['deleted_attachment_ids'] ?? [])
+                ->filter()
+                ->map(function ($encryptedAttachmentId) {
+                    try {
+                        return Crypt::decrypt($encryptedAttachmentId);
+                    } catch (\Throwable $e) {
+                        return null;
+                    }
+                })
+                ->filter()
+                ->values()
+                ->toArray();
+
+            $removeAllAttachments = filter_var(
+                $request->input('remove_all_attachments', false),
+                FILTER_VALIDATE_BOOLEAN
+            );
+
+            if ($removeAllAttachments) {
+                $attachmentsToDelete = GoodsReceiveAttachment::where('goods_receive_id', $gr->id)
+                    ->get();
+            } elseif (count($deletedAttachmentIds) > 0) {
+                $attachmentsToDelete = GoodsReceiveAttachment::where('goods_receive_id', $gr->id)
+                    ->whereIn('id', $deletedAttachmentIds)
+                    ->get();
+            } else {
+                $attachmentsToDelete = collect();
+            }
+
+            foreach ($attachmentsToDelete as $attachment) {
+                if (!empty($attachment->file_path) && Storage::disk('public')->exists($attachment->file_path)) {
+                    Storage::disk('public')->delete($attachment->file_path);
+                }
+
+                $attachment->delete();
+            }
+
+            /**
+             * ============================================================
+             * TAMBAHAN: UPLOAD ATTACHMENT BARU
+             * ============================================================
+             *
+             * Disamakan dengan logic store.
+             */
+            if ($request->hasFile('attachments')) {
+                $basePath = "syopv4/uploads/goods_receipt/{$gr->id}";
+
+                foreach ($request->file('attachments') as $file) {
+                    $originalName = $file->getClientOriginalName();
+                    $extension = $file->getClientOriginalExtension();
+
+                    $safeOriginalName = pathinfo($originalName, PATHINFO_FILENAME);
+                    $safeOriginalName = preg_replace('/[^A-Za-z0-9_\-]/', '_', $safeOriginalName);
+
+                    $fileName = now()->format('YmdHis') . '_' . uniqid() . '_' . $safeOriginalName . '.' . $extension;
+
+                    $filePath = $file->storeAs($basePath, $fileName, 'public');
+
+                    GoodsReceiveAttachment::create([
+                        'goods_receive_id' => $gr->id,
+                        'document_type' => null,
+                        'file_name' => $fileName,
+                        'file_original_name' => $originalName,
+                        'file_path' => $filePath,
+                        'file_mime_type' => $file->getClientMimeType(),
+                        'file_size' => $file->getSize(),
+                        'uploaded_by' => $request->user()->id ?? null,
+                    ]);
+                }
+            }
+
             DB::commit();
 
             return response()->json([
                 'success' => true,
-                'message' => 'Goods Receive berhasil diperbarui.',
+                'message' => 'Goods Receipt berhasil diperbarui.',
                 'data' => [
                     'id' => $gr->id,
                     'public_id' => Crypt::encryptString((string) $gr->id),
@@ -392,7 +445,7 @@ class GoodsReceiveController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal memperbarui Goods Receive.',
+                'message' => 'Gagal memperbarui Goods Receipt.',
                 'debug' => app()->environment('local') ? $e->getMessage() : null,
             ], 500);
         }
@@ -413,6 +466,7 @@ class GoodsReceiveController extends Controller
                     'items.unitData:id,kode,nama',
                     'creator:id,name',
                     'poster:id,name',
+                    'attachments:id,goods_receive_id,file_name,file_original_name,file_path,file_mime_type,file_size,created_at',
                 ])->findOrFail($id);
 
                 $items = $gr->getRelation('items');
@@ -458,6 +512,19 @@ class GoodsReceiveController extends Controller
                         'posted_by_id' => $gr->posted_by,
                         'posted_by' => $gr->poster->name ?? '-',
 
+                        'attachments' => $gr->attachments->map(function ($attachment) {
+                            return [
+                                'id' => $attachment->id,
+                                'file_name' => $attachment->file_name,
+                                'file_original_name' => $attachment->file_original_name,
+                                'file_path' => $attachment->file_path,
+                                'file_url' => asset('storage/' . $attachment->file_path),
+                                'file_mime_type' => $attachment->file_mime_type,
+                                'file_size' => (int) ($attachment->file_size ?? 0),
+                                'created_at' => $attachment->created_at?->format('Y-m-d H:i:s'),
+                            ];
+                        })->values(),
+
                         'items' => $items->map(function ($item) use ($gr) {
                             $qtyOrdered = (float) ($item->qty_ordered ?? 0);
                             $qtyReceive = (float) ($item->qty_receive ?? 0);
@@ -478,6 +545,7 @@ class GoodsReceiveController extends Controller
                                 'public_id' => Crypt::encryptString((string) $item->id),
 
                                 'purchase_order_item_id' => $item->purchase_order_item_id,
+                                'purchase_order_item_public_id' => Crypt::encryptString((string) $item->purchase_order_item_id),
                                 'purchase_request_item_id' => $item->purchase_request_item_id,
 
                                 'nama_item' => $item->nama_item,
@@ -531,7 +599,7 @@ class GoodsReceiveController extends Controller
         try {
             $id = Crypt::decryptString($publicId);
 
-            $gr = GoodsReceive::with(['items', 'purchaseOrder.items'])
+            $gr = GoodsReceive::with(['items', 'purchaseOrder.items', 'purchaseOrder.departmentData'])
                 ->findOrFail($id);
 
             $this->goodsReceivePostingService->post($gr, $request->user());

@@ -55,6 +55,10 @@ const poOptions = ref<SelectOption[]>([])
 const selectedPo = ref<number | string | null>(null)
 const userData = JSON.parse(localStorage.getItem('userData') || '{}')
 
+const MAX_FILE_SIZE = 3 * 1024 * 1024 // 3 MB
+const attachmentInput = ref<File[]>([])
+const attachments = ref<File[]>([])
+
 const form = ref({
   receive_date: new Date().toISOString().slice(0, 10),
   po_id: null as number | string | null,
@@ -72,6 +76,61 @@ const form = ref({
 
 const items = ref<GrItem[]>([])
 
+const formatFileSize = (size: number): string => {
+  if (!size) return '0 KB'
+
+  const units = ['B', 'KB', 'MB', 'GB']
+  let fileSize = size
+  let unitIndex = 0
+
+  while (fileSize >= 1024 && unitIndex < units.length - 1) {
+    fileSize /= 1024
+    unitIndex++
+  }
+
+  return `${fileSize.toFixed(2)} ${units[unitIndex]}`
+}
+
+const removeAttachment = (index: number): void => {
+  attachments.value.splice(index, 1)
+}
+
+const handleAttachmentChange = (files: File[] | File | null): void => {
+  if (!files) return
+
+  const selectedFiles = Array.isArray(files) ? files : [files]
+  const validFiles: File[] = []
+
+  selectedFiles.forEach(file => {
+    const isValidType =
+      file.type === 'application/pdf'
+      || file.type.startsWith('image/')
+
+    if (!isValidType) {
+      showErrorToast({
+        title: 'Format File Tidak Valid',
+        text: `${file.name} hanya boleh PDF atau gambar.`,
+      })
+
+      return
+    }
+
+    if (file.size > MAX_FILE_SIZE) {
+      showErrorToast({
+        title: 'Ukuran File Terlalu Besar',
+        text: `${file.name} melebihi batas maksimal 3 MB.`,
+      })
+
+      return
+    }
+
+    validFiles.push(file)
+  })
+
+  attachments.value.push(...validFiles)
+
+  attachmentInput.value = []
+}
 
 const totalReceiveQty = computed(() => {
   return items.value.reduce((sum, item) => sum + Number(item.receive_qty || 0), 0)
@@ -257,7 +316,7 @@ const submit = async (): Promise<void> => {
 
   const confirm = await showConfirmAlert({
     title: 'Yakin Simpan?',
-    text: `Data akan disimpan sebagai DRAFT Goods Receipt.`,
+    text: 'Data akan disimpan sebagai DRAFT Goods Receipt.',
     confirmButtonText: 'Ya, simpan',
     cancelButtonText: 'Batal',
   })
@@ -269,24 +328,31 @@ const submit = async (): Promise<void> => {
   try {
     showLoadingAlert('Menyimpan data...', 'Mohon tunggu sebentar')
 
-    const payload = {
-        purchase_order_public_id: form.value.po_id,
-        tanggal_gr: form.value.receive_date,
-        nomor_surat_jalan: form.value.delivery_note_no,
-        created_by: form.value.created_by,
-        notes: form.value.notes,
+    const payload = new FormData()
 
-        items: items.value
-            .filter(item => Number(item.receive_qty || 0) > 0)
-            .map(item => ({
-                purchase_order_item_public_id: item.po_item_id,
-                qty_receive: Number(item.receive_qty || 0),
-                notes: item.notes ?? '',
-            })),
-    }
+    payload.append('purchase_order_public_id', String(form.value.po_id ?? ''))
+    payload.append('tanggal_gr', String(form.value.receive_date ?? ''))
+    payload.append('nomor_surat_jalan', String(form.value.delivery_note_no ?? ''))
+    payload.append('created_by', String(form.value.created_by ?? ''))
+    payload.append('notes', String(form.value.notes ?? ''))
+
+    items.value
+      .filter(item => Number(item.receive_qty || 0) > 0)
+      .forEach((item, index) => {
+        payload.append(`items[${index}][purchase_order_item_public_id]`, String(item.po_item_id))
+        payload.append(`items[${index}][qty_receive]`, String(item.receive_qty || 0))
+        payload.append(`items[${index}][notes]`, String(item.notes ?? ''))
+      })
+
+    attachments.value.forEach((file, index) => {
+      payload.append(`attachments[${index}]`, file)
+    })
 
     await axios.post('/transaction/goods-receive', payload, {
-      headers: { Accept: 'application/json' },
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'multipart/form-data',
+      },
     })
 
     closeAlert()
@@ -297,9 +363,10 @@ const submit = async (): Promise<void> => {
     })
   } catch (error: any) {
     closeAlert()
+
     const err = error as AxiosErrorShape
 
-    console.error('[Vendor] SAVE ERROR:', err)
+    console.error('[Goods Receipt] SAVE ERROR:', err)
 
     if (err?.response?.status === 401) {
       showErrorToast({
@@ -317,7 +384,7 @@ const submit = async (): Promise<void> => {
 
     showErrorToast({
       title: 'Error',
-      text: err?.response?.data?.message || 'Goods Receive gagal disimpan',
+      text: err?.response?.data?.message || 'Goods Receipt gagal disimpan',
     })
   } finally {
     submitLoading.value = false
@@ -370,123 +437,255 @@ onMounted(async () => {
 
             <VCol cols="12">
                 <VCard class="rounded-lg">
-                <VCardText>
-                    <VRow>
-                    <VCol cols="12" md="4">
-                        <AppDateTimePicker
-                        v-model="form.receive_date"
-                        label="Tanggal Receive"
-                        placeholder="Pilih tanggal receive"
-                        :config="{ dateFormat: 'Y-m-d' }"
-                        />
-                    </VCol>
+                  <VCardText>
+                      <VRow>
+                        <VCol cols="12" md="4">
+                            <AppDateTimePicker
+                            v-model="form.receive_date"
+                            label="Tanggal Receive"
+                            placeholder="Pilih tanggal receive"
+                            :config="{ dateFormat: 'Y-m-d' }"
+                            />
+                        </VCol>
 
-                    <VCol cols="12" md="4">
-                        <VAutocomplete
-                            v-model="selectedPo"
-                            :items="poOptions"
-                            :loading="poLoading"
-                            item-title="title"
-                            item-value="public_id"
-                            label="Purchase Order"
-                            placeholder="Pilih Purchase Order"
-                            clearable
-                            density="compact"
-                            no-data-text="Purchase Order tidak ditemukan"
-                            @click:control="fetchPoOptions()"
-                        >
-                            <template #item="{ props, item }">
-                            <VListItem v-bind="props">
-                                <VListItemSubtitle>
-                                {{ item.raw.subtitle }}
-                                </VListItemSubtitle>
-                            </VListItem>
-                            </template>
-
-                            <template #append-inner>
-                            <VTooltip
-                                v-if="!poLoading && poOptions.length === 0"
-                                text="Reload data Purchase Order"
-                                location="top"
+                        <VCol cols="12" md="4">
+                            <VAutocomplete
+                                v-model="selectedPo"
+                                :items="poOptions"
+                                :loading="poLoading"
+                                item-title="title"
+                                item-value="public_id"
+                                label="Purchase Order"
+                                placeholder="Pilih Purchase Order"
+                                clearable
+                                density="compact"
+                                no-data-text="Purchase Order tidak ditemukan"
+                                @click:control="fetchPoOptions()"
                             >
-                                <template #activator="{ props }">
-                                <VBtn
-                                    v-bind="props"
-                                    icon
-                                    size="x-small"
-                                    variant="text"
-                                    color="primary"
-                                    @click.stop.prevent="fetchPoOptions(true)"
-                                >
-                                    <VIcon icon="tabler-refresh" />
-                                </VBtn>
+                                <template #item="{ props, item }">
+                                <VListItem v-bind="props">
+                                    <VListItemSubtitle>
+                                    {{ item.raw.subtitle }}
+                                    </VListItemSubtitle>
+                                </VListItem>
                                 </template>
-                            </VTooltip>
-                            </template>
-                        </VAutocomplete>
-                    </VCol>
 
-                    <VCol cols="12" md="4">
-                        <VTextField
-                        v-model="form.delivery_note_no"
-                        label="No Surat Jalan"
-                        placeholder="Masukkan nomor surat jalan"
-                        density="compact"
-                        />
-                    </VCol>
+                                <template #append-inner>
+                                <VTooltip
+                                    v-if="!poLoading && poOptions.length === 0"
+                                    text="Reload data Purchase Order"
+                                    location="top"
+                                >
+                                    <template #activator="{ props }">
+                                    <VBtn
+                                        v-bind="props"
+                                        icon
+                                        size="x-small"
+                                        variant="text"
+                                        color="primary"
+                                        @click.stop.prevent="fetchPoOptions(true)"
+                                    >
+                                        <VIcon icon="tabler-refresh" />
+                                    </VBtn>
+                                    </template>
+                                </VTooltip>
+                                </template>
+                            </VAutocomplete>
+                        </VCol>
 
-                    <VCol cols="12" md="4">
-                        <VTextField
-                        v-model="form.vendor_name"
-                        label="Vendor"
-                        readonly
-                        density="compact"
-                        />
-                    </VCol>
+                        <!-- <VCol cols="12" md="4">
+                            <VTextField
+                            v-model="form.delivery_note_no"
+                            label="No Surat Jalan"
+                            placeholder="Masukkan nomor surat jalan"
+                            density="compact"
+                            />
+                        </VCol> -->
 
-                    <VCol cols="12" md="4">
-                        <VTextField
-                        v-model="form.cabang_name"
-                        label="Cabang"
-                        readonly
-                        density="compact"
-                        />
-                    </VCol>
+                        <VCol cols="12" md="4">
+                            <VTextField
+                            v-model="form.vendor_name"
+                            label="Vendor"
+                            readonly
+                            density="compact"
+                            />
+                        </VCol>
 
-                    <VCol cols="12" md="4">
-                        <VTextField
-                        v-model="form.department_name"
-                        label="Department"
-                        readonly
-                        density="compact"
-                        />
-                    </VCol>
+                        <VCol cols="12" md="4">
+                            <VTextField
+                            v-model="form.cabang_name"
+                            label="Cabang"
+                            readonly
+                            density="compact"
+                            />
+                        </VCol>
 
-                    <VCol cols="12" md="4">
-                        <VTextField
-                        v-model="form.created_by"
-                        label="Diterima Oleh"
-                        readonly
-                        placeholder="Nama penerima barang"
-                        density="compact"
-                        prepend-inner-icon="tabler-user"
-                        />
-                    </VCol>
+                        <VCol cols="12" md="4">
+                            <VTextField
+                            v-model="form.department_name"
+                            label="Department"
+                            readonly
+                            density="compact"
+                            />
+                        </VCol>
 
-                    <VCol cols="12" md="8">
-                        <VTextarea
-                        v-model="form.notes"
-                        label="Catatan"
-                        placeholder="Catatan penerimaan barang"
-                        rows="2"
-                        density="compact"
-                        />
-                    </VCol>
-                    </VRow>
-                </VCardText>
+                        <VCol cols="12" md="4">
+                            <VTextField
+                            v-model="form.created_by"
+                            label="Diterima Oleh"
+                            readonly
+                            placeholder="Nama penerima barang"
+                            density="compact"
+                            prepend-inner-icon="tabler-user"
+                            />
+                        </VCol>
+
+                        <VCol cols="12" md="12">
+                            <VTextarea
+                            v-model="form.notes"
+                            label="Catatan"
+                            placeholder="Catatan penerimaan barang"
+                            rows="2"
+                            density="compact"
+                            />
+                        </VCol>
+                      </VRow>
+                  </VCardText>
                 </VCard>
             </VCol>
 
+            <VCol>
+              <VCard
+                elevation="2"
+              >
+                <VCardText class="pa-6">
+                  <div class="d-flex flex-wrap align-center justify-space-between gap-4 mb-4">
+                    <div>
+                      <h3 class="text-h6 font-weight-bold mb-1">
+                        Lampiran
+                      </h3>
+
+                      <div class="text-body-2 text-medium-emphasis">
+                        Upload dokumen pendukung seperti Surat Jalan, Delivery Order, atau Foto Barang.
+                      </div>
+                    </div>
+
+                    <VChip
+                      color="primary"
+                      variant="tonal"
+                      prepend-icon="tabler-paperclip"
+                    >
+                      {{ attachments.length }} File
+                    </VChip>
+                  </div>
+
+                  <VFileInput
+                    v-model="attachmentInput"
+                    multiple
+                    show-size
+                    clearable
+                    density="comfortable"
+                    variant="outlined"
+                    prepend-icon=""
+                    prepend-inner-icon="tabler-upload"
+                    label="Upload Lampiran"
+                    placeholder="Pilih file PDF atau gambar"
+                    accept="application/pdf,image/*"
+                    @update:model-value="handleAttachmentChange"
+                  />
+
+                  <VAlert
+                    type="info"
+                    variant="tonal"
+                    class="mt-3"
+                  >
+                    Format yang diperbolehkan: PDF, JPG, JPEG, PNG.
+                    Maksimal ukuran file 3 MB per file.
+                  </VAlert>
+
+                  <VAlert
+                    v-if="!attachments.length"
+                    type="info"
+                    variant="tonal"
+                    class="mt-4"
+                  >
+                    Belum ada file yang diupload.
+                  </VAlert>
+
+                  <VTable
+                    v-else
+                    class="mt-4"
+                  >
+                    <thead>
+                      <tr>
+                        <th width="60">
+                          No
+                        </th>
+
+                        <th>
+                          Nama File
+                        </th>
+
+                        <th width="160">
+                          Ukuran
+                        </th>
+
+                        <th width="120">
+                          Tipe
+                        </th>
+
+                        <th width="100">
+                          Aksi
+                        </th>
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      <tr
+                        v-for="(file, index) in attachments"
+                        :key="`${file.name}-${index}`"
+                      >
+                        <td>
+                          {{ index + 1 }}
+                        </td>
+
+                        <td>
+                          <div class="d-flex align-center">
+                            <VIcon
+                              icon="tabler-file"
+                              size="18"
+                              class="me-2"
+                            />
+
+                            <span>{{ file.name }}</span>
+                          </div>
+                        </td>
+
+                        <td>
+                          {{ formatFileSize(file.size) }}
+                        </td>
+
+                        <td>
+                          {{ file.type || '-' }}
+                        </td>
+
+                        <td>
+                          <VBtn
+                            icon
+                            size="small"
+                            color="error"
+                            variant="text"
+                            @click="removeAttachment(index)"
+                          >
+                            <VIcon icon="tabler-trash" />
+                          </VBtn>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </VTable>
+                </VCardText>
+              </VCard>
+            </VCol>
             <VCol cols="12">
                 <VCard class="rounded-lg">
                 <VCardText>

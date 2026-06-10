@@ -104,6 +104,16 @@ class PurchaseOrder extends Model
         return $this->hasMany(GoodsReceive::class);
     }
 
+    public function creator()
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function requesterSigner()
+    {
+        return $this->belongsTo(User::class, 'requester_signed_by');
+    }
+
     public const STATUS_RECEIVE_OPEN = 'OPEN';
     public const STATUS_RECEIVE_PARTIAL = 'PARTIAL RECEIVED';
     public const STATUS_RECEIVE_FULL = 'FULL RECEIVED';

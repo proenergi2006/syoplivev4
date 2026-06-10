@@ -24,6 +24,10 @@ class GoodsReceivePostingService
                 throw new Exception('Goods Receive hanya dapat diposting jika status masih DRAFT.');
             }
 
+            if (str_starts_with((string) $gr->nomor_gr, 'DRAFT/')) {
+                $gr->nomor_gr = generateGRNumber($gr);
+            }
+
             foreach ($gr->items as $grItem) {
                 $poItem = PurchaseOrderItem::where('id', $grItem->purchase_order_item_id)
                     ->lockForUpdate()
@@ -64,7 +68,12 @@ class GoodsReceivePostingService
             $gr->posted_at = now();
             $gr->save();
 
-            $this->syncPurchaseOrderReceiveStatus($gr->purchaseOrder);
+            $po = PurchaseOrder::query()
+                ->where('id', $gr->purchase_order_id)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $this->syncPurchaseOrderReceiveStatus($po);
         });
     }
 
@@ -91,19 +100,34 @@ class GoodsReceivePostingService
 
     private function syncPurchaseOrderReceiveStatus(PurchaseOrder $po): void
     {
-        $po->loadMissing('items');
+        $po->load('items');
 
-        $totalQtyPo = $po->items->sum(fn($item) => (float) ($item->qty ?? 0));
-        $totalQtyReceived = $po->items->sum(fn($item) => (float) ($item->qty_received ?? 0));
+        $items = $po->items;
 
-        if ($totalQtyReceived <= 0) {
+        if ($items->isEmpty()) {
             $po->status_receive = 'OPEN';
-        } elseif ($totalQtyReceived < $totalQtyPo) {
-            $po->status_receive = 'PARTIAL RECEIVED';
-        } else {
-            $po->status_receive = 'FULL RECEIVED';
+            $po->save();
+
+            return;
         }
 
+        $totalQtyPo = $items->sum(function ($item) {
+            return (float) ($item->qty ?? 0);
+        });
+
+        $totalQtyReceived = $items->sum(function ($item) {
+            return (float) ($item->qty_received ?? 0);
+        });
+
+        if ($totalQtyReceived <= 0) {
+            $statusReceive = 'OPEN';
+        } elseif ($totalQtyReceived < $totalQtyPo) {
+            $statusReceive = 'PARTIAL';
+        } else {
+            $statusReceive = 'COMPLETED';
+        }
+
+        $po->status_receive = $statusReceive;
         $po->save();
     }
 }

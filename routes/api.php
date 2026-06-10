@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\AccurateController;
 use App\Http\Controllers\Api\GoodsReceiveController;
+use App\Http\Controllers\Api\Master\ApprovalFlowController;
 use App\Http\Controllers\Api\MenuController;
 use App\Http\Controllers\Api\Master\WilayahController;
 use App\Http\Controllers\Api\Master\CabangController;
@@ -70,6 +71,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/check-signature', [UserController::class, 'checkUserSignature']);
         Route::post('/store-signature', [UserController::class, 'storeUserSignature']);
     });
+
+    Route::get('master/dropdown/users', [UserController::class, 'dropdown']);
+    Route::get('master/dropdown/roles', [RoleController::class, 'dropdown']);
+
     Route::apiResource('master/users', UserController::class);
     Route::apiResource('master/roles', RoleController::class);
 
@@ -144,6 +149,12 @@ Route::middleware('auth:sanctum')->group(function () {
             'department',
             DepartmentController::class
         );
+
+        // Approval Flow
+        Route::put('/approval-flows/{publicId}', [ApprovalFlowController::class, 'update']);
+        Route::get('/approval-flows', [ApprovalFlowController::class, 'index']);
+        Route::patch('/approval-flows/{publicId}/toggle-status', [ApprovalFlowController::class, 'toggleStatus']);
+        Route::delete('/approval-flows/{publicId}', [ApprovalFlowController::class, 'destroy']);
     });
 
     Route::prefix('transaction')->name('transaction.')->group(function () {

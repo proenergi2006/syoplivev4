@@ -1060,9 +1060,9 @@ class MasterVendorController extends Controller
                 ->where('is_active', true)
                 ->orderBy('nama_vendor', 'ASC');
 
-            if ($request->filled('id_department')) {
-                $query->where('id_department', (int) $request->id_department);
-            }
+            // if ($request->filled('id_department')) {
+            //     $query->where('id_department', (int) $request->id_department);
+            // }
 
             if ($request->search) {
                 $search = $request->search;
@@ -1181,9 +1181,9 @@ class MasterVendorController extends Controller
                 ->where('status_approval', 'APPROVED')
                 ->orderBy('nama_vendor', 'ASC');
 
-            if ($request->filled('id_department')) {
-                $query->where('id_department', (int) $request->id_department);
-            }
+            // if ($request->filled('id_department')) {
+            //     $query->where('id_department', (int) $request->id_department);
+            // }
 
             if ($request->search) {
                 $search = $request->search;

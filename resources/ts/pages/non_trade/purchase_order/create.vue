@@ -75,9 +75,12 @@ interface PurchaseOrderItem {
   qty_po_existing: number
   qty_outstanding: number
   qty: number
+  satuan_id: number
   satuan: string
+  keterangan: string
   harga_unit: number
   subtotal: number
+  is_selected: boolean
 }
 
 const router = useRouter()
@@ -132,8 +135,14 @@ const isVendorPKP = computed(() => {
   return String(selectedVendorStatusPKP.value).toUpperCase() === 'PKP'
 })
 
+const selectedPOItems = computed(() => {
+  return poItems.value.filter(item => item.is_selected !== false)
+})
+
 const subtotal = computed(() => {
-  return poItems.value.reduce((total, item) => total + Number(item.subtotal || 0), 0)
+  return selectedPOItems.value.reduce((total, item) => {
+    return total + (Number(item.qty || 0) * Number(item.harga_unit || 0))
+  }, 0)
 })
 
 const dpp = computed(() => {
@@ -416,7 +425,35 @@ const showLessAttachments = (pr: PurchaseRequestOption): void => {
   visibleAttachmentMap.value[pr.id] = 1
 }
 
+const togglePOItemSelection = (item: PurchaseOrderItem): void => {
+  const isSelected = item.is_selected !== false
+
+  if (!isSelected) {
+    item.subtotal = 0
+    return
+  }
+
+  const qty = Number(item.qty || 0)
+  const harga = Number(item.harga_unit || 0)
+
+  item.subtotal = qty * harga
+}
+
 const handleSelectPurchaseRequest = (): void => {
+  const previousItemStateMap = new Map<number, {
+    is_selected: boolean
+    qty: number
+    subtotal: number
+  }>()
+
+  poItems.value.forEach(item => {
+    previousItemStateMap.set(Number(item.purchase_request_item_id), {
+      is_selected: item.is_selected !== false,
+      qty: Number(item.qty || 0),
+      subtotal: Number(item.subtotal || 0),
+    })
+  })
+
   const selectedPRs = purchaseRequestList.value.filter(pr =>
     form.purchase_request_ids.includes(pr.id),
   )
@@ -425,21 +462,35 @@ const handleSelectPurchaseRequest = (): void => {
     (pr.items || [])
       .filter((item: any) => Number(item.qty_outstanding ?? item.qty ?? 0) > 0)
       .map((item: any) => {
+        const purchaseRequestItemId = Number(item.id)
         const qtyOutstanding = Number(item.qty_outstanding ?? item.qty ?? 0)
         const hargaUnit = Number(item.harga_unit || 0)
 
+        const previousState = previousItemStateMap.get(purchaseRequestItemId)
+
+        const qty = previousState
+          ? Number(previousState.qty || 0)
+          : qtyOutstanding
+
+        const isSelected = previousState
+          ? previousState.is_selected !== false
+          : true
+
         return {
           purchase_request_id: pr.id,
-          purchase_request_item_id: Number(item.id),
+          purchase_request_item_id: purchaseRequestItemId,
           nomor_pr: pr.nomor_pr,
           nama_item: item.nama_item || '-',
+          is_selected: isSelected,
           qty_pr: Number(item.qty || 0),
           qty_po_existing: Number(item.qty_po || 0),
           qty_outstanding: qtyOutstanding,
-          qty: qtyOutstanding,
+          qty,
+          satuan_id: Number(item.satuan_id ?? item.satuan?.id ?? 0),
           satuan: item.satuan?.nama || item.satuan || '-',
+          keterangan: item.keterangan || '-',
           harga_unit: hargaUnit,
-          subtotal: qtyOutstanding * hargaUnit,
+          subtotal: isSelected ? qty * hargaUnit : 0,
         }
       }),
   )
@@ -473,6 +524,7 @@ const handlePOQtyInput = (value: string | number, index: number): void => {
 
 const confirmCancel = async (): Promise<void> => {
   const confirm = await showConfirmAlert({
+    icon: 'question',
     title: 'Batalkan?',
     text: 'Data yang sudah diisi akan hilang.',
     confirmButtonText: 'Ya, batal',
@@ -518,7 +570,53 @@ const validateForm = async (): Promise<boolean> => {
     return false
   }
 
-  const invalidItemIndex = poItems.value.findIndex(item =>
+  if (!selectedPOItems.value.length) {
+    showWarningToast({
+      title: 'Warning',
+      text: 'Pilih minimal satu item Purchase Order.',
+    })
+
+    return false
+  }
+
+  const selectedPurchaseRequestsWithoutItem = purchaseRequestList.value.filter(pr => {
+  const isPrSelected = form.purchase_request_ids.includes(Number(pr.id))
+
+  if (!isPrSelected) return false
+
+  const hasSelectedItem = poItems.value.some(item => {
+    return Number(item.purchase_request_id) === Number(pr.id)
+        && item.is_selected !== false
+    })
+
+    return !hasSelectedItem
+  })
+
+  if (selectedPurchaseRequestsWithoutItem.length > 0) {
+    const nomorPrList = selectedPurchaseRequestsWithoutItem
+      .map(pr => pr.nomor_pr || '-')
+      .join(', ')
+
+    showWarningToast({
+      title: 'Warning',
+      text: `Setiap PR yang dipilih wajib memiliki minimal 1 item PO. PR tanpa item: ${nomorPrList}`,
+    })
+
+    return false
+  }
+
+  for (const item of selectedPOItems.value) {
+    if (!Number(item.satuan_id || 0)) {
+      showErrorToast({
+        title: 'Satuan tidak valid',
+        text: `Satuan untuk item ${item.nama_item} belum memiliki ID satuan.`,
+      })
+
+      return false
+    }
+  }
+
+  const invalidItemIndex = selectedPOItems.value.findIndex(item =>
     !item.purchase_request_id
     || !item.purchase_request_item_id
     || !item.qty
@@ -530,7 +628,7 @@ const validateForm = async (): Promise<boolean> => {
   )
 
   if (invalidItemIndex !== -1) {
-    const item = poItems.value[invalidItemIndex]
+    const item = selectedPOItems.value[invalidItemIndex]
 
     showWarningToast({
       title: 'Warning',
@@ -540,7 +638,7 @@ const validateForm = async (): Promise<boolean> => {
     return false
   }
 
-  const itemIds = poItems.value.map(item => Number(item.purchase_request_item_id))
+  const itemIds = selectedPOItems.value.map(item => Number(item.purchase_request_item_id))
   const uniqueItemIds = new Set(itemIds)
 
   if (itemIds.length !== uniqueItemIds.size) {
@@ -556,7 +654,7 @@ const validateForm = async (): Promise<boolean> => {
 }
 
 const buildPayload = () => {
-  const items = poItems.value.map(item => {
+  const items = selectedPOItems.value.map(item => {
     const qty = Number(item.qty || 0)
     const hargaUnit = Number(item.harga_unit || 0)
 
@@ -566,7 +664,8 @@ const buildPayload = () => {
 
       nama_item: item.nama_item,
       qty,
-      satuan: item.satuan,
+      satuan: Number(item.satuan_id || 0),
+      keterangan: item.keterangan,
       harga_unit: hargaUnit,
       subtotal: qty * hargaUnit,
 
@@ -610,6 +709,7 @@ const savePurchaseOrder = async (): Promise<void> => {
   if (!isValid) return
 
   const confirm = await showConfirmAlert({
+    icon: 'question',
     title: 'Simpan Purchase Order?',
     text: 'Pastikan data purchase order sudah benar.',
     confirmButtonText: 'Ya, simpan',
@@ -692,6 +792,16 @@ onMounted(async () => {
       <VCardText>
         <VRow>
           <VCol cols="12" md="6">
+            <AppDateTimePicker
+              v-model="form.tanggal_po"
+              label="Tanggal PO *"
+              placeholder="Pilih tanggal PO"
+              :config="{ dateFormat: 'Y-m-d' }"
+              :error="isSubmitted && !form.tanggal_po"
+              :error-messages="isSubmitted && !form.tanggal_po ? ['Tanggal PO wajib diisi'] : []"
+            />
+          </VCol>
+          <!-- <VCol cols="12" md="6">
             <div class="position-relative">
               <VTextField
                 :model-value="tanggalPO.displayValue.value"
@@ -717,7 +827,7 @@ onMounted(async () => {
                 @change="tanggalPO.onDateChange"
               >
             </div>
-          </VCol>
+          </VCol> -->
 
           <VCol cols="12" md="6"></VCol>
 
@@ -1027,7 +1137,7 @@ onMounted(async () => {
                       color="primary"
                       variant="tonal"
                     >
-                      {{ group.items.length }} Item
+                      {{ group.items.filter((item: any) => item.is_selected !== false).length }} / {{ group.items.length }} Item
                     </VChip>
                   </div>
 
@@ -1035,6 +1145,7 @@ onMounted(async () => {
                     <VTable class="po-item-table">
                       <thead>
                         <tr>
+                          <th class="text-center col-check">Pilih</th>
                           <th class="col-item">Nama Item</th>
                           <th class="text-center col-qty">Qty PR</th>
                           <th class="text-center col-qty">Qty Sudah PO</th>
@@ -1050,7 +1161,18 @@ onMounted(async () => {
                         <tr
                           v-for="item in group.items"
                           :key="`${item.purchase_request_item_id}`"
+                          :class="{ 'po-item-row-disabled': item.is_selected === false }"
                         >
+                          <td class="text-center col-check">
+                            <VCheckbox
+                              v-model="item.is_selected"
+                              density="compact"
+                              hide-details
+                              color="primary"
+                              @update:model-value="togglePOItemSelection(item)"
+                            />
+                          </td>
+
                           <td class="col-item">
                             <div class="item-name">
                               {{ toTitleCase(item.nama_item) || '-' }}
@@ -1084,8 +1206,9 @@ onMounted(async () => {
                               hide-details="auto"
                               variant="outlined"
                               class="qty-po-field"
-                              :error="isSubmitted && (!item.qty || Number(item.qty) <= 0 || Number(item.qty) > Number(item.qty_outstanding))"
-                              :error-messages="isSubmitted && (!item.qty || Number(item.qty) <= 0 || Number(item.qty) > Number(item.qty_outstanding))
+                              :disabled="item.is_selected === false"
+                              :error="item.is_selected !== false && isSubmitted && (!item.qty || Number(item.qty) <= 0 || Number(item.qty) > Number(item.qty_outstanding))"
+                              :error-messages="item.is_selected !== false && isSubmitted && (!item.qty || Number(item.qty) <= 0 || Number(item.qty) > Number(item.qty_outstanding))
                                 ? [`Max ${formatDecimalQty(item.qty_outstanding)}`]
                                 : []"
                               @update:model-value="value => handlePOQtyInput(value, poItems.findIndex(row => row.purchase_request_item_id === item.purchase_request_item_id))"
@@ -1101,7 +1224,16 @@ onMounted(async () => {
                           </td>
 
                           <td class="text-end font-weight-bold">
-                            Rp {{ formatNumberWithoutRp(item.subtotal) }}
+                            <span v-if="item.is_selected !== false">
+                              Rp {{ formatNumberWithoutRp(item.subtotal) }}
+                            </span>
+
+                            <span
+                              v-else
+                              class="text-disabled"
+                            >
+                              Tidak dipilih
+                            </span>
                           </td>
                         </tr>
                       </tbody>
@@ -1438,5 +1570,19 @@ onMounted(async () => {
   .po-item-table .col-money {
     width: 135px;
   }
+}
+
+.col-check {
+  width: 72px;
+  min-width: 72px;
+}
+
+.po-item-row-disabled {
+  opacity: 0.55;
+  background-color: rgba(var(--v-theme-surface-variant), 0.25);
+}
+
+.po-item-row-disabled .item-name {
+  text-decoration: line-through;
 }
 </style>

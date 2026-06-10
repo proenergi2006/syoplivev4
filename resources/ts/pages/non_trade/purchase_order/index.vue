@@ -18,6 +18,21 @@ import { useNativeDatePicker } from '@core/composable/useNativeDatePicker'
 import { useDeleteConfirm } from '@core/composable/useDeleteConfirm'
 import { formatDate, formatStatusPKP, formatNumberWithoutRp, toTitleCase, formatDecimalQty } from '@/utils/textFormatter'
 import { usePolling } from '@core/composable/usePolling'
+import ApprovalHistoryDialog from '@core/components/ApprovalHistoryPODialog.vue'
+
+interface ApprovalHistoryItem {
+  id?: number
+  step_order: number | string
+  label?: string | null
+  approver_type?: string | null
+  approver_id?: number | string | null
+  approver_name_snapshot?: string | null
+  status?: string | null
+  approved_at?: string | null
+  rejected_at?: string | null
+  signed_at?: string | null
+  notes?: string | null
+}
 
 interface PurchaseOrderItem {
   id: number
@@ -31,7 +46,8 @@ interface PurchaseOrderItem {
   top: number | null
   total_nilai: number | null
   status: string | null
-  can_approve: string | null
+  can_approve: boolean | number | string | null
+  status_receive: string | null
 }
 
 interface PurchaseOrderApiResponse {
@@ -61,11 +77,6 @@ const router = useRouter()
 
 const loading = ref(false)
 const rows = ref<PurchaseOrderItem[]>([])
-
-// Notifications
-const notifications = ref<any[]>([])
-const unreadNotificationCount = ref(0)
-const notificationLoading = ref(false)
 
 // Signature Pad
 const signatureDialog = ref(false)
@@ -114,6 +125,51 @@ const detailItemPage = ref(1)
 const detailItemPerPage = ref<number | 'ALL'>(10)
 
 const currentUser = ref<any | null>(null)
+
+const isApprovalHistoryDialogOpen = ref(false)
+const selectedApprovalHistory = ref<ApprovalHistoryItem[]>([])
+const selectedPONomor = ref('-')
+
+const canApprovePO = (row: PurchaseOrderItem): boolean => {
+  const status = String(row.status || '').toUpperCase()
+
+  const canApprove = row.can_approve === true
+    || row.can_approve === 1
+    || row.can_approve === '1'
+    || String(row.can_approve).toLowerCase() === 'true'
+
+  return status === 'IN PROGRESS' && canApprove
+}
+
+const openApprovalHistory = async (item: any): Promise<void> => {
+  try {
+    showLoadingAlert('Memuat history approval...', 'Mohon tunggu sebentar')
+
+    const res = await axios.get(`/transaction/purchase-order/${encodeURIComponent(item.public_id)}`, {
+      headers: {
+        Accept: 'application/json',
+      },
+    })
+
+    closeAlert()
+
+    const data = res.data?.data ?? {}
+
+    selectedPONomor.value = data.nomor_po ?? item.nomor_po ?? '-'
+    selectedApprovalHistory.value = Array.isArray(data.approvals)
+      ? data.approvals
+      : []
+
+    isApprovalHistoryDialogOpen.value = true
+  } catch (error: unknown) {
+    closeAlert()
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(error, 'Gagal memuat history approval'),
+    })
+  }
+}
 
 const visibleRelatedPurchaseRequests = computed(() => {
   const list = detailPurchaseOrder.value?.purchase_requests || []
@@ -189,6 +245,18 @@ const formatStatus = (status: string | null): string => {
   return status
 }
 
+const formatStatusReceive = (status: string | null): string => {
+  if (!status) return '-'
+
+  const normalized = String(status).toLowerCase()
+
+  if (normalized === 'open') return 'Open'
+  if (normalized === 'partial') return 'Partial'
+  if (normalized === 'completed') return 'Completed'
+
+  return status
+}
+
 const getStatusColor = (status: string | null): string => {
   const normalized = String(status || '').toLowerCase()
 
@@ -196,6 +264,16 @@ const getStatusColor = (status: string | null): string => {
   if (normalized === 'in progress') return 'warning'
   if (normalized === 'approved') return 'success'
   if (normalized === 'rejected') return 'error'
+
+  return 'secondary'
+}
+
+const getStatusReceiveColor = (status: string | null): string => {
+  const normalized = String(status || '').toLowerCase()
+
+  if (normalized === 'open') return 'info'
+  if (normalized === 'partial') return 'warning'
+  if (normalized === 'completed') return 'success'
 
   return 'secondary'
 }
@@ -574,7 +652,7 @@ const goToEdit = (publicId: string): void => {
 
 const { openDeleteConfirm } = useDeleteConfirm()
 
-const openDelete = (row: any): void => {
+const openDelete = async (row: any): Promise<void> => {
   if (String(row.status || '').toUpperCase() !== 'DRAFT') {
     showErrorToast({
       title: 'Tidak dapat dihapus',
@@ -584,15 +662,53 @@ const openDelete = (row: any): void => {
     return
   }
 
-  openDeleteConfirm({
+  const confirm = await showConfirmAlert({
+    icon: 'question',
     title: 'Hapus Purchase Order?',
-    message: `Apakah Anda yakin ingin menghapus Purchase Order <strong>${row.nomor_po}</strong>?`,
-    loadingTitle: 'Menghapus Purchase Order...',
-    successText: `Purchase Order "${row.nomor_po}" berhasil dihapus`,
-    errorText: 'Gagal menghapus Purchase Order',
-    url: `/transaction/purchase-order/${encodeURIComponent(row.public_id)}`,
-    onSuccess: fetchPurchaseOrders,
+    html: `Apakah Anda yakin ingin menghapus Purchase Order <strong>${row.nomor_po}</strong>?`,
+    confirmButtonText: 'Ya, hapus',
+    cancelButtonText: 'Batal',
   })
+
+  if (!confirm.isConfirmed) return
+
+  try {
+    showLoadingAlert('Menghapus Purchase Order...', 'Mohon tunggu sebentar.')
+
+    const response = await axios.delete(
+      `/transaction/purchase-order/${encodeURIComponent(row.public_id)}`,
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+    )
+
+    closeAlert()
+
+    if (response.data?.success) {
+      showSuccessToast({
+        title: 'Berhasil',
+        text: `Purchase Order "${row.nomor_po}" berhasil dihapus`,
+      })
+
+      await fetchPurchaseOrders()
+
+      return
+    }
+
+    showErrorToast({
+      title: 'Gagal',
+      text: response.data?.message || 'Gagal menghapus Purchase Order',
+    })
+  } catch (error: any) {
+    closeAlert()
+
+    showErrorToast({
+      title: 'Gagal',
+      text: error.response?.data?.message || 'Gagal menghapus Purchase Order',
+    })
+  }
 }
 
 const submitPurchaseOrder = async (): Promise<void> => {
@@ -688,6 +804,8 @@ const approvePurchaseOrder = async (): Promise<void> => {
       title: 'Berhasil',
       text: response.data?.message || `Purchase Order "${target.nomor_po}" berhasil diapprove`,
     })
+
+    await fetchPurchaseOrders()
 
     approveNotes.value = ''
     selectedPo.value = null
@@ -807,61 +925,23 @@ onBeforeUnmount(() => {
           </VCol>
 
           <VCol cols="12" sm="3">
-            <div class="position-relative">
-              <VTextField
-                :model-value="tanggalMulaiPicker.displayValue.value"
-                label="Tanggal Awal"
-                placeholder="DD/MM/YYYY"
-                readonly
-                clearable
-                density="compact"
-                append-inner-icon="tabler-calendar"
-                @click="tanggalMulaiPicker.openPicker"
-                @click:append-inner="tanggalMulaiPicker.openPicker"
-                @click:clear="tanggalMulai = null"
-              />
-
-              <input
-                :ref="(el) => {
-                  tanggalMulaiPicker.nativeDateRef.value = el as HTMLInputElement | null
-                }"
-                type="date"
-                :value="tanggalMulai || ''"
-                class="native-date-hidden"
-                tabindex="-1"
-                aria-hidden="true"
-                @change="tanggalMulaiPicker.onDateChange"
-              >
-            </div>
+            <AppDateTimePicker
+              v-model="tanggalMulai"
+              label="Tanggal Awal"
+              density="compact"
+              clearable
+              :config="{ dateFormat: 'Y-m-d' }"
+            />
           </VCol>
 
           <VCol cols="12" sm="3">
-            <div class="position-relative">
-              <VTextField
-                :model-value="tanggalSelesaiPicker.displayValue.value"
-                label="Tanggal Akhir"
-                placeholder="DD/MM/YYYY"
-                readonly
-                clearable
-                density="compact"
-                append-inner-icon="tabler-calendar"
-                @click="tanggalSelesaiPicker.openPicker"
-                @click:append-inner="tanggalSelesaiPicker.openPicker"
-                @click:clear="tanggalSelesai = null"
-              />
-
-              <input
-                :ref="(el) => {
-                  tanggalSelesaiPicker.nativeDateRef.value = el as HTMLInputElement | null
-                }"
-                type="date"
-                :value="tanggalSelesai || ''"
-                class="native-date-hidden"
-                tabindex="-1"
-                aria-hidden="true"
-                @change="tanggalSelesaiPicker.onDateChange"
-              >
-            </div>
+            <AppDateTimePicker
+              v-model="tanggalSelesai"
+              label="Tanggal Akhir"
+              density="compact"
+              clearable
+              :config="{ dateFormat: 'Y-m-d' }"
+            />
           </VCol>
 
           <VCol cols="12" sm="3">
@@ -935,18 +1015,40 @@ onBeforeUnmount(() => {
             <th scope="col" class="text-center">Department</th>
             <th scope="col" class="text-right">Total</th>
             <th scope="col" class="text-center">Status Pengajuan</th>
+            <th scope="col" class="text-center">Status GR</th>
             <th scope="col" class="text-center" style="width: 5rem;">Actions</th>
           </tr>
         </thead>
 
         <tbody>
-          <tr v-for="(v, index) in rows" :key="v.id">
+          <tr v-for="(v, index) in rows" :key="v.id" :class="{
+            'po-row-need-approval': canApprovePO(v),
+          }">
             <td class="text-medium-emphasis text-center">
               {{ ((currentPage - 1) * rowPerPage) + Number(index) + 1 }}
             </td>
 
-            <td class="text-medium-emphasis text-center">
-              {{ v.nomor_po || '-' }}
+            <td>
+              <div class="d-flex flex-column gap-1 text-center">
+                <div class="font-weight-medium">
+                  {{ v.nomor_po || '-' }}
+                </div>
+
+                <VChip
+                  v-if="canApprovePO(v)"
+                  size="x-small"
+                  color="warning"
+                  variant="tonal"
+                  class="po-approval-chip"
+                >
+                  <VIcon
+                    icon="tabler-alert-circle"
+                    size="14"
+                    start
+                  />
+                  Menunggu Approval Anda
+                </VChip>
+              </div>
             </td>
 
             <td class="text-medium-emphasis text-center">
@@ -969,6 +1071,16 @@ onBeforeUnmount(() => {
                 {{ formatStatus(v.status) }}
               </VChip>
             </td>
+            
+            <td class="text-center">
+              <VChip
+                :color="getStatusReceiveColor(v.status_receive)"
+                size="small"
+                class="text-capitalize"
+              >
+                {{ formatStatusReceive(v.status_receive) }}
+              </VChip>
+            </td>
 
             <td class="text-center" style="width: 5rem;">
               <VBtn size="x-small" color="default" variant="plain" icon>
@@ -987,6 +1099,14 @@ onBeforeUnmount(() => {
                       <VListItemTitle>
                         Lihat Detail
                       </VListItemTitle>
+                    </VListItem>
+
+                    <VListItem @click="openApprovalHistory(v)">
+                      <template #prepend>
+                        <VIcon icon="tabler-git-merge" :size="20" class="me-3" />
+                      </template>
+
+                      <VListItemTitle>History Approval</VListItemTitle>
                     </VListItem>
 
                     <VListItem
@@ -1018,22 +1138,24 @@ onBeforeUnmount(() => {
                     </VListItem>
 
                     <VListItem
-                      v-if="String(v.status).toLowerCase() === 'in progress' && v.can_approve"
+                      v-if="canApprovePO(v)"
                       @click="openApprovePO(v)"
                     >
                       <template #prepend>
                         <VIcon
                           icon="tabler-circle-check"
                           :size="20"
-                          class="me-3"
+                          class="me-3 text-success"
                         />
                       </template>
 
-                      <VListItemTitle>Approve</VListItemTitle>
+                      <VListItemTitle class="text-success">
+                        Approve
+                      </VListItemTitle>
                     </VListItem>
 
                     <VListItem
-                      v-if="v.status === 'IN PROGRESS' && v.can_approve"
+                      v-if="canApprovePO(v)"
                       @click="openRejectPO(v)"
                     >
                       <template #prepend>
@@ -1175,7 +1297,7 @@ onBeforeUnmount(() => {
           <div v-if="detailPurchaseOrder">
             <VRow class="mb-5">
               <VCol cols="12" md="8">
-                <VCard class="h-100 rounded-xl po-info-card">
+                <VCard class="h-100 rounded-lg po-info-card">
                   <VCardText>
                     <div class="d-flex align-center justify-space-between flex-wrap gap-3 mb-4">
                       <div>
@@ -1201,14 +1323,14 @@ onBeforeUnmount(() => {
                       <VCol cols="12" md="6">
                         <div class="info-box">
                           <div class="info-label">Vendor</div>
-                          <div class="info-value">{{ detailPurchaseOrder.vendor || '-' }}</div>
+                          <div class="info-value">{{ detailPurchaseOrder.vendor_data?.nama_vendor || '-' }}</div>
                         </div>
                       </VCol>
 
                       <VCol cols="12" md="6">
                         <div class="info-box">
                           <div class="info-label">Status PKP</div>
-                          <div class="info-value">{{ formatStatusPKP(detailPurchaseOrder.status_pkp) }}</div>
+                          <div class="info-value">{{ formatStatusPKP(detailPurchaseOrder.vendor_data?.status_pkp) }}</div>
                         </div>
                       </VCol>
 
@@ -1233,12 +1355,69 @@ onBeforeUnmount(() => {
                         </div>
                       </VCol>
                     </VRow>
+                    <VRow class="mt-4">
+                      <VCol
+                        cols="12"
+                        md="6"
+                      >
+                        <div class="detail-info-box">
+                          <div class="text-caption text-medium-emphasis">
+                            Dibuat Oleh
+                          </div>
+                          <div class="text-subtitle-2 font-weight-bold">
+                            {{ detailPurchaseOrder?.created_by_name || '-' }}
+                          </div>
+                        </div>
+                      </VCol>
+
+                      <VCol
+                        cols="12"
+                        md="6"
+                      >
+                        <div class="detail-info-box">
+                          <div class="text-caption text-medium-emphasis">
+                            Dibuat Pada
+                          </div>
+                          <div class="text-subtitle-2 font-weight-bold">
+                            {{ detailPurchaseOrder?.created_at ? formatDate(detailPurchaseOrder.created_at) : '-' }}
+                          </div>
+                        </div>
+                      </VCol>
+
+                      <VCol
+                        cols="12"
+                        md="6"
+                      >
+                        <div class="detail-info-box">
+                          <div class="text-caption text-medium-emphasis">
+                            Disubmit Oleh
+                          </div>
+                          <div class="text-subtitle-2 font-weight-bold">
+                            {{ detailPurchaseOrder?.submitted_by_name || '-' }}
+                          </div>
+                        </div>
+                      </VCol>
+
+                      <VCol
+                        cols="12"
+                        md="6"
+                      >
+                        <div class="detail-info-box">
+                          <div class="text-caption text-medium-emphasis">
+                            Disubmit Pada
+                          </div>
+                          <div class="text-subtitle-2 font-weight-bold">
+                            {{ detailPurchaseOrder?.submitted_at ? formatDate(detailPurchaseOrder.submitted_at) : '-' }}
+                          </div>
+                        </div>
+                      </VCol>
+                    </VRow>
                   </VCardText>
                 </VCard>
               </VCol>
 
               <VCol cols="12" md="4">
-                <VCard class="h-100 rounded-xl total-card">
+                <VCard class="h-100 rounded-lg total-card">
                   <VCardText>
                     <div class="d-flex align-center justify-space-between mb-3">
                       <div class="text-caption text-medium-emphasis">
@@ -1275,7 +1454,7 @@ onBeforeUnmount(() => {
 
                             <div class="related-pr-meta">
                               <span>{{ formatDate(pr.tanggal_pr) }}</span>
-                              <span>Rp {{ formatNumberWithoutRp(pr.total_amount || 0) }}</span>
+                              <!-- <span>Rp {{ formatNumberWithoutRp(pr.total_amount || 0) }}</span> -->
                             </div>
                           </div>
                         </TransitionGroup>
@@ -1307,7 +1486,7 @@ onBeforeUnmount(() => {
               </VCol>
             </VRow>
 
-            <VCard flat class="rounded-xl">
+            <VCard flat class="rounded-lg">
               <VCardText>
                 <div class="d-flex align-center justify-space-between flex-wrap gap-3 mb-4">
                   <div class="text-subtitle-1 font-weight-bold">
@@ -1332,6 +1511,8 @@ onBeforeUnmount(() => {
                         <th class="col-item">Nama Item</th>
                         <th class="col-note">Keterangan</th>
                         <th class="text-center col-qty">Qty PO</th>
+                        <th class="text-center col-qty">Sudah GR</th>
+                        <th class="text-center col-qty">Sisa GR</th>
                         <th class="text-center col-unit">Satuan</th>
                         <th class="text-end col-money">Harga Unit</th>
                         <th class="text-end col-money">Subtotal</th>
@@ -1378,6 +1559,32 @@ onBeforeUnmount(() => {
                         </td>
 
                         <td class="text-center">
+                          <div class="qty-wrapper">
+                            <VChip
+                              size="default"
+                              color="info"
+                              variant="tonal"
+                              class="qty-chip"
+                            >
+                              {{ formatDecimalQty(item.qty_received || 0) }}
+                            </VChip>
+                          </div>
+                        </td>
+
+                        <td class="text-center">
+                          <div class="qty-wrapper">
+                            <VChip
+                              size="default"
+                              :color="Number(item.qty_outstanding_receive || 0) <= 0 ? 'success' : 'warning'"
+                              variant="tonal"
+                              class="qty-chip"
+                            >
+                              {{ formatDecimalQty(item.qty_outstanding_receive || 0) }}
+                            </VChip>
+                          </div>
+                        </td>
+
+                        <td class="text-center">
                           <VChip
                             size="small"
                             color="secondary"
@@ -1402,7 +1609,7 @@ onBeforeUnmount(() => {
 
                       <tr v-if="!detailItems.length">
                         <td
-                          colspan="7"
+                          colspan="9"
                           class="text-center text-medium-emphasis py-8"
                         >
                           Item belum tersedia.
@@ -1654,6 +1861,11 @@ onBeforeUnmount(() => {
         </VCardActions>
       </VCard>
     </VDialog>
+    <ApprovalHistoryDialog
+      v-model="isApprovalHistoryDialogOpen"
+      :nomor-po="selectedPONomor"
+      :approvals="selectedApprovalHistory"
+    />
   </section>
 </template>
 
@@ -1664,7 +1876,7 @@ onBeforeUnmount(() => {
 <style lang="scss" scoped>
 
 .po-detail-card {
-  border-radius: 20px !important;
+  border-radius: 10px !important;
 }
 
 .po-detail-header {

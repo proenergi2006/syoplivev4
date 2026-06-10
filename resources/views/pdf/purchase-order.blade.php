@@ -267,78 +267,202 @@
     <br>
 
     @php
-        $approvedSignatures = $po->approvals
-            ->where('status', 'APPROVED')
+        /*
+        |--------------------------------------------------------------------------
+        | Dynamic Signature Box
+        |--------------------------------------------------------------------------
+        | - Jika approval hanya 1, tampilan tetap seperti awal:
+        |   Dibuat oleh | Menyetujui
+        |
+        | - Jika approval lebih dari 1, header "Menyetujui" dibuat merge/colspan.
+        |--------------------------------------------------------------------------
+        */
+
+        $approvalSignatures = $po->approvals
             ->sortBy('step_order')
             ->values();
 
-        $firstApproval = $approvedSignatures->first();
+        $approvalCount = $approvalSignatures->count();
 
         $requesterSignature = $po->requester_signature_path
-        ? public_path('storage/' . $po->requester_signature_path)
-        : null;
+            ? public_path('storage/' . $po->requester_signature_path)
+            : null;
 
         $requesterSignatureExists = $requesterSignature && file_exists($requesterSignature);
 
-        $approverSignature = $firstApproval && $firstApproval->signature_path
-            ? public_path('storage/' . $firstApproval->signature_path)
-            : null;
+        $getApprovalSignaturePath = function ($approval) {
+            return $approval && $approval->signature_path
+                ? public_path('storage/' . $approval->signature_path)
+                : null;
+        };
 
-        $approverSignatureExists = $approverSignature && file_exists($approverSignature);
+        $getApprovalSignatureExists = function ($approval) use ($getApprovalSignaturePath) {
+            $path = $getApprovalSignaturePath($approval);
+
+            return $path && file_exists($path);
+        };
+
+        $getApprovalPlaceholder = function ($approval) {
+            $status = strtoupper((string) ($approval->status ?? ''));
+
+            return match ($status) {
+                'WAITING' => 'Menunggu approval',
+                'PENDING' => 'Belum diproses',
+                'REJECTED' => 'Ditolak',
+                'CANCELLED' => 'Dibatalkan',
+                default => '-',
+            };
+        };
     @endphp
 
     <div class="signature-wrapper">
-        <table class="signature">
-            <tr>
-                <td width="50%" class="signature-cell">
-                    <div class="signature-title">Dibuat oleh</div>
+        @if ($approvalCount <= 1)
+            @php
+                $firstApproval = $approvalSignatures->first();
 
-                    <div class="signature-area">
-                        @if ($requesterSignatureExists)
-                            <img
-                                src="{{ $requesterSignature }}"
-                                class="signature-img"
-                            >
-                        @endif
-                    </div>
+                $approverSignature = $getApprovalSignaturePath($firstApproval);
+                $approverSignatureExists = $getApprovalSignatureExists($firstApproval);
+            @endphp
 
-                    <div class="signature-name">
-                        {{ optional($po->requesterSignedBy)->name ?? '-' }}
-                    </div>
+            <table class="signature">
+                <tr>
+                    <td width="50%" class="signature-cell">
+                        <div class="signature-title">Dibuat oleh</div>
 
-                    <div class="signature-date">
-                        {{ $po->requester_signed_at ? \Carbon\Carbon::parse($po->requester_signed_at)->format('d/m/Y H:i') : '-' }}
-                    </div>
-                </td>
-
-                <td width="50%" class="signature-cell">
-                    <div class="signature-title">Menyetujui</div>
-
-                    @if ($firstApproval && $firstApproval->status === 'APPROVED')
                         <div class="signature-area">
-                            @if ($approverSignatureExists)
+                            @if ($requesterSignatureExists)
                                 <img
-                                    src="{{ $approverSignature }}"
+                                    src="{{ $requesterSignature }}"
                                     class="signature-img"
                                 >
                             @endif
                         </div>
 
                         <div class="signature-name">
-                            {{ $firstApproval->approver_name_snapshot ?? '-' }}
+                            {{ optional($po->requesterSignedBy)->name ?? '-' }}
                         </div>
 
                         <div class="signature-date">
-                            {{ $firstApproval->approved_at ? \Carbon\Carbon::parse($firstApproval->approved_at)->format('d/m/Y H:i') : '-' }}
+                            {{ $po->requester_signed_at ? \Carbon\Carbon::parse($po->requester_signed_at)->format('d/m/Y H:i') : '-' }}
                         </div>
-                    @else
-                        <div class="signature-area signature-placeholder">
-                            Menunggu approval
+                    </td>
+
+                    <td width="50%" class="signature-cell">
+                        <div class="signature-title">Menyetujui</div>
+
+                        @if ($firstApproval && strtoupper((string) $firstApproval->status) === 'APPROVED')
+                            <div class="signature-area">
+                                @if ($approverSignatureExists)
+                                    <img
+                                        src="{{ $approverSignature }}"
+                                        class="signature-img"
+                                    >
+                                @endif
+                            </div>
+
+                            <div class="signature-name">
+                                {{ $firstApproval->approver_name_snapshot ?: ($firstApproval->label ?: '-') }}
+                            </div>
+
+                            <div class="signature-date">
+                                {{ $firstApproval->approved_at ? \Carbon\Carbon::parse($firstApproval->approved_at)->format('d/m/Y H:i') : '-' }}
+                            </div>
+                        @else
+                            <div class="signature-area signature-placeholder">
+                                {{ $firstApproval ? $getApprovalPlaceholder($firstApproval) : 'Menunggu approval' }}
+                            </div>
+
+                            <div class="signature-name">
+                                {{ $firstApproval->label ?? '-' }}
+                            </div>
+
+                            <div class="signature-date">
+                                -
+                            </div>
+                        @endif
+                    </td>
+                </tr>
+            </table>
+        @else
+            @php
+                $totalColumns = 1 + $approvalCount;
+                $columnWidth = 100 / $totalColumns;
+            @endphp
+
+            <table class="signature signature-merged">
+                <tr class="signature-header-row">
+                    <td width="{{ $columnWidth }}%" class="signature-header-cell">
+                        Dibuat oleh
+                    </td>
+
+                    <td width="{{ $columnWidth * $approvalCount }}%" colspan="{{ $approvalCount }}" class="signature-header-cell">
+                        Menyetujui
+                    </td>
+                </tr>
+
+                <tr>
+                    <td width="{{ $columnWidth }}%" class="signature-cell">
+                        <div class="signature-area">
+                            @if ($requesterSignatureExists)
+                                <img
+                                    src="{{ $requesterSignature }}"
+                                    class="signature-img"
+                                >
+                            @endif
                         </div>
-                    @endif
-                </td>
-            </tr>
-        </table>
+
+                        <div class="signature-name">
+                            {{ optional($po->requesterSignedBy)->name ?? '-' }}
+                        </div>
+
+                        <div class="signature-date">
+                            {{ $po->requester_signed_at ? \Carbon\Carbon::parse($po->requester_signed_at)->format('d/m/Y H:i') : '-' }}
+                        </div>
+                    </td>
+
+                    @foreach ($approvalSignatures as $approval)
+                        @php
+                            $approvalSignature = $getApprovalSignaturePath($approval);
+                            $approvalSignatureExists = $getApprovalSignatureExists($approval);
+                            $approvalStatus = strtoupper((string) $approval->status);
+                        @endphp
+
+                        <td width="{{ $columnWidth }}%" class="signature-cell">
+                            @if ($approvalStatus === 'APPROVED')
+                                <div class="signature-area">
+                                    @if ($approvalSignatureExists)
+                                        <img
+                                            src="{{ $approvalSignature }}"
+                                            class="signature-img"
+                                        >
+                                    @endif
+                                </div>
+
+                                <div class="signature-name">
+                                    {{ $approval->approver_name_snapshot ?: ($approval->label ?: '-') }}
+                                </div>
+
+                                <div class="signature-date">
+                                    {{ $approval->approved_at ? \Carbon\Carbon::parse($approval->approved_at)->format('d/m/Y H:i') : '-' }}
+                                </div>
+                            @else
+                                <div class="signature-area signature-placeholder">
+                                    {{ $getApprovalPlaceholder($approval) }}
+                                </div>
+
+                                <div class="signature-name">
+                                    {{ $approval->label ?? '-' }}
+                                </div>
+
+                                <div class="signature-date">
+                                    -
+                                </div>
+                            @endif
+                        </td>
+                    @endforeach
+                </tr>
+            </table>
+        @endif
     </div>
 </body>
 </html>
@@ -360,11 +484,49 @@ tfoot {
     margin-top: 14px;
 }
 
+.signature-header-cell {
+    border: 1px solid #333;
+    text-align: center;
+    vertical-align: middle;
+    font-weight: bold;
+    padding: 5px 6px;
+    font-size: 11px;
+    height: 22px !important;
+    line-height: 14px;
+}
+
+.signature-merged .signature-header-cell {
+    height: 22px !important;
+    padding-top: 5px !important;
+    padding-bottom: 5px !important;
+}
+
+.signature-merged .signature-cell {
+    height: 95px;
+    padding: 8px 6px;
+    vertical-align: top;
+}
+
+.signature-merged .signature-img {
+    max-width: 110px;
+    max-height: 52px;
+}
+
 .signature-cell {
     text-align: center;
     vertical-align: top;
     height: 135px;
-    padding: 8px 10px;
+    padding: 8px 6px;
+    word-wrap: break-word;
+    word-break: break-word;
+}
+
+.signature-img {
+    max-width: 115px;
+    max-height: 55px;
+    object-fit: contain;
+    display: inline-block;
+    vertical-align: middle;
 }
 
 .signature-title {
@@ -377,14 +539,6 @@ tfoot {
     height: 58px;
     line-height: 58px;
     text-align: center;
-}
-
-.signature-img {
-    max-width: 145px;
-    max-height: 55px;
-    object-fit: contain;
-    display: inline-block;
-    vertical-align: middle;
 }
 
 .signature-name {

@@ -293,7 +293,7 @@ const goToEdit = (publicId: string): void => {
 
 const { openDeleteConfirm } = useDeleteConfirm()
 
-const openDelete = (row: any): void => {
+const openDelete = async (row: any): Promise<void> => {
   if (String(row.status || '').toUpperCase() !== 'DRAFT') {
     showErrorToast({
       title: 'Tidak dapat dihapus',
@@ -303,15 +303,55 @@ const openDelete = (row: any): void => {
     return
   }
 
-  openDeleteConfirm({
+  const nomorPr = row.nomor_pr || row.nomor_po || '-'
+
+  const confirm = await showConfirmAlert({
+    icon: 'question',
     title: 'Hapus Purchase Request?',
-    message: `Apakah Anda yakin ingin menghapus Purchase Request <strong>${row.nomor_po}</strong>?`,
-    loadingTitle: 'Menghapus Purchase Request...',
-    successText: `Purchase Request "${row.nomor_po}" berhasil dihapus`,
-    errorText: 'Gagal menghapus Purchase Request',
-    url: `/transaction/purchase-request/${encodeURIComponent(row.public_id)}`,
-    onSuccess: fetchPurchaseRequests,
+    html: `Apakah Anda yakin ingin menghapus Purchase Request <strong>${nomorPr}</strong>?`,
+    confirmButtonText: 'Ya, hapus',
+    cancelButtonText: 'Batal',
   })
+
+  if (!confirm.isConfirmed) return
+
+  try {
+    showLoadingAlert('Menghapus Purchase Request...', 'Mohon tunggu sebentar.')
+
+    const response = await axios.delete(
+      `/transaction/purchase-request/${encodeURIComponent(row.public_id)}`,
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+    )
+
+    closeAlert()
+
+    if (response.data?.success) {
+      showSuccessToast({
+        title: 'Berhasil',
+        text: `Purchase Request "${nomorPr}" berhasil dihapus`,
+      })
+
+      await fetchPurchaseRequests()
+
+      return
+    }
+
+    showErrorToast({
+      title: 'Gagal',
+      text: response.data?.message || 'Gagal menghapus Purchase Request',
+    })
+  } catch (error: any) {
+    closeAlert()
+
+    showErrorToast({
+      title: 'Gagal',
+      text: error.response?.data?.message || 'Gagal menghapus Purchase Request',
+    })
+  }
 }
 
 const openDetail = async (publicId: string): Promise<void> => {
@@ -457,6 +497,26 @@ onMounted(async () => {
           </VCol>
 
           <VCol cols="12" md="4">
+            <AppDateTimePicker
+              v-model="tanggalMulai"
+              label="Tanggal Awal"
+              density="compact"
+              clearable
+              :config="{ dateFormat: 'Y-m-d' }"
+            />
+          </VCol>
+
+          <VCol cols="12" md="4">
+            <AppDateTimePicker
+              v-model="tanggalSelesai"
+              label="Tanggal Akhir"
+              density="compact"
+              clearable
+              :config="{ dateFormat: 'Y-m-d' }"
+            />
+          </VCol>
+
+          <!-- <VCol cols="12" md="4">
             <div class="position-relative">
               <VTextField
                 :model-value="tanggalMulaiPicker.displayValue.value"
@@ -512,7 +572,7 @@ onMounted(async () => {
                 @change="tanggalSelesaiPicker.onDateChange"
               >
             </div>
-          </VCol>
+          </VCol> -->
         </VRow>
 
         <VRow class="mt-1 align-center">
@@ -1175,7 +1235,7 @@ onMounted(async () => {
                         </td>
 
                         <td class="col-note">
-                          <div class="text-wrap-cell">
+                          <div class="text-wrap-cell text-pre-line">
                             {{ item.keterangan || '-' }}
                           </div>
                         </td>
@@ -1375,7 +1435,7 @@ onMounted(async () => {
 }
 
 .col-note {
-  width: 220px;
+  width: 250px;
 }
 
 .col-unit {

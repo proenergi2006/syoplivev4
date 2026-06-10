@@ -38,6 +38,13 @@ class PurchaseRequest extends Model
         'current_level',
         'requested_by',
         'request_date',
+        'submitted_at',
+        'submitted_by',
+    ];
+
+    protected $casts = [
+        'tanggal_pr' => 'date',
+        'submitted_at' => 'datetime',
     ];
 
     protected static function booted()

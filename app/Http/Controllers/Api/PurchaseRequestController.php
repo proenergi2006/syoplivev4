@@ -419,15 +419,25 @@ class PurchaseRequestController extends Controller
                     'status' => $pr->status,
                     'status_po' => $pr->status_po,
 
-                    'purchase_orders' => $pr->purchaseOrders->map(function ($po) {
-                        return [
-                            'id' => $po->id,
-                            'nomor_po' => $po->nomor_po,
-                            'tanggal_po' => $po->tanggal_po,
-                            'status' => $po->status,
-                            'total_nilai' => (float) ($po->total_nilai ?? 0),
-                        ];
-                    })->values(),
+                    'purchase_orders' => $pr->purchaseOrders
+                        ->filter(function ($po) {
+                            return !in_array(strtoupper((string) $po->status), [
+                                'REJECTED',
+                                'CANCELLED',
+                            ], true);
+                        })
+                        ->values()
+                        ->map(function ($po) {
+                            return [
+                                'id' => $po->id,
+                                'public_id' => $po->encrypted_id,
+                                'nomor_po' => $po->nomor_po,
+                                'tanggal_po' => $po->tanggal_po,
+                                'total_nilai' => (float) ($po->total_nilai ?? 0),
+                                'status' => $po->status,
+                            ];
+                        })
+                        ->values(),
 
                     'requested_by' => $pr->requested_by,
 
@@ -913,7 +923,9 @@ class PurchaseRequestController extends Controller
                     'id' => $pr->id,
                     'public_id' => $pr->encrypted_id,
                     'nomor_pr' => $pr->nomor_pr,
-                    'tanggal_pr' => $pr->tanggal_pr,
+                    'tanggal_pr' => $pr->tanggal_pr
+                        ? \Carbon\Carbon::parse($pr->tanggal_pr)->format('Y-m-d')
+                        : null,
 
                     'cabang_id' => $pr->cabang,
                     'cabang' => $pr->cabangData->nama_cabang ?? '-',
@@ -1143,36 +1155,74 @@ class PurchaseRequestController extends Controller
         }
     }
 
-    public function submit($publicId)
+    public function submit($publicId, Request $request)
     {
+        DB::beginTransaction();
+
         try {
             $id = Crypt::decryptString($publicId);
 
-            $pr = PurchaseRequest::find($id);
-
-            if (!$pr) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Purchase Request tidak ditemukan.',
-                ], 404);
-            }
+            $pr = PurchaseRequest::with(['items'])
+                ->lockForUpdate()
+                ->findOrFail($id);
 
             if ($pr->status !== PurchaseRequest::STATUS_DRAFT) {
+                DB::rollBack();
+
                 return response()->json([
                     'success' => false,
                     'message' => 'Purchase Request hanya bisa disubmit dari status Draft.',
                 ], 422);
             }
 
+            if ($pr->items->isEmpty()) {
+                DB::rollBack();
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Purchase Request tidak dapat disubmit karena item belum tersedia.',
+                ], 422);
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Generate Nomor PR Resmi
+        |--------------------------------------------------------------------------
+        */
+            if (str_starts_with((string) $pr->nomor_pr, 'DRAFT/')) {
+                $pr->nomor_pr = generatePRNumber($pr);
+            }
+
             $pr->status = PurchaseRequest::STATUS_IN_PROGRESS;
             $pr->current_level = 1;
+            $pr->submitted_at = now();
+            $pr->submitted_by = $request->user()->id ?? null;
             $pr->save();
+
+            DB::commit();
 
             return response()->json([
                 'success' => true,
                 'message' => 'Purchase Request berhasil disubmit.',
-            ], 201);
+                'data' => [
+                    'id' => $pr->id,
+                    'public_id' => $pr->encrypted_id ?? Crypt::encryptString((string) $pr->id),
+                    'nomor_pr' => $pr->nomor_pr,
+                    'status' => $pr->status,
+                    'submitted_at' => $pr->submitted_at,
+                    'submitted_by' => $pr->submitted_by,
+                ],
+            ], 200);
         } catch (\Throwable $e) {
+            DB::rollBack();
+
+            Log::error('[Purchase Request] Submit error', [
+                'public_id' => $publicId,
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
             return response()->json([
                 'success' => false,
                 'message' => 'Gagal submit Purchase Request.',
