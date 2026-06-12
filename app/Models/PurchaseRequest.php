@@ -25,21 +25,27 @@ class PurchaseRequest extends Model
         'tanggal_pr',
         'cabang',
         'id_department',
-        'recommended_vendor_id',
         'kategori',
+        'pr_type',
+        'recommended_vendor_id',
         'notes',
-        'lampiran_request',
-        'path_lampiran',
-        'size_lampiran',
-        'type_lampiran',
+        'total_amount',
+
         'status',
         'status_po',
-        'total_amount',
-        'current_level',
-        'requested_by',
-        'request_date',
+
         'submitted_at',
         'submitted_by',
+
+        'final_approved_at',
+        'final_approved_by',
+
+        'rejected_at',
+        'rejected_by',
+        'rejected_notes',
+
+        'created_by',
+        'updated_by',
     ];
 
     protected $casts = [
@@ -176,6 +182,54 @@ class PurchaseRequest extends Model
         }
 
         return asset('storage/' . $this->path_lampiran);
+    }
+
+    public function creator()
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function updater()
+    {
+        return $this->belongsTo(User::class, 'updated_by');
+    }
+
+    public function submitter()
+    {
+        return $this->belongsTo(User::class, 'submitted_by');
+    }
+
+    public function finalApprover()
+    {
+        return $this->belongsTo(User::class, 'final_approved_by');
+    }
+
+    public function rejecter()
+    {
+        return $this->belongsTo(User::class, 'rejected_by');
+    }
+
+    public function approvals()
+    {
+        return $this->hasMany(PurchaseRequestApproval::class, 'purchase_request_id')
+            ->orderBy('step_order')
+            ->orderBy('id');
+    }
+
+    public function waitingApprovals()
+    {
+        return $this->hasMany(PurchaseRequestApproval::class, 'purchase_request_id')
+            ->where('status', PurchaseRequestApproval::STATUS_WAITING)
+            ->orderBy('step_order')
+            ->orderBy('id');
+    }
+
+    public function pendingApprovals()
+    {
+        return $this->hasMany(PurchaseRequestApproval::class, 'purchase_request_id')
+            ->where('status', PurchaseRequestApproval::STATUS_PENDING)
+            ->orderBy('step_order')
+            ->orderBy('id');
     }
 
     /**

@@ -157,7 +157,7 @@ const avatarBadgeProps = {
 
           <VDivider class="my-2" />
 
-          <VListItem :to="{ name: 'apps-user-view-id', params: { id: 21 } }">
+          <!-- <VListItem :to="{ name: 'apps-user-view-id', params: { id: 21 } }">
             <template #prepend>
               <VIcon
                 class="me-2"
@@ -167,7 +167,7 @@ const avatarBadgeProps = {
             </template>
 
             <VListItemTitle>Profile</VListItemTitle>
-          </VListItem>
+          </VListItem> -->
 
           <VListItem :to="{ name: 'pages-account-settings-tab', params: { tab: 'account' } }">
             <template #prepend>
@@ -181,7 +181,7 @@ const avatarBadgeProps = {
             <VListItemTitle>Settings</VListItemTitle>
           </VListItem>
 
-          <VListItem :to="{ name: 'pages-faq' }">
+          <!-- <VListItem :to="{ name: 'pages-faq' }">
             <template #prepend>
               <VIcon
                 class="me-2"
@@ -191,9 +191,7 @@ const avatarBadgeProps = {
             </template>
 
             <VListItemTitle>FAQ</VListItemTitle>
-          </VListItem>
-
-          <VDivider class="my-2" />
+          </VListItem> -->
 
           <VListItem
             link

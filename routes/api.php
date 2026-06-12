@@ -2,6 +2,7 @@
 
 // use App\Http\Api\Master\Controllers\ProdukController as ControllersProdukController;
 
+use App\Http\Controllers\Api\AccountController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -53,6 +54,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/auth/me', [AuthController::class, 'me']);
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::get('/auth/my-menus', [MenuController::class, 'myMenus']);
+    Route::put('/account/change-password', [AccountController::class, 'changePassword']);
     Route::get('master/cabang/options', [CabangController::class, 'options']);
 
     Route::get('/notifications', [NotificationController::class, 'index']);
@@ -151,6 +153,8 @@ Route::middleware('auth:sanctum')->group(function () {
         );
 
         // Approval Flow
+        Route::post('/approval-flows', [ApprovalFlowController::class, 'store']);
+        Route::get('/approval-flows/{publicId}', [ApprovalFlowController::class, 'show']);
         Route::put('/approval-flows/{publicId}', [ApprovalFlowController::class, 'update']);
         Route::get('/approval-flows', [ApprovalFlowController::class, 'index']);
         Route::patch('/approval-flows/{publicId}/toggle-status', [ApprovalFlowController::class, 'toggleStatus']);

@@ -172,6 +172,7 @@ class PurchaseRequestController extends Controller
                 'id_department'          => ['required', 'integer'],
                 'recommended_vendor_id'  => ['nullable', 'integer', 'exists:master_vendor,id'],
                 'kategori'               => ['required', 'string'],
+                'pr_type'                => ['required', 'string', 'max:50', 'in:Rutin,Non Rutin'],
                 'items'                  => ['required', 'string'],
                 'lampiran_request.*'     => ['sometimes', 'file', 'mimes:jpg,jpeg,png,pdf', 'max:3000'],
             ]);
@@ -230,6 +231,7 @@ class PurchaseRequestController extends Controller
             | 4. Simpan Header PR
             |--------------------------------------------------------------------------
             */
+            $user = $request->user();
             $pr = PurchaseRequest::create([
                 'nomor_pr'              => $nomorPr,
                 'tanggal_pr'            => $clean($request->tanggal_pr),
@@ -239,12 +241,12 @@ class PurchaseRequestController extends Controller
                     ? (int) $request->recommended_vendor_id
                     : null,
                 'kategori'              => $clean($request->kategori),
+                'pr_type'               => $clean($request->pr_type),
                 'notes'                 => $clean($request->notes),
-                'requested_by'          => $request->user()->fullname ?? $request->user()->name ?? 'System',
-                'request_date'          => now(),
                 'status'                => PurchaseRequest::STATUS_DRAFT,
-                'current_level'         => 0,
                 'total_amount'          => $totalAmount,
+                'created_by'            => $user?->id,
+                'updated_by'            => $user?->id,
             ]);
 
             /*
@@ -374,6 +376,8 @@ class PurchaseRequestController extends Controller
                 'items.unit:id,kode,nama',
                 'attachments',
                 'approvalHistories',
+                'creator',
+                'submitter',
             ])->findOrFail($id);
 
             $items = $pr->getRelation('items');
@@ -415,6 +419,7 @@ class PurchaseRequestController extends Controller
                     ] : null,
 
                     'kategori' => $pr->kategori,
+                    'pr_type' => $pr->pr_type,
                     'notes' => $pr->notes,
                     'status' => $pr->status,
                     'status_po' => $pr->status_po,
@@ -439,7 +444,13 @@ class PurchaseRequestController extends Controller
                         })
                         ->values(),
 
-                    'requested_by' => $pr->requested_by,
+                    'created_at' => $pr->created_at,
+                    'created_by' => $pr->created_by,
+                    'created_by_name' => $pr->creator?->name ?? '-',
+
+                    'submitted_at' => $pr->submitted_at,
+                    'submitted_by' => $pr->submitted_by,
+                    'submitted_by_name' => $pr->submitter?->name ?? '-',
 
                     'total_amount' => (float) ($pr->total_amount ?? 0),
                     'total_po' => $totalPo,
@@ -525,6 +536,7 @@ class PurchaseRequestController extends Controller
                 'id_department'          => ['required', 'integer'],
                 'recommended_vendor_id'  => ['nullable', 'integer', 'exists:master_vendor,id'],
                 'kategori'               => ['required', 'string'],
+                'pr_type'                => ['required', 'string', 'max:50', 'in:Rutin,Non Rutin'],
                 'items'                  => ['required', 'string'],
                 'existing_attachment_ids' => ['nullable', 'string'],
                 'lampiran_requests.*'    => ['sometimes', 'file', 'mimes:jpg,jpeg,png,pdf', 'max:3000'],
@@ -593,6 +605,7 @@ class PurchaseRequestController extends Controller
         | 4. Update Header PR
         |--------------------------------------------------------------------------
         */
+            $user = $request->user();
             $pr->update([
                 'tanggal_pr'            => $clean($request->tanggal_pr),
                 'cabang'                => $clean($request->cabang),
@@ -601,8 +614,10 @@ class PurchaseRequestController extends Controller
                     ? (int) $request->recommended_vendor_id
                     : null,
                 'kategori'              => $clean($request->kategori),
+                'pr_type'               => $clean($request->pr_type),
                 'notes'                 => $clean($request->notes),
                 'total_amount'          => $totalAmount,
+                'updated_by'            => $user?->id,
             ]);
 
             /*
@@ -943,6 +958,7 @@ class PurchaseRequestController extends Controller
                     ] : null,
 
                     'kategori' => $pr->kategori,
+                    'pr_type' => $pr->pr_type,
                     'notes' => $pr->notes,
                     'status' => $pr->status,
                     'requested_by' => $pr->requested_by,

@@ -26,8 +26,16 @@ interface PurchaseRequestItem {
   cabang: string | null
   department: string | null
   kategori: string | null
+  pr_type: string | null
   status: string | null
   status_po: string | null
+  created_at?: string | null
+  created_by?: number | null
+  created_by_name?: string | null
+
+  submitted_at?: string | null
+  submitted_by?: number | null
+  submitted_by_name?: string | null
 }
 
 interface PurchaseRequestApiResponse {
@@ -912,14 +920,14 @@ onMounted(async () => {
                         </div>
                       </div>
 
-                      <VChip
+                      <!-- <VChip
                         size="small"
                         color="primary"
                         variant="tonal"
                         prepend-icon="tabler-calendar"
                       >
                         {{ formatDate(detailPurchaseRequest.tanggal_pr) || '-' }}
-                      </VChip>
+                      </VChip> -->
                     </div>
 
                     <VRow>
@@ -946,8 +954,44 @@ onMounted(async () => {
 
                       <VCol cols="12" md="6">
                         <div class="info-box">
-                          <div class="info-label">Requested By</div>
-                          <div class="info-value">{{ detailPurchaseRequest.requested_by || '-' }}</div>
+                          <div class="info-label">Tipe</div>
+                          <div class="info-value">{{ detailPurchaseRequest.pr_type || '-' }}</div>
+                        </div>
+                      </VCol>
+
+                      <VCol cols="12" md="6">
+                        <div class="info-box">
+                          <div class="info-label">Dibuat Oleh</div>
+                          <div class="info-value">
+                            {{ detailPurchaseRequest.created_by_name || '-' }}
+                          </div>
+                        </div>
+                      </VCol>
+
+                      <VCol cols="12" md="6">
+                        <div class="info-box">
+                          <div class="info-label">Dibuat Pada</div>
+                          <div class="info-value">
+                            {{ formatDate(detailPurchaseRequest.created_at) }}
+                          </div>
+                        </div>
+                      </VCol>
+
+                      <VCol cols="12" md="6">
+                        <div class="info-box">
+                          <div class="info-label">Disubmit Oleh</div>
+                          <div class="info-value">
+                            {{ detailPurchaseRequest.submitted_by_name || '-' }}
+                          </div>
+                        </div>
+                      </VCol>
+
+                      <VCol cols="12" md="6">
+                        <div class="info-box">
+                          <div class="info-label">Disubmit Pada</div>
+                          <div class="info-value">
+                            {{ formatDate(detailPurchaseRequest.submitted_at) }}
+                          </div>
                         </div>
                       </VCol>
 

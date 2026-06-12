@@ -36,6 +36,7 @@ interface PurchaseRequestForm {
   id_department: string | number | null
   recommended_vendor_id: number | null
   kategori: string | null
+  pr_type: string | null
   notes: string
   lampiran_requests: File[]
   items: PrItem[]
@@ -107,6 +108,7 @@ const form = reactive<PurchaseRequestForm>({
   id_department: null,
   recommended_vendor_id: null,
   kategori: null,
+  pr_type: null,
   notes: '',
   lampiran_requests: [],
   items: [createEmptyItem()],
@@ -119,6 +121,11 @@ const currentUser = computed(() => {
     return {}
   }
 })
+
+const prTypeList = [
+  'Rutin',
+  'Non Rutin',
+]
 
 const setUserDefaultBranchAndDepartment = (): void => {
   form.cabang = currentUser.value?.cabang_id || null
@@ -495,6 +502,7 @@ const validateForm = async (): Promise<boolean> => {
     || !required(form.cabang)
     || !required(form.id_department)
     || !required(form.kategori)
+    || !required(form.pr_type)
   ) {
     showWarningToast({
       title: 'Warning',
@@ -560,6 +568,7 @@ const buildFormData = (): FormData => {
   formData.append('id_department', String(form.id_department || ''))
   formData.append('recommended_vendor_id', form.recommended_vendor_id ? String(form.recommended_vendor_id) : '')
   formData.append('kategori', String(form.kategori || ''))
+  formData.append('pr_type', String(form.pr_type || ''))
   formData.append('notes', String(form.notes || ''))
   formData.append('grand_total', String(calcGrandTotal()))
 
@@ -784,8 +793,7 @@ onMounted(async () => {
 
         <VCardText>
           <VRow>
-
-            <VCol cols="12" md="3">
+            <VCol cols="12" md="4">
               <AppDateTimePicker
                 v-model="form.tanggal_pr"
                 label="Tanggal PR *"
@@ -795,35 +803,8 @@ onMounted(async () => {
                 :error-messages="isSubmitted && !form.tanggal_pr ? ['Tanggal PR wajib diisi'] : []"
               />
             </VCol>
-            <!-- <VCol cols="12" md="3">
-              <div class="position-relative">
-                <VTextField
-                  :model-value="tanggalPR.displayValue.value"
-                  label="Tanggal PR *"
-                  placeholder="DD/MM/YYYY"
-                  readonly
-                  append-inner-icon="tabler-calendar"
-                  :error="isSubmitted && !form.tanggal_pr"
-                  :error-messages="isSubmitted && !form.tanggal_pr ? ['Tanggal PR wajib diisi'] : []"
-                  @click="tanggalPR.openPicker"
-                  @click:append-inner="tanggalPR.openPicker"
-                />
 
-                <input
-                  :ref="(el) => {
-                    tanggalPR.nativeDateRef.value = el as HTMLInputElement | null
-                  }"
-                  type="date"
-                  :value="form.tanggal_pr"
-                  class="native-date-hidden"
-                  tabindex="-1"
-                  aria-hidden="true"
-                  @change="tanggalPR.onDateChange"
-                >
-              </div>
-            </VCol> -->
-
-            <VCol cols="12" md="3">
+            <VCol cols="12" md="4">
               <VAutocomplete
                 v-model="form.cabang"
                 label="Cabang *"
@@ -837,7 +818,7 @@ onMounted(async () => {
                   location: 'bottom',
                   offset: 8,
                   maxHeight: 300,
-                  disabled: true
+                  disabled: true,
                 }"
                 :menu="false"
                 :clearable="false"
@@ -869,7 +850,7 @@ onMounted(async () => {
               </VAutocomplete>
             </VCol>
 
-            <VCol cols="12" md="3">
+            <VCol cols="12" md="4">
               <VAutocomplete
                 v-model="form.id_department"
                 label="Department *"
@@ -883,7 +864,7 @@ onMounted(async () => {
                   offset: 8,
                   maxHeight: 300,
                   maxWidth: 100,
-                  disabled: true
+                  disabled: true,
                 }"
                 :menu="false"
                 :clearable="false"
@@ -924,7 +905,7 @@ onMounted(async () => {
               </VAutocomplete>
             </VCol>
 
-            <VCol cols="12" md="3">
+            <VCol cols="12" md="4">
               <VAutocomplete
                 v-model="form.kategori"
                 label="Kategori *"
@@ -943,6 +924,26 @@ onMounted(async () => {
               />
             </VCol>
 
+            <VCol cols="12" md="4">
+              <VAutocomplete
+                v-model="form.pr_type"
+                label="Tipe PR *"
+                :items="prTypeList"
+                clearable
+                density="comfortable"
+                :menu-props="{
+                  location: 'bottom',
+                  offset: 8,
+                  maxHeight: 300,
+                }"
+                :error="isSubmitted && !form.pr_type"
+                :error-messages="isSubmitted && !form.pr_type ? ['Tipe PR wajib dipilih'] : []"
+                no-data-text="Tipe PR tidak ditemukan"
+                placeholder="Pilih tipe PR"
+              />
+            </VCol>
+          </VRow>
+          <VRow>
             <!-- DAFTAR ITEM SUMMARY -->
             <VCol cols="12">
               <div class="d-flex align-center justify-space-between flex-wrap gap-3 mt-4 mb-3">

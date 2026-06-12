@@ -12,11 +12,7 @@ const activeTab = ref(route.params.tab)
 
 // tabs
 const tabs = [
-  { title: 'Account', icon: 'mdi-account-outline', tab: 'account' },
   { title: 'Security', icon: 'mdi-lock-open-outline', tab: 'security' },
-  { title: 'Billing & Plans', icon: 'mdi-bookmark-outline', tab: 'billing-plans' },
-  { title: 'Notifications', icon: 'mdi-bell-outline', tab: 'notification' },
-  { title: 'Connections', icon: 'mdi-link-variant', tab: 'connection' },
 ]
 </script>
 
@@ -46,29 +42,9 @@ const tabs = [
       class="mt-4 disable-tab-transition"
       :touch="false"
     >
-      <!-- Account -->
-      <VWindowItem value="account">
-        <AccountSettingsAccount />
-      </VWindowItem>
-
       <!-- Security -->
       <VWindowItem value="security">
         <AccountSettingsSecurity />
-      </VWindowItem>
-
-      <!-- Billing -->
-      <VWindowItem value="billing-plans">
-        <AccountSettingsBillingAndPlans />
-      </VWindowItem>
-
-      <!-- Notification -->
-      <VWindowItem value="notification">
-        <AccountSettingsNotification />
-      </VWindowItem>
-
-      <!-- Connections -->
-      <VWindowItem value="connection">
-        <AccountSettingsConnections />
       </VWindowItem>
     </VWindow>
   </div>

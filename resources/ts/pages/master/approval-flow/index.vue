@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import axios from '@axios'
 import {
   showLoadingAlert,
@@ -35,6 +35,7 @@ interface ApprovalStep {
   role_name?: string
   label?: string
   is_required?: boolean
+  approval_mode?: 'ANY' | 'ALL' | string
 }
 
 interface ApprovalFlowItem {
@@ -56,6 +57,11 @@ interface ApprovalFlowItem {
   steps?: ApprovalStep[]
   created_at?: string
   updated_at?: string
+  area_type?: string | null
+  cabang?: string | null
+  creator_department_id?: number | null
+  creator_department_name?: string | null
+  creator_department_code?: string | null
 }
 
 interface MasterRoleOption {
@@ -93,6 +99,7 @@ interface EditApprovalFlowForm {
 }
 
 const router = useRouter()
+const route = useRoute()
 
 const isLoading = ref(false)
 const isActionLoading = ref(false)
@@ -102,7 +109,6 @@ const isEditSubmitting = ref(false)
 const editSubmitted = ref(false)
 
 const keyword = ref('')
-const selectedDocumentType = ref('PO')
 const selectedStatus = ref('active')
 
 const page = ref(1)
@@ -128,6 +134,42 @@ const editForm = ref<EditApprovalFlowForm>({
   max_amount: null,
   steps: [],
 })
+
+const isPRFlow = (item: ApprovalFlowItem): boolean => {
+  return String(item.document_type || '').toUpperCase() === 'PR'
+}
+
+const normalizeDocumentType = (value: unknown): string => {
+  const rawValue = String(value || 'PO').trim()
+
+  if (!rawValue)
+    return 'PO'
+
+  const upperValue = rawValue.toUpperCase()
+
+  if (upperValue === 'PO')
+    return 'PO'
+
+  if (upperValue === 'PR')
+    return 'PR'
+
+  if (upperValue === 'VENDOR')
+    return 'Vendor'
+
+  return rawValue
+}
+
+const selectedDocumentType = ref(normalizeDocumentType(route.query.document_type || 'PO'))
+
+const getCreatorDepartmentLabel = (item: ApprovalFlowItem): string => {
+  const code = item.creator_department_code || ''
+  const name = item.creator_department_name || ''
+
+  if (code && name)
+    return `${code} - ${name}`
+
+  return name || code || '-'
+}
 
 const normalizeNumberInput = (value: unknown): number | null => {
   if (value === null || value === undefined || value === '') return null
@@ -633,13 +675,12 @@ const getStatusText = (item: ApprovalFlowItem): string => {
 }
 
 const getStepName = (step: ApprovalStep): string => {
-  return (
+  return String(
     step.approver_name
-    || step.approval_role_name
-    || step.role_name
-    || step.label
-    || '-'
-  )
+      || step.approval_role_name
+      || step.role_name
+      || '',
+  ).trim()
 }
 
 const getStepOrder = (step: ApprovalStep): number => {
@@ -675,6 +716,21 @@ const getComparableMinAmount = (item: ApprovalFlowItem): number => {
  * - > 50 juta = GM -> CFO -> CEO
  */
 const getEffectiveApprovalSteps = (currentFlow: ApprovalFlowItem): ApprovalStep[] => {
+  /**
+   * PR tidak boleh merge antar flow.
+   * Karena PR dibedakan berdasarkan area + department + nominal.
+   */
+  if (isPRFlow(currentFlow)) {
+    return getSortedSteps(currentFlow).map(step => ({
+      ...step,
+      step_order: getStepOrder(step),
+      sequence: getStepOrder(step),
+    }))
+  }
+
+  /**
+   * Logic lama PO tetap dipertahankan.
+   */
   const currentDocumentType = String(currentFlow.document_type || '').toUpperCase()
   const currentMinAmount = getComparableMinAmount(currentFlow)
 
@@ -682,7 +738,8 @@ const getEffectiveApprovalSteps = (currentFlow: ApprovalFlowItem): ApprovalStep[
     .filter(flow => String(flow.document_type || '').toUpperCase() === currentDocumentType)
     .filter(flow => isFlowActive(flow))
     .filter(flow => {
-      if (isBaseAllAmountFlow(flow)) return true
+      if (isBaseAllAmountFlow(flow))
+        return true
 
       const flowMinAmount = getComparableMinAmount(flow)
 
@@ -727,8 +784,29 @@ const getEffectiveApprovalSteps = (currentFlow: ApprovalFlowItem): ApprovalStep[
   }))
 }
 
+const getGroupedApprovalSteps = (item: ApprovalFlowItem) => {
+  const steps = getEffectiveApprovalSteps(item)
+  const groupMap = new Map<number, ApprovalStep[]>()
+
+  steps.forEach(step => {
+    const order = getStepOrder(step)
+
+    if (!groupMap.has(order))
+      groupMap.set(order, [])
+
+    groupMap.get(order)?.push(step)
+  })
+
+  return Array.from(groupMap.entries()).map(([stepOrder, approvers]) => ({
+    step_order: stepOrder,
+    approval_mode: approvers[0]?.approval_mode || 'ANY',
+    label: approvers[0]?.label || `Step ${stepOrder}`,
+    approvers,
+  }))
+}
+
 const getEffectiveStepCount = (item: ApprovalFlowItem): number => {
-  return getEffectiveApprovalSteps(item).length
+  return getGroupedApprovalSteps(item).length
 }
 
 const buildParams = (): Record<string, any> => {
@@ -823,12 +901,17 @@ const resetFilter = async (): Promise<void> => {
   selectedStatus.value = 'active'
   page.value = 1
 
+  await router.replace({
+    path: route.path,
+    query: {},
+  })
+
   await loadApprovalFlows()
 }
 
 const goToCreate = async (): Promise<void> => {
   await router.push({
-    path: '/master/approval-flows/create',
+    path: '/master/approval-flow/create',
     query: {
       document_type: selectedDocumentType.value || 'PO',
     },
@@ -846,7 +929,7 @@ const goToEdit = async (item: ApprovalFlowItem): Promise<void> => {
   }
 
   await router.push({
-    path: '/master/approval-flows/edit',
+    path: '/master/approval-flow/edit',
     query: {
       id: item.public_id,
     },
@@ -983,6 +1066,19 @@ watch(keyword, () => {
 
 watch([selectedDocumentType, selectedStatus], async () => {
   page.value = 1
+
+  const nextQuery: Record<string, any> = {
+    ...route.query,
+    document_type: selectedDocumentType.value,
+  }
+
+  delete nextQuery.success
+
+  await router.replace({
+    path: route.path,
+    query: nextQuery,
+  })
+
   await loadApprovalFlows()
 })
 
@@ -991,6 +1087,40 @@ onMounted(async () => {
     loadApprovalFlows(),
     loadApproverOptions(),
   ])
+
+  const success = route.query.success
+
+  if (success) {
+    await router.replace({
+      path: '/master/approval-flow',
+      query: {},
+    })
+
+    setTimeout(() => {
+      if (success === 'created') {
+        showSuccessToast({
+          title: 'Berhasil',
+          text: 'Approval Flow berhasil disimpan.',
+        })
+      }
+
+      if (success === 'updated') {
+        showSuccessToast({
+          title: 'Berhasil',
+          text: 'Approval Flow berhasil diperbarui.',
+        })
+      }
+    }, 300)
+  }
+
+  const nextQuery = { ...route.query }
+
+  delete nextQuery.success
+
+  await router.replace({
+    path: route.path,
+    query: nextQuery,
+  })
 })
 </script>
 
@@ -1129,7 +1259,7 @@ onMounted(async () => {
         <VRow>
           <VCol
             cols="12"
-            md="4"
+            md="3"
           >
             <VTextField
               v-model="keyword"
@@ -1143,7 +1273,7 @@ onMounted(async () => {
 
           <VCol
             cols="12"
-            md="3"
+            md="4"
           >
             <VSelect
               v-model="selectedDocumentType"
@@ -1246,6 +1376,7 @@ onMounted(async () => {
             color="primary"
             prepend-icon="tabler-plus"
             @click="goToCreate"
+            class="text-none"
           >
             Tambah Approval Flow
           </VBtn>
@@ -1310,37 +1441,70 @@ onMounted(async () => {
                       Module: {{ toTitleCase(getModuleName(flow)) }}
                     </div>
 
+                    <div
+                      v-if="isPRFlow(flow)"
+                      class="d-flex flex-wrap gap-2 mb-2"
+                    >
+                      <VChip
+                        color="secondary"
+                        variant="tonal"
+                        size="small"
+                      >
+                        Area: {{ flow.area_type || '-' }}
+                      </VChip>
+
+                      <VChip
+                        color="secondary"
+                        variant="tonal"
+                        size="small"
+                      >
+                        Department: {{ getCreatorDepartmentLabel(flow) }}
+                      </VChip>
+                    </div>
+
                     <VDivider class="my-4" />
 
                     <div class="approval-step-wrapper">
                       <template
-                        v-for="(step, index) in getEffectiveApprovalSteps(flow)"
-                        :key="`${flow.public_id}-${step.public_id || step.id || index}`"
+                        v-for="(stepGroup, index) in getGroupedApprovalSteps(flow)"
+                        :key="`${flow.public_id}-group-${stepGroup.step_order}`"
                       >
-                        <div class="approval-step-item">
+                        <div class="approval-step-item approval-step-group">
                           <VAvatar
                             color="primary"
                             variant="flat"
                             size="34"
                           >
                             <span class="text-caption font-weight-bold">
-                              {{ getStepOrder(step) }}
+                              {{ stepGroup.step_order }}
                             </span>
                           </VAvatar>
 
-                          <div>
+                          <div class="approval-step-group-content">
                             <div class="font-weight-semibold">
-                              {{ getStepName(step) }}
+                              {{ stepGroup.label || `Step ${stepGroup.step_order}` }}
                             </div>
 
-                            <div class="text-caption text-medium-emphasis">
-                              {{ step.approver_type || 'ROLE' }}
+                            <div class="text-caption text-medium-emphasis mb-1">
+                              {{ stepGroup.approval_mode === 'ALL' ? 'Semua wajib approve' : 'Salah satu approve' }}
+                            </div>
+
+                            <div class="d-flex flex-wrap gap-1">
+                              <VChip
+                                v-for="approver in stepGroup.approvers.filter(item => getStepName(item))"
+                                :key="`${approver.public_id || approver.id}`"
+                                size="x-small"
+                                color="primary"
+                                variant="tonal"
+                              >
+                                {{ getStepName(approver) }}
+                              </VChip>
                             </div>
                           </div>
                         </div>
 
                         <VIcon
-                          v-if="index < getEffectiveApprovalSteps(flow).length - 1"
+                          v-if="index < getGroupedApprovalSteps(flow).length - 1"
                           icon="tabler-arrow-right"
                           class="approval-step-arrow"
                           size="22"
@@ -1355,7 +1519,7 @@ onMounted(async () => {
                       color="primary"
                       prepend-icon="tabler-edit"
                       class="approval-flow-action-btn text-none"
-                      @click="openEditDialog(flow)"
+                      @click="goToEdit(flow)"
                     >
                       Edit
                     </VBtn>
