@@ -27,37 +27,233 @@ class GoodsReceiveController extends Controller
     public function index(Request $request)
     {
         try {
+            $user = $request->user();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Permission Goods Receipt
+        |--------------------------------------------------------------------------
+        | Samakan helper ini dengan yang sudah digunakan pada index PR.
+        |--------------------------------------------------------------------------
+        */
+            $canView = $user->hasPermission(
+                'goods_receive.view',
+            );
+
+            $viewScope = strtoupper(
+                trim(
+                    (string) $user->getPermissionScope(
+                        'goods_receive.view',
+                    ),
+                ),
+            );
+
+            $canCreate = $user->hasPermission(
+                'goods_receive.create',
+            );
+
+            $canUpdate = $user->hasPermission(
+                'goods_receive.update',
+            );
+
+            $canDelete = $user->hasPermission(
+                'goods_receive.delete',
+            );
+
+            /*
+        |--------------------------------------------------------------------------
+        | Normalisasi scope
+        |--------------------------------------------------------------------------
+        */
+            $allowedScopes = [
+                'ALL',
+                'OWN_DEPARTMENT',
+                'OWN_CABANG',
+                'OWN_DATA',
+                'NONE',
+            ];
+
+            if (!in_array($viewScope, $allowedScopes, true)) {
+                $viewScope = 'NONE';
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Identitas organisasi user
+        |--------------------------------------------------------------------------
+        */
+            $departmentId = (int) (
+                $user->department_id
+                ?? 0
+            );
+
+            $cabangId = (int) (
+                $user->cabang_id
+                ?? 0
+            );
+
+            /*
+        |--------------------------------------------------------------------------
+        | Query Goods Receipt
+        |--------------------------------------------------------------------------
+        */
             $query = GoodsReceive::query()
                 ->with([
-                    'purchaseOrder:id,nomor_po',
+                    /*
+                |--------------------------------------------------------------------------
+                | Department dan cabang berasal dari Purchase Order
+                |--------------------------------------------------------------------------
+                */
+                    'purchaseOrder:id,nomor_po,cabang,id_department',
+
+                    'purchaseOrder.cabangData:id,nama_cabang,inisial_cabang',
+
+                    'purchaseOrder.departmentData:id,kode,nama',
+
                     'vendor:id,nama_vendor',
+
                     'creator:id,name',
                 ]);
 
-            if ($request->filled('search')) {
-                $search = trim($request->search);
-
-                $query->where(function ($q) use ($search) {
-                    $q->where('nomor_gr', 'ILIKE', "%{$search}%")
-                        ->orWhereHas('purchaseOrder', function ($po) use ($search) {
-                            $po->where('nomor_po', 'ILIKE', "%{$search}%");
-                        })
-                        ->orWhereHas('vendor', function ($vendor) use ($search) {
-                            $vendor->where('nama_vendor', 'ILIKE', "%{$search}%");
-                        });
-                });
+            /*
+        |--------------------------------------------------------------------------
+        | Filter visibility berdasarkan permission scope
+        |--------------------------------------------------------------------------
+        */
+            if (!$canView || $viewScope === 'NONE') {
+                /*
+            |--------------------------------------------------------------------------
+            | Jangan return kosong secara manual
+            |--------------------------------------------------------------------------
+            | Tetap gunakan query false agar response pagination konsisten.
+            |--------------------------------------------------------------------------
+            */
+                $query->whereRaw('1 = 0');
+            } elseif ($viewScope === 'OWN_DATA') {
+                /*
+            |--------------------------------------------------------------------------
+            | Hanya GR yang dibuat oleh user login
+            |--------------------------------------------------------------------------
+            */
+                $query->where(
+                    'created_by',
+                    $user->id,
+                );
+            } elseif ($viewScope === 'OWN_DEPARTMENT') {
+                /*
+            |--------------------------------------------------------------------------
+            | Hanya GR dari PO department user login
+            |--------------------------------------------------------------------------
+            */
+                if ($departmentId <= 0) {
+                    $query->whereRaw('1 = 0');
+                } else {
+                    $query->whereHas(
+                        'purchaseOrder',
+                        function ($poQuery) use ($departmentId) {
+                            $poQuery->where(
+                                'id_department',
+                                $departmentId,
+                            );
+                        },
+                    );
+                }
+            } elseif ($viewScope === 'OWN_CABANG') {
+                /*
+            |--------------------------------------------------------------------------
+            | Hanya GR dari PO cabang user login
+            |--------------------------------------------------------------------------
+            */
+                if ($cabangId <= 0) {
+                    $query->whereRaw('1 = 0');
+                } else {
+                    $query->whereHas(
+                        'purchaseOrder',
+                        function ($poQuery) use ($cabangId) {
+                            $poQuery->where(
+                                'cabang',
+                                $cabangId,
+                            );
+                        },
+                    );
+                }
             }
 
-            $status = strtoupper(trim((string) $request->status));
+            /*
+        |--------------------------------------------------------------------------
+        | Scope ALL
+        |--------------------------------------------------------------------------
+        | Tidak perlu menambahkan filter visibility.
+        |--------------------------------------------------------------------------
+        */
+
+            /*
+        |--------------------------------------------------------------------------
+        | Search
+        |--------------------------------------------------------------------------
+        */
+            if ($request->filled('search')) {
+                $search = trim(
+                    (string) $request->search,
+                );
+
+                if ($search !== '') {
+                    $query->where(function ($q) use ($search) {
+                        $q
+                            ->where(
+                                'nomor_gr',
+                                'ILIKE',
+                                "%{$search}%",
+                            )
+                            ->orWhereHas(
+                                'purchaseOrder',
+                                function ($po) use ($search) {
+                                    $po->where(
+                                        'nomor_po',
+                                        'ILIKE',
+                                        "%{$search}%",
+                                    );
+                                },
+                            )
+                            ->orWhereHas(
+                                'vendor',
+                                function ($vendor) use ($search) {
+                                    $vendor->where(
+                                        'nama_vendor',
+                                        'ILIKE',
+                                        "%{$search}%",
+                                    );
+                                },
+                            );
+                    });
+                }
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Filter Status
+        |--------------------------------------------------------------------------
+        */
+            $status = strtoupper(
+                trim((string) $request->status),
+            );
 
             if (
                 $status !== ''
                 && $status !== 'ALL'
                 && $status !== 'SEMUA'
             ) {
-                $query->whereRaw('UPPER(status) = ?', [$status]);
+                $query->whereRaw(
+                    'UPPER(TRIM(status)) = ?',
+                    [$status],
+                );
             }
 
+            /*
+        |--------------------------------------------------------------------------
+        | Filter Tanggal
+        |--------------------------------------------------------------------------
+        */
             $startDate = $request->input('tanggal_mulai')
                 ?? $request->input('start_date');
 
@@ -65,66 +261,268 @@ class GoodsReceiveController extends Controller
                 ?? $request->input('end_date');
 
             if (!empty($startDate)) {
-                $query->whereDate('tanggal_gr', '>=', $startDate);
+                $query->whereDate(
+                    'tanggal_gr',
+                    '>=',
+                    $startDate,
+                );
             }
 
             if (!empty($endDate)) {
-                $query->whereDate('tanggal_gr', '<=', $endDate);
+                $query->whereDate(
+                    'tanggal_gr',
+                    '<=',
+                    $endDate,
+                );
             }
 
-            $perPage = (int) ($request->per_page ?? 10);
+            /*
+        |--------------------------------------------------------------------------
+        | Pagination
+        |--------------------------------------------------------------------------
+        */
+            $perPage = (int) (
+                $request->per_page
+                ?? 10
+            );
+
+            $perPage = $perPage > 0
+                ? $perPage
+                : 10;
 
             $goodsReceives = $query
                 ->orderByDesc('id')
                 ->paginate($perPage);
 
-            $goodsReceives->getCollection()->transform(function ($gr) {
-                return [
-                    'id' => $gr->id,
-                    'public_id' => Crypt::encryptString((string) $gr->id),
+            /*
+        |--------------------------------------------------------------------------
+        | Transform Response
+        |--------------------------------------------------------------------------
+        */
+            $goodsReceives
+                ->getCollection()
+                ->transform(function ($gr) use (
+                    $user,
+                    $canUpdate,
+                    $canDelete,
+                ) {
+                    /*
+                |--------------------------------------------------------------------------
+                | Hak edit/delete per row
+                |--------------------------------------------------------------------------
+                | Permission menentukan tombol tersedia.
+                | Aturan status tetap dapat ditambahkan di sini.
+                |--------------------------------------------------------------------------
+                */
+                    $status = strtoupper(
+                        trim((string) $gr->status),
+                    );
 
-                    'nomor_gr' => $gr->nomor_gr,
-                    'tanggal_gr' => $gr->tanggal_gr,
+                    $canUpdateRow = $canUpdate
+                        && $status === 'DRAFT';
 
-                    'purchase_order_id' => $gr->purchase_order_id,
-                    'nomor_po' => $gr->purchaseOrder->nomor_po ?? '-',
+                    $canDeleteRow = $canDelete
+                        && $status === 'DRAFT';
 
-                    'vendor_id' => $gr->vendor_id,
-                    'vendor' => $gr->vendor->nama_vendor ?? '-',
+                    return [
+                        'id' => $gr->id,
 
-                    'status' => $gr->status,
+                        'public_id' => Crypt::encryptString(
+                            (string) $gr->id,
+                        ),
 
-                    'total_qty' => (float) ($gr->total_qty ?? 0),
-                    'total_nilai' => (float) ($gr->total_nilai ?? 0),
+                        'nomor_gr' => $gr->nomor_gr,
 
-                    'created_by' => $gr->creator->name ?? $gr->created_by,
-                    'created_at' => $gr->created_at?->format('Y-m-d H:i:s'),
-                ];
-            });
+                        'tanggal_gr' => $gr->tanggal_gr,
+
+                        'purchase_order_id'
+                        => $gr->purchase_order_id,
+
+                        'nomor_po'
+                        => $gr->purchaseOrder?->nomor_po
+                            ?? '-',
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Informasi cabang PO
+                    |--------------------------------------------------------------------------
+                    */
+                        'cabang_id'
+                        => $gr->purchaseOrder?->cabang,
+
+                        'cabang'
+                        => $gr->purchaseOrder
+                            ?->cabangData
+                            ?->nama_cabang
+                            ?? '-',
+
+                        'inisial_cabang'
+                        => $gr->purchaseOrder
+                            ?->cabangData
+                            ?->inisial_cabang
+                            ?? '-',
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Informasi department PO
+                    |--------------------------------------------------------------------------
+                    */
+                        'department_id'
+                        => $gr->purchaseOrder
+                            ?->id_department,
+
+                        'department'
+                        => $gr->purchaseOrder
+                            ?->departmentData
+                            ?->kode
+                            ?? '-',
+
+                        'department_name'
+                        => $gr->purchaseOrder
+                            ?->departmentData
+                            ?->nama
+                            ?? '-',
+
+                        'vendor_id' => $gr->vendor_id,
+
+                        'vendor'
+                        => $gr->vendor?->nama_vendor
+                            ?? '-',
+
+                        'status' => $gr->status,
+
+                        'total_qty' => (float) (
+                            $gr->total_qty
+                            ?? 0
+                        ),
+
+                        'total_nilai' => (float) (
+                            $gr->total_nilai
+                            ?? 0
+                        ),
+
+                        'created_by_id'
+                        => $gr->created_by,
+
+                        'created_by'
+                        => $gr->creator?->name
+                            ?? $gr->created_by,
+
+                        'created_at'
+                        => $gr->created_at
+                            ?->format('Y-m-d H:i:s'),
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Kemampuan per row
+                    |--------------------------------------------------------------------------
+                    */
+                        'can_update'
+                        => $canUpdateRow,
+
+                        'can_delete'
+                        => $canDeleteRow,
+
+                        'is_owner'
+                        => (int) $gr->created_by
+                            === (int) $user->id,
+                    ];
+                });
 
             return response()->json([
                 'success' => true,
-                'message' => 'Data Goods Receipt berhasil dimuat.',
-                'data' => $goodsReceives->items(),
 
+                'message'
+                => 'Data Goods Receipt berhasil dimuat.',
+
+                'data'
+                => $goodsReceives->items(),
+
+                /*
+            |--------------------------------------------------------------------------
+            | Pertahankan pagination lama
+            |--------------------------------------------------------------------------
+            */
                 'pagination' => [
-                    'current_page' => $goodsReceives->currentPage(),
-                    'last_page' => $goodsReceives->lastPage(),
-                    'per_page' => $goodsReceives->perPage(),
-                    'total' => $goodsReceives->total(),
+                    'current_page'
+                    => $goodsReceives->currentPage(),
+
+                    'last_page'
+                    => $goodsReceives->lastPage(),
+
+                    'per_page'
+                    => $goodsReceives->perPage(),
+
+                    'total'
+                    => $goodsReceives->total(),
                 ],
-            ]);
+
+                /*
+            |--------------------------------------------------------------------------
+            | Tambahkan meta juga agar konsisten dengan PR/PO
+            |--------------------------------------------------------------------------
+            | Ini tidak merusak frontend lama karena pagination tetap tersedia.
+            |--------------------------------------------------------------------------
+            */
+                'meta' => [
+                    'current_page'
+                    => $goodsReceives->currentPage(),
+
+                    'last_page'
+                    => $goodsReceives->lastPage(),
+
+                    'per_page'
+                    => $goodsReceives->perPage(),
+
+                    'total'
+                    => $goodsReceives->total(),
+                ],
+
+                /*
+            |--------------------------------------------------------------------------
+            | Global abilities untuk frontend
+            |--------------------------------------------------------------------------
+            */
+                'abilities' => [
+                    'can_view' => $canView,
+
+                    'view_scope' => $viewScope,
+
+                    'can_create' => $canCreate,
+
+                    'can_update' => $canUpdate,
+
+                    'can_delete' => $canDelete,
+                ],
+            ], 200);
         } catch (\Throwable $e) {
-            Log::error('[Goods Receipt] Index error', [
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-            ]);
+            Log::error(
+                '[Goods Receipt] Index error',
+                [
+                    'user_id'
+                    => $request->user()?->id,
+
+                    'message'
+                    => $e->getMessage(),
+
+                    'file'
+                    => $e->getFile(),
+
+                    'line'
+                    => $e->getLine(),
+                ],
+            );
 
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal memuat data Goods Receipt.',
-                'debug' => app()->environment('local')
+
+                'message'
+                => 'Gagal memuat data Goods Receipt.',
+
+                'data' => [],
+
+                'debug'
+                => app()->environment('local')
                     ? $e->getMessage()
                     : null,
             ], 500);

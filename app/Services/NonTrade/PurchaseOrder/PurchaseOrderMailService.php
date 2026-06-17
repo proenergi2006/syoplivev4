@@ -6,185 +6,379 @@ use App\Mail\PurchaseOrderApprovalMail;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderApproval;
 use App\Models\User;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 
 class PurchaseOrderMailService
 {
-    public function sendApprovalRequest(PurchaseOrder $po): void
-    {
-        $currentApproval = PurchaseOrderApproval::where('purchase_order_id', $po->id)
-            ->where('status', 'WAITING')
-            ->orderBy('step_order')
-            ->first();
+    /**
+     * Kirim email ke seluruh kandidat pada step approval aktif.
+     *
+     * Deduplikasi dilakukan berdasarkan alamat email.
+     */
+    public function sendApprovalRequest(
+        PurchaseOrder $po,
+    ): void {
+        /*
+        |--------------------------------------------------------------------------
+        | Cari step aktif
+        |--------------------------------------------------------------------------
+        */
+        $currentStepOrder = PurchaseOrderApproval::query()
+            ->where(
+                'purchase_order_id',
+                $po->id,
+            )
+            ->where(
+                'status',
+                PurchaseOrderApproval::STATUS_WAITING,
+            )
+            ->min('step_order');
 
-        if (!$currentApproval) {
-            Log::warning('[Purchase Order Mail] Approval WAITING tidak ditemukan', [
-                'po_id' => $po->id,
-                'nomor_po' => $po->nomor_po,
-            ]);
+        if ($currentStepOrder === null) {
+            Log::warning(
+                '[Purchase Order Mail] Approval WAITING tidak ditemukan',
+                [
+                    'po_id' => $po->id,
+                    'nomor_po' => $po->nomor_po,
+                ],
+            );
 
             return;
         }
 
-        $approvers = $this->resolveApprovalUsers($currentApproval);
+        /*
+        |--------------------------------------------------------------------------
+        | Ambil semua kandidat WAITING pada step tersebut
+        |--------------------------------------------------------------------------
+        */
+        $currentApprovals = PurchaseOrderApproval::query()
+            ->where(
+                'purchase_order_id',
+                $po->id,
+            )
+            ->where(
+                'step_order',
+                (int) $currentStepOrder,
+            )
+            ->where(
+                'status',
+                PurchaseOrderApproval::STATUS_WAITING,
+            )
+            ->orderBy('id')
+            ->get();
+
+        if ($currentApprovals->isEmpty()) {
+            return;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve seluruh user
+        |--------------------------------------------------------------------------
+        */
+        $approvers = $currentApprovals
+            ->flatMap(function (
+                PurchaseOrderApproval $approval,
+            ): Collection {
+                $users = $this->resolveApprovalUsers(
+                    $approval,
+                );
+
+                if ($users->isEmpty()) {
+                    Log::warning(
+                        '[Purchase Order Mail] User approver tidak ditemukan',
+                        [
+                            'po_id'
+                            => $approval->purchase_order_id,
+
+                            'approval_id'
+                            => $approval->id,
+
+                            'step_order'
+                            => $approval->step_order,
+
+                            'approver_type'
+                            => $approval->approver_type,
+
+                            'approver_id'
+                            => $approval->approver_id,
+
+                            'label'
+                            => $approval->label,
+                        ],
+                    );
+                }
+
+                return $users;
+            })
+
+            /*
+            |--------------------------------------------------------------------------
+            | Pastikan email tersedia
+            |--------------------------------------------------------------------------
+            */
+            ->filter(function ($user) {
+                return !empty(trim((string) $user?->email));
+            })
+
+            /*
+            |--------------------------------------------------------------------------
+            | Deduplikasi berdasarkan alamat email
+            |--------------------------------------------------------------------------
+            |
+            | Bila dua account memakai alamat email yang sama,
+            | hanya satu email yang dikirim.
+            |--------------------------------------------------------------------------
+            */
+            ->unique(function ($user) {
+                return strtolower(
+                    trim((string) $user->email),
+                );
+            })
+            ->values();
 
         if ($approvers->isEmpty()) {
-            Log::warning('[Purchase Order Mail] User approver tidak ditemukan', [
-                'po_id' => $po->id,
-                'nomor_po' => $po->nomor_po,
-                'approval_id' => $currentApproval->id,
-                'approver_type' => $currentApproval->approver_type,
-                'approver_id' => $currentApproval->approver_id,
-                'label' => $currentApproval->label,
-            ]);
+            Log::warning(
+                '[Purchase Order Mail] Tidak ada email approver yang valid',
+                [
+                    'po_id' => $po->id,
+                    'nomor_po' => $po->nomor_po,
+                    'step_order' => (int) $currentStepOrder,
+                    'approval_ids'
+                    => $currentApprovals->pluck('id')->all(),
+                ],
+            );
 
             return;
         }
 
         foreach ($approvers as $approver) {
-            if (!$approver->email) {
-                Log::warning('[Purchase Order Mail] User approver tidak punya email', [
+            Log::info(
+                '[Purchase Order Mail] Queue approval request email',
+                [
                     'po_id' => $po->id,
-                    'approval_id' => $currentApproval->id,
-                    'user_id' => $approver->id,
-                    'name' => $approver->name,
-                ]);
-
-                continue;
-            }
-
-            Log::info('[Purchase Order Mail] Queue approval request email', [
-                'po_id' => $po->id,
-                'nomor_po' => $po->nomor_po,
-                'approval_id' => $currentApproval->id,
-                'approver_type' => $currentApproval->approver_type,
-                'approver_id' => $currentApproval->approver_id,
-                'to' => $approver->email,
-                'queue_connection' => config('queue.default'),
-            ]);
+                    'nomor_po' => $po->nomor_po,
+                    'step_order' => (int) $currentStepOrder,
+                    'approval_ids'
+                    => $currentApprovals->pluck('id')->all(),
+                    'recipient_user_id' => $approver->id,
+                    'to' => $approver->email,
+                    'queue_connection'
+                    => config('queue.default'),
+                ],
+            );
 
             Mail::to($approver->email)
-                ->queue(new PurchaseOrderApprovalMail(
-                    po: $po,
-                    recipient: $approver,
-                    mode: 'approval_request',
-                ));
+                ->queue(
+                    new PurchaseOrderApprovalMail(
+                        po: $po,
+                        recipient: $approver,
+                        mode: 'approval_request',
+                    ),
+                );
         }
     }
 
+    /**
+     * Kirim status approval kepada requester.
+     */
     public function sendApprovalStep(
         PurchaseOrder $po,
         User $approver,
-        bool $hasPendingApproval
+        bool $hasPendingApproval,
     ): void {
         if (!$po->requester_signed_by) {
             return;
         }
 
-        $requester = User::find($po->requester_signed_by);
+        $requester = User::query()
+            ->find($po->requester_signed_by);
 
-        if (!$requester || !$requester->email) {
+        if (
+            !$requester
+            || empty(trim((string) $requester->email))
+        ) {
+            Log::warning(
+                '[Purchase Order Mail] Email requester tidak ditemukan',
+                [
+                    'po_id' => $po->id,
+                    'nomor_po' => $po->nomor_po,
+                    'requester_signed_by'
+                    => $po->requester_signed_by,
+                ],
+            );
+
             return;
         }
 
         Mail::to($requester->email)
-            ->queue(new PurchaseOrderApprovalMail(
-                po: $po,
-                recipient: $requester,
-                mode: $hasPendingApproval
-                    ? 'step_approved'
-                    : 'final_approved',
-                actor: $approver,
-                isFinalApproved: !$hasPendingApproval,
-            ));
+            ->queue(
+                new PurchaseOrderApprovalMail(
+                    po: $po,
+                    recipient: $requester,
+                    mode: $hasPendingApproval
+                        ? 'step_approved'
+                        : 'final_approved',
+                    actor: $approver,
+                    isFinalApproved: !$hasPendingApproval,
+                ),
+            );
     }
 
+    /**
+     * Kirim email reject kepada requester.
+     */
     public function sendRejected(
         PurchaseOrder $po,
         User $rejecter,
-        ?string $notes = null
+        ?string $notes = null,
     ): void {
         if (!$po->requester_signed_by) {
             return;
         }
 
-        $requester = User::find($po->requester_signed_by);
+        $requester = User::query()
+            ->find($po->requester_signed_by);
 
-        if (!$requester || !$requester->email) {
+        if (
+            !$requester
+            || empty(trim((string) $requester->email))
+        ) {
+            Log::warning(
+                '[Purchase Order Mail] Email requester reject tidak ditemukan',
+                [
+                    'po_id' => $po->id,
+                    'nomor_po' => $po->nomor_po,
+                    'requester_signed_by'
+                    => $po->requester_signed_by,
+                ],
+            );
+
             return;
         }
 
         Mail::to($requester->email)
-            ->queue(new PurchaseOrderApprovalMail(
-                po: $po,
-                recipient: $requester,
-                mode: 'rejected',
-                actor: $rejecter,
-                notes: $notes,
-            ));
+            ->queue(
+                new PurchaseOrderApprovalMail(
+                    po: $po,
+                    recipient: $requester,
+                    mode: 'rejected',
+                    actor: $rejecter,
+                    notes: $notes,
+                ),
+            );
     }
 
-    private function resolveApprovalUsers(PurchaseOrderApproval $approval): Collection
-    {
-        $approverType = strtoupper((string) $approval->approver_type);
+    /**
+     * Resolve satu row approval menjadi user.
+     */
+    private function resolveApprovalUsers(
+        PurchaseOrderApproval $approval,
+    ): Collection {
+        $approverType = strtoupper(
+            trim((string) $approval->approver_type),
+        );
+
         $approverId = (int) $approval->approver_id;
 
-        if (!$approverId) {
+        if ($approverId <= 0) {
             return collect();
         }
 
-        if ($approverType === 'USER') {
+        if (
+            $approverType
+            === PurchaseOrderApproval::APPROVER_TYPE_USER
+        ) {
             return User::query()
-                ->where('id', $approverId)
+                ->whereKey($approverId)
                 ->whereNotNull('email')
                 ->get();
         }
 
-        if ($approverType === 'ROLE') {
-            $users = collect();
-
-            if (Schema::hasColumn('users', 'role_id')) {
-                $users = User::query()
-                    ->where('role_id', $approverId)
-                    ->whereNotNull('email')
-                    ->get();
-            }
-
-            if ($users->isEmpty() && Schema::hasTable('role_user')) {
-                $userIds = DB::table('role_user')
-                    ->where('role_id', $approverId)
-                    ->pluck('user_id')
-                    ->toArray();
-
-                if (!empty($userIds)) {
-                    $users = User::query()
-                        ->whereIn('id', $userIds)
-                        ->whereNotNull('email')
-                        ->get();
-                }
-            }
-
-            if ($users->isEmpty() && Schema::hasTable('user_roles')) {
-                $userIds = DB::table('user_roles')
-                    ->where('role_id', $approverId)
-                    ->pluck('user_id')
-                    ->toArray();
-
-                if (!empty($userIds)) {
-                    $users = User::query()
-                        ->whereIn('id', $userIds)
-                        ->whereNotNull('email')
-                        ->get();
-                }
-            }
-
-            return $users;
+        if (
+            $approverType
+            === PurchaseOrderApproval::APPROVER_TYPE_ROLE
+        ) {
+            return $this->resolveUsersByRoleId(
+                $approverId,
+            );
         }
 
         return collect();
+    }
+
+    /**
+     * Resolve user berdasarkan role dari seluruh struktur yang tersedia.
+     */
+    private function resolveUsersByRoleId(
+        int $roleId,
+    ): Collection {
+        if ($roleId <= 0) {
+            return collect();
+        }
+
+        $userIds = collect();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Struktur utama: user_roles
+        |--------------------------------------------------------------------------
+        */
+        if (Schema::hasTable('user_roles')) {
+            $userIds = $userIds->merge(
+                DB::table('user_roles')
+                    ->where('role_id', $roleId)
+                    ->pluck('user_id'),
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Compatibility: role_user
+        |--------------------------------------------------------------------------
+        */
+        if (Schema::hasTable('role_user')) {
+            $userIds = $userIds->merge(
+                DB::table('role_user')
+                    ->where('role_id', $roleId)
+                    ->pluck('user_id'),
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Compatibility: users.role_id
+        |--------------------------------------------------------------------------
+        */
+        if (Schema::hasColumn('users', 'role_id')) {
+            $userIds = $userIds->merge(
+                User::query()
+                    ->where('role_id', $roleId)
+                    ->pluck('id'),
+            );
+        }
+
+        $userIds = $userIds
+            ->filter(
+                fn($userId) => (int) $userId > 0,
+            )
+            ->map(
+                fn($userId) => (int) $userId,
+            )
+            ->unique()
+            ->values();
+
+        if ($userIds->isEmpty()) {
+            return collect();
+        }
+
+        return User::query()
+            ->whereIn('id', $userIds)
+            ->whereNotNull('email')
+            ->get();
     }
 }

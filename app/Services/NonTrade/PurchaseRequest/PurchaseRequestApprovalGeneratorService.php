@@ -3,206 +3,390 @@
 namespace App\Services\NonTrade\PurchaseRequest;
 
 use App\Models\ApprovalFlow;
+use App\Models\ApprovalFlowStep;
 use App\Models\PurchaseRequest;
 use App\Models\PurchaseRequestApproval;
-use Exception;
+use App\Models\Role;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 class PurchaseRequestApprovalGeneratorService
 {
-    public function generate(PurchaseRequest $pr): void
-    {
-        DB::transaction(function () use ($pr) {
-            $pr->loadMissing([
-                'creator',
-                'submitter',
+    public function generate(
+        PurchaseRequest $purchaseRequest,
+    ): void {
+        /*
+        |--------------------------------------------------------------------------
+        | Cegah approval tergenerate dua kali
+        |--------------------------------------------------------------------------
+        */
+        $alreadyExists = PurchaseRequestApproval::query()
+            ->where(
+                'purchase_request_id',
+                $purchaseRequest->id,
+            )
+            ->exists();
+
+        if ($alreadyExists) {
+            throw ValidationException::withMessages([
+                'approval' => [
+                    'Approval Purchase Request sudah pernah dibuat.',
+                ],
             ]);
-
-            /*
-            |--------------------------------------------------------------------------
-            | Cegah generate ulang
-            |--------------------------------------------------------------------------
-            | Approval PR hanya boleh dibuat sekali saat submit.
-            |--------------------------------------------------------------------------
-            */
-            $existingApproval = PurchaseRequestApproval::where('purchase_request_id', $pr->id)
-                ->exists();
-
-            if ($existingApproval) {
-                throw new Exception('Approval Purchase Request sudah pernah digenerate.');
-            }
-
-            $areaType = $this->resolveAreaType($pr);
-            $departmentId = $this->resolveCreatorDepartmentId($pr);
-            $amount = (float) ($pr->total_amount ?? 0);
-            $cabang = $this->resolveCabangValue($pr);
-
-            $flow = $this->findApprovalFlow(
-                areaType: $areaType,
-                cabang: $cabang,
-                creatorDepartmentId: $departmentId,
-                amount: $amount
-            );
-
-            if (!$flow) {
-                throw new Exception(
-                    'Approval flow PR belum disetting untuk kombinasi area, cabang, department, dan nominal ini.'
-                );
-            }
-
-            $steps = $flow->steps()
-                ->orderBy('step_order')
-                ->orderBy('id')
-                ->get();
-
-            if ($steps->isEmpty()) {
-                throw new Exception('Approval flow PR belum memiliki step approval.');
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Step pertama menjadi WAITING
-            |--------------------------------------------------------------------------
-            | Karena step_order bisa punya beberapa approver, maka semua row dengan
-            | step_order paling kecil menjadi WAITING.
-            |--------------------------------------------------------------------------
-            */
-            $firstStepOrder = (int) $steps->min('step_order');
-
-            foreach ($steps as $step) {
-                PurchaseRequestApproval::create([
-                    'purchase_request_id' => $pr->id,
-                    'approval_flow_id' => $flow->id,
-                    'approval_flow_step_id' => $step->id,
-
-                    'step_order' => (int) $step->step_order,
-                    'label' => $step->label,
-
-                    'approver_type' => strtoupper((string) $step->approver_type),
-                    'approver_id' => (int) $step->approver_id,
-                    'approver_name_snapshot' => null,
-
-                    'approval_mode' => strtoupper((string) ($step->approval_mode ?? PurchaseRequestApproval::APPROVAL_MODE_ANY)),
-
-                    'status' => (int) $step->step_order === $firstStepOrder
-                        ? PurchaseRequestApproval::STATUS_WAITING
-                        : PurchaseRequestApproval::STATUS_PENDING,
-                ]);
-            }
-        });
-    }
-
-    private function findApprovalFlow(
-        string $areaType,
-        ?string $cabang,
-        ?int $creatorDepartmentId,
-        float $amount
-    ): ?ApprovalFlow {
-        /*
-        |--------------------------------------------------------------------------
-        | Prioritas pencarian flow
-        |--------------------------------------------------------------------------
-        | 1. Flow paling spesifik cabang + department
-        | 2. Flow global cabang null + department
-        | 3. Flow global cabang null + department null
-        |--------------------------------------------------------------------------
-        */
-        return ApprovalFlow::query()
-            ->where('document_type', ApprovalFlow::DOCUMENT_TYPE_PR)
-            ->where('is_active', true)
-            ->where('area_type', strtoupper($areaType))
-            ->where('min_amount', '<=', $amount)
-            ->where(function ($q) use ($amount) {
-                $q->whereNull('max_amount')
-                    ->orWhere('max_amount', '>=', $amount);
-            })
-            ->where(function ($q) use ($cabang) {
-                $q->whereNull('cabang');
-
-                if (!empty($cabang)) {
-                    $q->orWhere('cabang', $cabang);
-                }
-            })
-            ->where(function ($q) use ($creatorDepartmentId) {
-                $q->whereNull('creator_department_id');
-
-                if (!empty($creatorDepartmentId)) {
-                    $q->orWhere('creator_department_id', $creatorDepartmentId);
-                }
-            })
-            ->with('steps')
-            /*
-            |--------------------------------------------------------------------------
-            | Prioritas:
-            | - yang cabang spesifik lebih didahulukan daripada cabang null
-            | - yang department spesifik lebih didahulukan daripada department null
-            |--------------------------------------------------------------------------
-            */
-            ->orderByRaw('CASE WHEN cabang IS NULL THEN 1 ELSE 0 END')
-            ->orderByRaw('CASE WHEN creator_department_id IS NULL THEN 1 ELSE 0 END')
-            ->orderBy('min_amount')
-            ->first();
-    }
-
-    private function resolveCreatorDepartmentId(PurchaseRequest $pr): ?int
-    {
-        return $pr->id_department
-            ? (int) $pr->id_department
-            : null;
-    }
-
-    private function resolveCabangValue(PurchaseRequest $pr): ?string
-    {
-        /*
-        |--------------------------------------------------------------------------
-        | Sesuaikan dengan data approval_flows.cabang
-        |--------------------------------------------------------------------------
-        | Kalau nanti approval_flows.cabang kamu simpan ID cabang, return ID.
-        | Kalau simpan inisial/nama cabang, return sesuai format tersebut.
-        |
-        | Saat ini purchase_requests.cabang kamu varchar, jadi kita pakai value PR.
-        |--------------------------------------------------------------------------
-        */
-        $cabang = trim((string) ($pr->cabang ?? ''));
-
-        return $cabang !== '' ? $cabang : null;
-    }
-
-    private function resolveAreaType(PurchaseRequest $pr): string
-    {
-        /*
-        |--------------------------------------------------------------------------
-        | Idealnya area_type diambil dari master cabang.
-        |--------------------------------------------------------------------------
-        | Jika table cabang sudah punya area_type:
-        | - HO
-        | - CABANG
-        |
-        | Nanti bagian ini bisa diganti:
-        | return strtoupper($pr->cabangData?->area_type ?? 'CABANG');
-        |--------------------------------------------------------------------------
-        */
-
-        $cabang = strtoupper(trim((string) ($pr->cabang ?? '')));
-
-        /*
-        |--------------------------------------------------------------------------
-        | Fallback sementara
-        |--------------------------------------------------------------------------
-        | Sesuaikan value HO di data cabang kamu.
-        |--------------------------------------------------------------------------
-        */
-        $hoValues = [
-            'HO',
-            'HEAD OFFICE',
-            'JAKARTA',
-            'JKT',
-        ];
-
-        if (in_array($cabang, $hoValues, true)) {
-            return ApprovalFlow::AREA_HO;
         }
 
-        return ApprovalFlow::AREA_CABANG;
+        /*
+        |--------------------------------------------------------------------------
+        | Hitung nominal PR
+        |--------------------------------------------------------------------------
+        */
+        $totalAmount = $this->calculateTotalAmount(
+            $purchaseRequest,
+        );
+
+        if ($totalAmount <= 0) {
+            throw ValidationException::withMessages([
+                'total_amount' => [
+                    'Total nilai Purchase Request harus lebih besar dari 0.',
+                ],
+            ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Cari flow yang sesuai
+        |--------------------------------------------------------------------------
+        */
+        $approvalFlow = $this->findMatchingFlow(
+            $purchaseRequest,
+            $totalAmount,
+        );
+
+        if (!$approvalFlow) {
+            throw ValidationException::withMessages([
+                'approval_flow' => [
+                    sprintf(
+                        'Approval flow Purchase Request tidak ditemukan untuk nominal Rp %s.',
+                        number_format(
+                            $totalAmount,
+                            0,
+                            ',',
+                            '.',
+                        ),
+                    ),
+                ],
+            ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Ambil seluruh step flow
+        |--------------------------------------------------------------------------
+        */
+        $flowSteps = ApprovalFlowStep::query()
+            ->where(
+                'approval_flow_id',
+                $approvalFlow->id,
+            )
+            ->orderBy('step_order')
+            ->orderBy('id')
+            ->get();
+
+        if ($flowSteps->isEmpty()) {
+            throw ValidationException::withMessages([
+                'approval_flow' => [
+                    'Approval flow ditemukan, tetapi belum memiliki approver.',
+                ],
+            ]);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Tentukan step pertama
+        |--------------------------------------------------------------------------
+        */
+        $firstStepOrder = (int) $flowSteps
+            ->min('step_order');
+
+        /*
+        |--------------------------------------------------------------------------
+        | Snapshot seluruh approver ke transaksi PR
+        |--------------------------------------------------------------------------
+        */
+        foreach ($flowSteps as $flowStep) {
+            $stepOrder = (int) $flowStep->step_order;
+
+            PurchaseRequestApproval::create([
+                'purchase_request_id' => $purchaseRequest->id,
+
+                'approval_flow_id' => $approvalFlow->id,
+
+                'approval_flow_step_id' => $flowStep->id,
+
+                'step_order' => $stepOrder,
+
+                'label' => $flowStep->label,
+
+                'approver_type' => strtoupper(
+                    trim(
+                        (string) $flowStep->approver_type,
+                    ),
+                ),
+
+                'approver_id' => $flowStep->approver_id,
+
+                'approver_name_snapshot'
+                => $this->resolveApproverName(
+                    $flowStep,
+                ),
+
+                'approval_mode' => strtoupper(
+                    trim(
+                        (string) (
+                            $flowStep->approval_mode
+                            ?: 'ANY'
+                        ),
+                    ),
+                ),
+
+                /*
+                |--------------------------------------------------------------------------
+                | Step pertama aktif
+                |--------------------------------------------------------------------------
+                | WAITING  = bisa diproses approver sekarang
+                | PENDING  = menunggu step sebelumnya selesai
+                |--------------------------------------------------------------------------
+                */
+                'status' => $stepOrder === $firstStepOrder
+                    ? PurchaseRequestApproval::STATUS_WAITING
+                    : PurchaseRequestApproval::STATUS_PENDING,
+            ]);
+        }
+    }
+
+    private function calculateTotalAmount(
+        PurchaseRequest $purchaseRequest,
+    ): float {
+        $purchaseRequest->loadMissing('items');
+
+        /*
+        |--------------------------------------------------------------------------
+        | Gunakan total header jika tersedia
+        |--------------------------------------------------------------------------
+        */
+        $headerTotal = (float) (
+            $purchaseRequest->total_nilai
+            ?? $purchaseRequest->grand_total
+            ?? $purchaseRequest->total_amount
+            ?? 0
+        );
+
+        if ($headerTotal > 0) {
+            return $headerTotal;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Gunakan subtotal item jika tersedia
+        |--------------------------------------------------------------------------
+        */
+        $subtotal = (float) $purchaseRequest
+            ->items
+            ->sum(function ($item) {
+                return (float) (
+                    $item->subtotal
+                    ?? $item->total
+                    ?? 0
+                );
+            });
+
+        if ($subtotal > 0) {
+            return $subtotal;
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Fallback qty × harga
+        |--------------------------------------------------------------------------
+        */
+        return (float) $purchaseRequest
+            ->items
+            ->sum(function ($item) {
+                $qty = (float) (
+                    $item->qty
+                    ?? $item->quantity
+                    ?? 0
+                );
+
+                $price = (float) (
+                    $item->harga
+                    ?? $item->harga_satuan
+                    ?? $item->unit_price
+                    ?? 0
+                );
+
+                return $qty * $price;
+            });
+    }
+
+    private function findMatchingFlow(
+        PurchaseRequest $purchaseRequest,
+        float $totalAmount,
+    ): ?ApprovalFlow {
+        /*
+    |--------------------------------------------------------------------------
+    | Tentukan area berdasarkan cabang requester
+    |--------------------------------------------------------------------------
+    | cabang ID 1 = HO
+    | selain ID 1 = CABANG
+    |--------------------------------------------------------------------------
+    */
+        $areaType = $purchaseRequest->getApprovalAreaType();
+
+        /*
+    |--------------------------------------------------------------------------
+    | Department pembuat PR
+    |--------------------------------------------------------------------------
+    */
+        $departmentId = $purchaseRequest->id_department;
+
+        if (!$departmentId) {
+            throw ValidationException::withMessages([
+                'approval_flow' => [
+                    'Department Purchase Request tidak tersedia untuk mencari approval flow.',
+                ],
+            ]);
+        }
+
+        Log::info('[PR Approval Generator] Matching flow parameters', [
+            'purchase_request_id' => $purchaseRequest->id,
+            'document_type' => 'PR',
+            'cabang_id' => $purchaseRequest->cabang,
+            'area_type' => $areaType,
+            'creator_department_id' => (int) $departmentId,
+            'total_amount' => $totalAmount,
+        ]);
+
+        $flow = ApprovalFlow::query()
+            ->whereNull('deleted_at')
+            ->where('is_active', true)
+
+            /*
+        |--------------------------------------------------------------------------
+        | Jenis dokumen
+        |--------------------------------------------------------------------------
+        */
+            ->whereRaw(
+                'UPPER(TRIM(document_type)) = ?',
+                ['PR'],
+            )
+
+            /*
+        |--------------------------------------------------------------------------
+        | Area
+        |--------------------------------------------------------------------------
+        | Tidak membandingkan approval_flows.cabang.
+        |
+        | HO     = Kantor Pusat
+        | CABANG = seluruh cabang selain HO
+        |--------------------------------------------------------------------------
+        */
+            ->whereRaw(
+                'UPPER(TRIM(area_type)) = ?',
+                [$areaType],
+            )
+
+            /*
+        |--------------------------------------------------------------------------
+        | Department pembuat PR
+        |--------------------------------------------------------------------------
+        */
+            ->where(
+                'creator_department_id',
+                (int) $departmentId,
+            )
+
+            /*
+        |--------------------------------------------------------------------------
+        | Batas minimum nominal
+        |--------------------------------------------------------------------------
+        */
+            ->where(function ($query) use ($totalAmount) {
+                $query
+                    ->whereNull('min_amount')
+                    ->orWhere(
+                        'min_amount',
+                        '<=',
+                        $totalAmount,
+                    );
+            })
+
+            /*
+        |--------------------------------------------------------------------------
+        | Batas maksimum nominal
+        |--------------------------------------------------------------------------
+        | null atau 0 berarti tidak memiliki batas maksimum.
+        |--------------------------------------------------------------------------
+        */
+            ->where(function ($query) use ($totalAmount) {
+                $query
+                    ->whereNull('max_amount')
+                    ->orWhere('max_amount', 0)
+                    ->orWhere(
+                        'max_amount',
+                        '>=',
+                        $totalAmount,
+                    );
+            })
+
+            /*
+        |--------------------------------------------------------------------------
+        | Jika ada beberapa flow yang cocok
+        |--------------------------------------------------------------------------
+        | Prioritaskan rentang yang paling spesifik.
+        |--------------------------------------------------------------------------
+        */
+            ->orderByDesc('min_amount')
+            ->orderBy('max_amount')
+            ->orderByDesc('id')
+            ->first();
+
+        Log::info('[PR Approval Generator] Matching flow result', [
+            'purchase_request_id' => $purchaseRequest->id,
+            'approval_flow_id' => $flow?->id,
+            'approval_flow_name' => $flow?->name,
+            'area_type' => $flow?->area_type,
+            'creator_department_id' => $flow?->creator_department_id,
+            'min_amount' => $flow?->min_amount,
+            'max_amount' => $flow?->max_amount,
+        ]);
+
+        return $flow;
+    }
+
+    private function resolveApproverName(
+        ApprovalFlowStep $flowStep,
+    ): ?string {
+        $approverType = strtoupper(
+            trim(
+                (string) $flowStep->approver_type,
+            ),
+        );
+
+        if ($approverType === 'USER') {
+            return User::query()
+                ->whereKey($flowStep->approver_id)
+                ->value('name');
+        }
+
+        if ($approverType === 'ROLE') {
+            return Role::query()
+                ->whereKey($flowStep->approver_id)
+                ->value('nama');
+        }
+
+        return null;
     }
 }

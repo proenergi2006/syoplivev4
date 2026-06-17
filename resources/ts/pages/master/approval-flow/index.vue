@@ -98,6 +98,13 @@ interface EditApprovalFlowForm {
   steps: EditApprovalStep[]
 }
 
+interface DepartmentOption {
+  id: number
+  title: string
+  nama?: string | null
+  kode?: string | null
+}
+
 const router = useRouter()
 const route = useRoute()
 
@@ -121,6 +128,30 @@ const approvalFlows = ref<ApprovalFlowItem[]>([])
 const roleOptions = ref<MasterRoleOption[]>([])
 const userOptions = ref<MasterUserOption[]>([])
 
+const selectedAreaType = ref<'all' | 'HO' | 'CABANG'>('all')
+const selectedDepartmentId = ref<number | null>(null)
+
+const departmentOptions = ref<DepartmentOption[]>([])
+
+const isPRFilter = computed(() => {
+  return String(selectedDocumentType.value || '').toUpperCase() === 'PR'
+})
+
+const areaTypeOptions = [
+  {
+    title: 'Semua Area',
+    value: 'all',
+  },
+  {
+    title: 'Head Office (HO)',
+    value: 'HO',
+  },
+  {
+    title: 'Cabang',
+    value: 'CABANG',
+  },
+]
+
 const approverTypeOptions = [
   { title: 'Role', value: 'ROLE' },
   { title: 'User', value: 'USER' },
@@ -134,6 +165,50 @@ const editForm = ref<EditApprovalFlowForm>({
   max_amount: null,
   steps: [],
 })
+
+const normalizeDepartmentItems = (payload: any): DepartmentOption[] => {
+  const rawItems = payload?.data?.data
+    ?? payload?.data
+    ?? payload
+    ?? []
+
+  if (!Array.isArray(rawItems))
+    return []
+
+  return rawItems.map((item: any) => {
+    const id = Number(item.id ?? item.value)
+    const kode = item.kode ?? item.code ?? ''
+    const nama = String(
+      item.nama
+        ?? item.name
+        ?? item.label
+        ?? item.title
+        ?? '-',
+    )
+
+    return {
+      id,
+      kode,
+      nama,
+      title: kode ? `${kode} - ${nama}` : nama,
+    }
+  })
+}
+
+const fetchDepartmentOptions = async (): Promise<void> => {
+  try {
+    const response = await axios.get('/master/department/dropdown-select', {
+      headers: { Accept: 'application/json' },
+    })
+
+    departmentOptions.value = normalizeDepartmentItems(response.data)
+  } catch (error: any) {
+    showErrorToast({
+      title: 'Gagal',
+      text: getApiErrorMessage(error, 'Gagal memuat data department.'),
+    })
+  }
+}
 
 const isPRFlow = (item: ApprovalFlowItem): boolean => {
   return String(item.document_type || '').toUpperCase() === 'PR'
@@ -159,7 +234,7 @@ const normalizeDocumentType = (value: unknown): string => {
   return rawValue
 }
 
-const selectedDocumentType = ref(normalizeDocumentType(route.query.document_type || 'PO'))
+const selectedDocumentType = ref(normalizeDocumentType(route.query.document_type || 'PR'))
 
 const getCreatorDepartmentLabel = (item: ApprovalFlowItem): string => {
   const code = item.creator_department_code || ''
@@ -605,7 +680,13 @@ const totalInactiveFlow = computed(() => {
 })
 
 const hasFilter = computed(() => {
-  return !!keyword.value || selectedDocumentType.value !== 'PO' || selectedStatus.value !== 'active'
+  return Boolean(
+    keyword.value
+      || selectedDocumentType.value !== 'PO'
+      || selectedStatus.value !== 'active'
+      || selectedAreaType.value !== 'all'
+      || selectedDepartmentId.value,
+  )
 })
 
 const isFlowActive = (item: ApprovalFlowItem): boolean => {
@@ -813,6 +894,7 @@ const buildParams = (): Record<string, any> => {
   const params: Record<string, any> = {
     page: page.value,
     per_page: perPage.value,
+    document_type: selectedDocumentType.value,
   }
 
   if (keyword.value) {
@@ -825,6 +907,14 @@ const buildParams = (): Record<string, any> => {
 
   if (selectedStatus.value !== 'all') {
     params.status = selectedStatus.value
+  }
+
+  if (isPRFilter.value) {
+    if (selectedAreaType.value !== 'all')
+      params.area_type = selectedAreaType.value
+
+    if (selectedDepartmentId.value)
+      params.creator_department_id = selectedDepartmentId.value
   }
 
   return params
@@ -900,6 +990,9 @@ const resetFilter = async (): Promise<void> => {
   selectedDocumentType.value = 'PO'
   selectedStatus.value = 'active'
   page.value = 1
+
+  selectedAreaType.value = 'all'
+  selectedDepartmentId.value = null
 
   await router.replace({
     path: route.path,
@@ -1055,6 +1148,14 @@ const goToNextPage = async (): Promise<void> => {
 
 let searchTimeout: ReturnType<typeof setTimeout> | null = null
 
+watch([selectedAreaType, selectedDepartmentId], async () => {
+  if (!isPRFilter.value)
+    return
+
+  page.value = 1
+  await loadApprovalFlows()
+})
+
 watch(keyword, () => {
   if (searchTimeout) clearTimeout(searchTimeout)
 
@@ -1086,6 +1187,7 @@ onMounted(async () => {
   await Promise.all([
     loadApprovalFlows(),
     loadApproverOptions(),
+    fetchDepartmentOptions(),
   ])
 
   const success = route.query.success
@@ -1254,64 +1356,156 @@ onMounted(async () => {
       </VCol>
     </VRow>
 
-    <VCard class="mb-6 rounded-lg">
+    <VCard class="mb-6 rounded-lg approval-flow-filter-card">
       <VCardText>
-        <VRow>
-          <VCol
-            cols="12"
-            md="3"
-          >
-            <VTextField
-              v-model="keyword"
-              label="Cari approval flow"
-              placeholder="Cari nama flow, role, keterangan..."
-              prepend-inner-icon="tabler-search"
-              clearable
-              density="comfortable"
-            />
-          </VCol>
-
-          <VCol
-            cols="12"
-            md="4"
-          >
-            <VSelect
-              v-model="selectedDocumentType"
-              :items="documentTypeOptions"
-              label="Jenis Dokumen"
-              density="comfortable"
-            />
-          </VCol>
-
-          <VCol
-            cols="12"
-            md="3"
-          >
-            <VSelect
-              v-model="selectedStatus"
-              :items="statusOptions"
-              label="Status"
-              density="comfortable"
-            />
-          </VCol>
-
-          <VCol
-            cols="12"
-            md="2"
-            class="d-flex align-center"
-          >
-            <VBtn
-              block
-              variant="tonal"
-              color="secondary"
-              prepend-icon="tabler-filter-off"
-              :disabled="!hasFilter"
-              @click="resetFilter"
+        <div class="approval-flow-filter-grid">
+          <!-- Row utama -->
+          <VRow>
+            <VCol
+              cols="12"
+              md="6"
+              lg="3"
             >
-              Reset
-            </VBtn>
-          </VCol>
-        </VRow>
+              <VTextField
+                v-model="keyword"
+                label="Cari approval flow"
+                placeholder="Cari nama approval flow"
+                prepend-inner-icon="tabler-search"
+                clearable
+                density="comfortable"
+                hide-details
+              />
+            </VCol>
+
+            <VCol
+              cols="12"
+              md="6"
+              lg="4"
+            >
+              <VSelect
+                v-model="selectedDocumentType"
+                label="Jenis Dokumen"
+                :items="documentTypeOptions"
+                item-title="title"
+                item-value="value"
+                :return-object="false"
+                density="comfortable"
+                hide-details
+                :menu-props="{
+                  location: 'bottom',
+                  offset: 8,
+                  maxHeight: 250,
+                }"
+              />
+            </VCol>
+
+            <VCol
+              cols="12"
+              md="6"
+              lg="3"
+            >
+              <VSelect
+                v-model="selectedStatus"
+                label="Status"
+                :items="statusOptions"
+                item-title="title"
+                item-value="value"
+                :return-object="false"
+                density="comfortable"
+                hide-details
+                :menu-props="{
+                  location: 'bottom',
+                  offset: 8,
+                  maxHeight: 250,
+                }"
+              />
+            </VCol>
+
+            <VCol
+              cols="12"
+              md="6"
+              lg="2"
+              class="d-flex"
+            >
+              <VBtn
+                block
+                variant="tonal"
+                color="secondary"
+                prepend-icon="tabler-filter-off"
+                :disabled="!hasFilter"
+                class="text-none approval-flow-reset-btn"
+                @click="resetFilter"
+              >
+                Reset
+              </VBtn>
+            </VCol>
+          </VRow>
+
+          <!-- Row tambahan khusus PR -->
+          <VExpandTransition>
+            <div v-if="isPRFilter">
+              <VDivider class="my-4" />
+
+              <div class="d-flex align-center gap-2 mb-3">
+                <VIcon
+                  icon="tabler-filter-cog"
+                  size="18"
+                  color="primary"
+                />
+                <div class="text-body-2 font-weight-semibold text-primary">
+                  Filter Khusus Purchase Request
+                </div>
+              </div>
+
+              <VRow>
+                <VCol
+                  cols="12"
+                  md="6"
+                >
+                  <VSelect
+                    v-model="selectedAreaType"
+                    label="Area"
+                    :items="areaTypeOptions"
+                    item-title="title"
+                    item-value="value"
+                    :return-object="false"
+                    density="comfortable"
+                    hide-details
+                    :menu-props="{
+                      location: 'bottom',
+                      offset: 8,
+                      maxHeight: 250,
+                    }"
+                  />
+                </VCol>
+
+                <VCol
+                  cols="12"
+                  md="6"
+                >
+                  <VAutocomplete
+                    v-model="selectedDepartmentId"
+                    label="Department"
+                    :items="departmentOptions"
+                    item-title="title"
+                    item-value="id"
+                    :return-object="false"
+                    clearable
+                    density="comfortable"
+                    hide-details
+                    placeholder="Pilih department"
+                    no-data-text="Department tidak ditemukan"
+                    :menu-props="{
+                      location: 'bottom',
+                      offset: 8,
+                      maxHeight: 300,
+                    }"
+                  />
+                </VCol>
+              </VRow>
+            </div>
+          </VExpandTransition>
+        </div>
       </VCardText>
     </VCard>
 

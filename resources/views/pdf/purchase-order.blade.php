@@ -279,8 +279,34 @@
         */
 
         $approvalSignatures = $po->approvals
-            ->sortBy('step_order')
-            ->values();
+        /*
+        |--------------------------------------------------------------------------
+        | Hanya approval yang benar-benar disetujui
+        |--------------------------------------------------------------------------
+        |
+        | Mode ANY:
+        | - kandidat yang memproses = APPROVED
+        | - kandidat lainnya = SKIPPED
+        | - hanya APPROVED yang masuk ke PDF
+        |
+        | Mode ALL:
+        | - seluruh kandidat wajib APPROVED
+        | - seluruh approval tersebut masuk ke PDF
+        |--------------------------------------------------------------------------
+        */
+        ->filter(function ($approval) {
+            return strtoupper(
+                trim((string) $approval->status)
+            ) === 'APPROVED';
+        })
+        ->sortBy(function ($approval) {
+            return sprintf(
+                '%010d-%010d',
+                (int) $approval->step_order,
+                (int) $approval->id,
+            );
+        })
+        ->values();
 
         $approvalCount = $approvalSignatures->count();
 

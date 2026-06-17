@@ -19,6 +19,7 @@ import {
   formatDecimalQty,
   toTitleCase,
 } from '@/utils/textFormatter'
+import { usePermissionStore } from '@/stores/permission'
 
 interface PurchaseOrderForm {
   tanggal_po: string
@@ -82,6 +83,14 @@ interface PurchaseOrderItem {
   subtotal: number
   is_selected: boolean
 }
+
+const permissionStore = usePermissionStore()
+
+const canCreate = computed(() => {
+  return permissionStore.can('purchase_order.create')
+})
+
+const isCheckingPermission = ref(true)
 
 const router = useRouter()
 
@@ -282,13 +291,38 @@ const fetchCabangList = async (showAlert = true): Promise<void> => {
   }
 }
 
-const fetchDepartmentList = async (showAlert = true): Promise<void> => {
+const currentUser = computed(() => {
+  try {
+    return JSON.parse(
+      localStorage.getItem('userData') || '{}',
+    )
+  }
+  catch {
+    return {}
+  }
+})
+
+const setUserDefaultDepartment = (): void => {
+  form.id_department
+    = currentUser.value?.department_id
+      ? Number(currentUser.value.department_id)
+      : null
+}
+
+const fetchDepartmentList = async (
+  showAlert = true,
+): Promise<void> => {
   isLoadingDepartment.value = true
 
   try {
-    const response = await axios.get('/master/department/dropdown-select', {
-      headers: { Accept: 'application/json' },
-    })
+    const response = await axios.get(
+      '/master/department/dropdown-select',
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+    )
 
     departmentList.value = Array.isArray(response.data?.data)
       ? response.data.data.map((item: any) => ({
@@ -298,16 +332,23 @@ const fetchDepartmentList = async (showAlert = true): Promise<void> => {
           label: `${item.kode || '-'} - ${item.nama || item.title || '-'}`,
         }))
       : []
-  } catch (error: unknown) {
+  }
+  catch (error: unknown) {
+    console.error('[Department] FETCH ERROR:', error)
+
     departmentList.value = []
 
     if (showAlert) {
       showErrorToast({
         title: 'Error',
-        text: getApiErrorMessage(error, 'Gagal memuat data department'),
+        text: getApiErrorMessage(
+          error,
+          'Gagal memuat data department.',
+        ),
       })
     }
-  } finally {
+  }
+  finally {
     isLoadingDepartment.value = false
   }
 }
@@ -753,12 +794,22 @@ const goBack = async (): Promise<void> => {
 }
 
 onMounted(async () => {
+  await permissionStore.loadPermissions()
+
+  if (!canCreate.value) {
+    await router.replace('/forbidden')
+    return
+  }
+
+  isCheckingPermission.value = false
+
   form.tanggal_po = today()
 
   await Promise.all([
     loadVendors(false),
     fetchCabangList(false),
     fetchDepartmentList(false),
+    setUserDefaultDepartment()
   ])
 })
 </script>
@@ -881,18 +932,21 @@ onMounted(async () => {
               :items="departmentList"
               item-title="label"
               item-value="id"
-              clearable
               density="comfortable"
               :loading="isLoadingDepartment"
+              readonly
+              persistent-hint
               :menu-props="{
                 location: 'bottom',
                 offset: 8,
                 maxHeight: 300,
               }"
               :error="isSubmitted && !form.id_department"
-              :error-messages="isSubmitted && !form.id_department ? ['Department wajib dipilih'] : []"
-              placeholder="Pilih Department"
-              @update:model-value="handleSelectPRFilter"
+              :error-messages="
+                isSubmitted && !form.id_department
+                  ? ['Department akun login tidak ditemukan']
+                  : []
+              "
             >
               <template #append-inner>
                 <VProgressCircular
@@ -901,25 +955,6 @@ onMounted(async () => {
                   size="18"
                   width="2"
                 />
-
-                <VTooltip
-                  v-else-if="departmentList.length === 0"
-                  text="Reload data department"
-                  location="top"
-                >
-                  <template #activator="{ props }">
-                    <VBtn
-                      v-bind="props"
-                      icon
-                      size="x-small"
-                      variant="text"
-                      color="primary"
-                      @click.stop.prevent="fetchDepartmentList(true)"
-                    >
-                      <VIcon icon="tabler-refresh" />
-                    </VBtn>
-                  </template>
-                </VTooltip>
               </template>
             </VAutocomplete>
           </VCol>

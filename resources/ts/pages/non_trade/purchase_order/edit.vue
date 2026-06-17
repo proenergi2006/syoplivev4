@@ -19,6 +19,7 @@ import {
   formatDecimalQty,
   toTitleCase,
 } from '@/utils/textFormatter'
+import { usePermissionStore } from '@/stores/permission'
 
 interface PurchaseOrderForm {
   tanggal_po: string
@@ -89,6 +90,14 @@ interface POItemState {
   is_selected: boolean
   qty: number
 }
+
+const permissionStore = usePermissionStore()
+
+const canUpdate = computed(() => {
+  return permissionStore.can('purchase_order.update')
+})
+
+const isCheckingPermission = ref(true)
 
 const route = useRoute()
 const router = useRouter()
@@ -893,7 +902,7 @@ const mapEditDetailToForm = async (detail: any): Promise<void> => {
     id: Number(pr.id),
     public_id: pr.public_id || '',
     nomor_pr: pr.nomor_pr || '-',
-    tanggal_pr: pr.tanggal_pr || detail.tanggal_po || '',
+    tanggal_pr: pr.tanggal_pr || '',
     cabang: detail.cabang || '-',
     department: detail.department || '-',
     total_amount: Number(pr.total_amount || 0),
@@ -1247,6 +1256,15 @@ const confirmCancel = async (): Promise<void> => {
 }
 
 onMounted(async () => {
+  await permissionStore.loadPermissions()
+
+  if (!canUpdate.value) {
+    await router.replace('/forbidden')
+    return
+  }
+
+  isCheckingPermission.value = false
+
   isLoadingDetail.value = true
   isInitialLoaded.value = false
 

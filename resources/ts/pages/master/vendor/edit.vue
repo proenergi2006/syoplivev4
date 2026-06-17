@@ -12,6 +12,7 @@ import {
   showInfoToast,
 } from '@/utils/alert'
 import { getApiErrorMessage } from '@/utils/apiHelper'
+import { usePermissionStore } from '@/stores/permission'
 
 interface ApiErrorResponse {
   message?: string
@@ -146,6 +147,14 @@ interface MasterBankItem {
   swift_code: string | null
   is_active: boolean
 }
+
+const permissionStore = usePermissionStore()
+
+const canUpdate = computed(() => {
+  return permissionStore.can('vendor.update')
+})
+
+const isCheckingPermission = ref(true)
 
 const router = useRouter()
 const route = useRoute()
@@ -863,6 +872,15 @@ const saveVendor = async (): Promise<void> => {
 }
 
 onMounted(async () => {
+  await permissionStore.loadPermissions()
+
+  if (!canUpdate.value) {
+    await router.replace('/forbidden')
+    return
+  }
+
+  isCheckingPermission.value = false
+  
   await Promise.all([
     loadMasterBanks(),
     loadTransaksi(),

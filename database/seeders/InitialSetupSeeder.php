@@ -96,7 +96,7 @@ class InitialSetupSeeder extends Seeder
             $dashboardMenuId = $this->upsertMenu(
                 ['name' => 'Dashboard', 'parent_id' => null],
                 [
-                    'path' => '/dashboard',
+                    'path' => '/dashboards/crm',
                     'route_name' => 'dashboard',
                     'icon' => 'tabler-smart-home',
                     'order_no' => 1,
@@ -159,7 +159,7 @@ class InitialSetupSeeder extends Seeder
 
             // Purchase children
             $purchaseRequestMenuId = $this->upsertMenu(
-                ['name' => 'Purchase Request', 'parent_id' => $purchaseMenuId],
+                ['name' => 'Purchase Requisition', 'parent_id' => $purchaseMenuId],
                 [
                     'path' => '/non_trade/purchase_request',
                     'route_name' => 'purchase-request',
@@ -498,6 +498,18 @@ class InitialSetupSeeder extends Seeder
                 ]
             );
 
+            $permissionSettingId = $this->upsertMenu(
+                ['name' => 'Role Permissions', 'parent_id' => $authMenuId],
+                [
+                    'path' => '/master/role-permissions',
+                    'route_name' => 'master-role-permissions',
+                    'icon' => 'tabler-license',
+                    'order_no' => 4,
+                    'permission_key' => null,
+                    'is_active' => true,
+                ]
+            );
+
             /*
             |--------------------------------------------------------------------------
             | 6) Admin User
@@ -582,6 +594,7 @@ class InitialSetupSeeder extends Seeder
                 $userMenuId,
                 $roleMenuId,
                 $roleMenuSettingId,
+                $permissionSettingId,
                 $produkId,
                 $pbbkbId,
                 $volumeId,

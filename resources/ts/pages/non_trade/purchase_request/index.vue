@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch, nextTick } from 'vue'
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import axios from '@axios'
 import {
@@ -16,7 +23,29 @@ import { useDeleteConfirm } from '@core/composable/useDeleteConfirm'
 import { formatStatusPKP, formatNumberWithoutRp, toTitleCase, formatDecimalQty } from '@/utils/textFormatter'
 import { useNativeDatePicker } from '@core/composable/useNativeDatePicker'
 import { formatDate } from '@/utils/textFormatter'
+import SignaturePad from 'signature_pad'
+import ApprovalHistoryDialog from '@core/components/ApprovalHistoryPRDialog.vue'
+import { usePolling } from '@core/composable/usePolling'
+import {
+  defaultModuleAbilities,
+  normalizeModuleAbilities,
+  type ModuleAbilities,
+} from '@/types/abilities'
+import { usePermissionStore } from '@/stores/permission'
 
+interface ApprovalHistoryItem {
+  id?: number
+  step_order: number | string
+  label?: string | null
+  approver_type?: string | null
+  approver_id?: number | string | null
+  approver_name_snapshot?: string | null
+  status?: string | null
+  approved_at?: string | null
+  rejected_at?: string | null
+  signed_at?: string | null
+  notes?: string | null
+}
 
 interface PurchaseRequestItem {
   id: number
@@ -29,6 +58,13 @@ interface PurchaseRequestItem {
   pr_type: string | null
   status: string | null
   status_po: string | null
+
+  can_approve?: boolean | number | string | null
+  approval_id?: number | null
+  approval_step_order?: number | null
+  approval_label?: string | null
+  approval_mode?: 'ANY' | 'ALL' | string | null
+
   created_at?: string | null
   created_by?: number | null
   created_by_name?: string | null
@@ -49,6 +85,7 @@ interface PurchaseRequestApiResponse {
     per_page: number
     total: number
   }
+  abilities?: ModuleAbilities
 }
 
 interface AxiosErrorShape {
@@ -61,11 +98,70 @@ interface AxiosErrorShape {
   }
 }
 
+const permissionStore = usePermissionStore()
+
+const canView = computed(() => {
+  return permissionStore.can('purchase_request.view')
+})
+
+const canCreate = computed(() => {
+  return permissionStore.can('purchase_request.create')
+})
+
+const canUpdate = computed(() => {
+  return permissionStore.can('purchase_request.update')
+})
+
+const canDelete = computed(() => {
+  return permissionStore.can('purchase_request.delete')
+})
+
+const isCheckingPermission = ref(true)
+
 const route = useRoute()
 const router = useRouter()
 
 const loading = ref(false)
 const rows = ref<PurchaseRequestItem[]>([])
+
+/*
+|--------------------------------------------------------------------------
+| Approval
+|--------------------------------------------------------------------------
+*/
+const pendingAction = ref<'submit' | 'approve' | null>(null)
+const selectedPr = ref<PurchaseRequestItem | null>(null)
+const approveLoading = ref(false)
+const approveNotes = ref('')
+
+/*
+|--------------------------------------------------------------------------
+| Reject
+|--------------------------------------------------------------------------
+*/
+const rejectDialog = ref(false)
+const rejectTarget = ref<PurchaseRequestItem | null>(null)
+const rejectNotes = ref('')
+const rejectLoading = ref(false)
+
+/*
+|--------------------------------------------------------------------------
+| Print Purchase Requisition
+|--------------------------------------------------------------------------
+*/
+const printLoadingId = ref<string | null>(null)
+
+/*
+|--------------------------------------------------------------------------
+| Signature
+|--------------------------------------------------------------------------
+*/
+const signatureDialog = ref(false)
+const signatureCanvasRef = ref<HTMLCanvasElement | null>(null)
+const signaturePad = ref<SignaturePad | null>(null)
+const signatureAgree = ref(false)
+const signatureError = ref('')
+const signatureLoading = ref(false)
 
 const searchQuery = ref('')
 const selectedStatus = ref('')
@@ -84,9 +180,528 @@ const detailLoading = ref(false)
 const detailError = ref('')
 const detailPurchaseRequest = ref<any | null>(null)
 const detailPurchaseRequestPublicId = ref<string | null>(null)
+
+const isApprovalHistoryDialogOpen = ref(false)
+const selectedApprovalHistory = ref<ApprovalHistoryItem[]>([])
+const selectedPRNomor = ref('-')
+
 const openedVendorPanels = ref<number[]>([])
 
 const selectedStatusPO = ref('')
+
+const abilities = ref<ModuleAbilities>(
+  defaultModuleAbilities(),
+)
+
+const canApprovePurchaseRequest = (
+  row: PurchaseRequestItem,
+): boolean => {
+  const status = String(row.status || '')
+    .trim()
+    .toUpperCase()
+
+  const canApprove = row.can_approve === true
+    || row.can_approve === 1
+    || row.can_approve === '1'
+    || String(row.can_approve).toLowerCase() === 'true'
+
+  return status === 'IN PROGRESS' && canApprove
+}
+
+const checkUserSignature = async (): Promise<boolean> => {
+  const response = await axios.get(
+    '/master/user/check-signature',
+    {
+      headers: {
+        Accept: 'application/json',
+      },
+    },
+  )
+
+  return response.data?.has_signature === true
+}
+
+const openSignatureDialog = async (): Promise<void> => {
+  signatureError.value = ''
+  signatureAgree.value = false
+  signatureDialog.value = true
+
+  await nextTick()
+
+  setTimeout(() => {
+    initSignaturePad()
+  }, 300)
+}
+
+const resizeSignatureCanvas = (): void => {
+  const canvas = signatureCanvasRef.value
+
+  if (!canvas)
+    return
+
+  const ratio = Math.max(
+    window.devicePixelRatio || 1,
+    1,
+  )
+
+  const rect = canvas.getBoundingClientRect()
+
+  canvas.width = rect.width * ratio
+  canvas.height = rect.height * ratio
+
+  const context = canvas.getContext('2d')
+
+  if (!context)
+    return
+
+  context.setTransform(
+    ratio,
+    0,
+    0,
+    ratio,
+    0,
+    0,
+  )
+
+  signaturePad.value?.clear()
+}
+
+const initSignaturePad = (): void => {
+  const canvas = signatureCanvasRef.value
+
+  if (!canvas)
+    return
+
+  const rect = canvas.getBoundingClientRect()
+
+  if (!rect.width || !rect.height) {
+    setTimeout(initSignaturePad, 200)
+
+    return
+  }
+
+  signaturePad.value?.off()
+
+  signaturePad.value = new SignaturePad(canvas, {
+    minWidth: 0.8,
+    maxWidth: 2.4,
+    throttle: 16,
+    penColor: 'black',
+    backgroundColor: 'rgba(255,255,255,0)',
+  })
+
+  resizeSignatureCanvas()
+}
+
+const saveSignatureAndContinue = async (): Promise<void> => {
+  if (
+    !signaturePad.value
+    || signaturePad.value.isEmpty()
+  ) {
+    signatureError.value = 'Tanda tangan wajib diisi.'
+
+    return
+  }
+
+  if (!signatureAgree.value) {
+    signatureError.value
+      = 'Anda wajib menyetujui penggunaan tanda tangan digital.'
+
+    return
+  }
+
+  try {
+    signatureLoading.value = true
+    signatureError.value = ''
+
+    const signature = signaturePad.value.toDataURL(
+      'image/png',
+    )
+
+    await axios.post(
+      '/master/user/store-signature',
+      {
+        signature,
+      },
+      {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+      },
+    )
+
+    signatureDialog.value = false
+
+    await nextTick()
+
+    if (
+      pendingAction.value === 'submit'
+      && selectedPr.value
+    ) {
+      await submitPurchaseRequest(selectedPr.value)
+    }
+
+    if (pendingAction.value === 'approve') {
+      await approvePurchaseRequest()
+    }
+  }
+  catch (error: unknown) {
+    signatureError.value = getApiErrorMessage(
+      error,
+      'Gagal menyimpan tanda tangan digital.',
+    )
+  }
+  finally {
+    signatureLoading.value = false
+  }
+}
+
+const openApprovalHistory = async (
+  item: PurchaseRequestItem,
+): Promise<void> => {
+  if (!item?.public_id) {
+    showErrorToast({
+      title: 'Error',
+      text: 'Public ID Purchase Requisition tidak ditemukan.',
+    })
+
+    return
+  }
+
+  try {
+    showLoadingAlert(
+      'Memuat history approval...',
+      'Mohon tunggu sebentar',
+    )
+
+    const response = await axios.get(
+      `/transaction/purchase-request/${encodeURIComponent(item.public_id)}`,
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+    )
+
+    closeAlert()
+
+    const data = response.data?.data ?? {}
+
+    selectedPRNomor.value = data.nomor_pr
+      ?? item.nomor_pr
+      ?? '-'
+
+    selectedApprovalHistory.value = Array.isArray(data.approvals)
+      ? data.approvals
+      : []
+
+    isApprovalHistoryDialogOpen.value = true
+  }
+  catch (error: unknown) {
+    closeAlert()
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(
+        error,
+        'Gagal memuat history approval Purchase Requisition.',
+      ),
+    })
+  }
+}
+
+const printPurchaseRequisition = async (
+  publicId: string,
+): Promise<void> => {
+  if (!publicId || printLoadingId.value)
+    return
+
+  printLoadingId.value = publicId
+
+  try {
+    showLoadingAlert(
+      'Membuka cetakan Purchase Requisition...',
+      'Mohon tunggu sebentar',
+    )
+
+    const response = await axios.get(
+      `/transaction/purchase-request/${encodeURIComponent(publicId)}/print`,
+      {
+        responseType: 'blob',
+        headers: {
+          Accept: 'application/pdf',
+        },
+      },
+    )
+
+    const file = new Blob(
+      [response.data],
+      {
+        type: 'application/pdf',
+      },
+    )
+
+    const fileURL = URL.createObjectURL(file)
+
+    closeAlert()
+
+    window.open(
+      fileURL,
+      '_blank',
+      'noopener,noreferrer',
+    )
+
+    /*
+    |--------------------------------------------------------------------------
+    | URL blob jangan langsung dicabut
+    |--------------------------------------------------------------------------
+    | Beri waktu browser membuka/membaca file.
+    |--------------------------------------------------------------------------
+    */
+    setTimeout(() => {
+      URL.revokeObjectURL(fileURL)
+    }, 60_000)
+  }
+  catch (error: unknown) {
+    closeAlert()
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(
+        error,
+        'Gagal mencetak Purchase Requisition.',
+      ),
+    })
+  }
+  finally {
+    printLoadingId.value = null
+  }
+}
+
+const openApprovePurchaseRequest = async (
+  row: PurchaseRequestItem,
+): Promise<void> => {
+  if (!canApprovePurchaseRequest(row))
+    return
+
+  selectedPr.value = row
+  pendingAction.value = 'approve'
+
+  try {
+    const hasSignature = await checkUserSignature()
+
+    if (!hasSignature) {
+      await openSignatureDialog()
+
+      return
+    }
+
+    await approvePurchaseRequest()
+  }
+  catch (error: unknown) {
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(
+        error,
+        'Gagal memeriksa tanda tangan digital.',
+      ),
+    })
+  }
+}
+
+const approvePurchaseRequest = async (): Promise<void> => {
+  if (
+    !selectedPr.value
+    || approveLoading.value
+  ) {
+    return
+  }
+
+  const target = {
+    ...selectedPr.value,
+  }
+
+  const confirm = await showConfirmAlert({
+    title: 'Approve Purchase Requisition?',
+    text: `Purchase Requisition "${target.nomor_pr || '-'}" akan disetujui.`,
+    confirmButtonText: 'Ya, approve',
+    cancelButtonText: 'Batal',
+  })
+
+  if (!confirm.isConfirmed)
+    return
+
+  approveLoading.value = true
+
+  try {
+    showLoadingAlert(
+      'Approve Purchase Requisition...',
+      'Mohon tunggu sebentar',
+    )
+
+    const response = await axios.patch(
+      `/transaction/purchase-request/${encodeURIComponent(target.public_id)}/approve`,
+      {
+        notes: approveNotes.value || null,
+      },
+      {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+      },
+    )
+
+    closeAlert()
+
+    showSuccessToast({
+      title: 'Berhasil',
+      text: response.data?.message
+        || `Purchase Requisition "${target.nomor_pr || '-'}" berhasil diapprove.`,
+    })
+
+    approveNotes.value = ''
+    selectedPr.value = null
+
+    await fetchPurchaseRequests()
+  }
+  catch (error: unknown) {
+    closeAlert()
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(
+        error,
+        'Gagal approve Purchase Requisition.',
+      ),
+    })
+  }
+  finally {
+    approveLoading.value = false
+  }
+}
+
+const openRejectPurchaseRequest = (
+  row: PurchaseRequestItem,
+): void => {
+  if (!canApprovePurchaseRequest(row))
+    return
+
+  rejectTarget.value = row
+  rejectNotes.value = ''
+  rejectDialog.value = true
+}
+
+const rejectPurchaseRequisition = async (): Promise<void> => {
+  if (
+    !rejectTarget.value
+    || rejectLoading.value
+  ) {
+    return
+  }
+
+  const target = {
+    ...rejectTarget.value,
+  }
+
+  const notes = rejectNotes.value.trim() || null
+
+  /*
+  |--------------------------------------------------------------------------
+  | Tutup dialog agar SweetAlert tampil di atas
+  |--------------------------------------------------------------------------
+  */
+  rejectDialog.value = false
+
+  await nextTick()
+
+  const confirm = await showConfirmAlert({
+    title: 'Reject Purchase Requisition?',
+    text: `Purchase Requisition "${target.nomor_pr || '-'}" akan ditolak.`,
+    confirmButtonText: 'Ya, reject',
+    cancelButtonText: 'Batal',
+  })
+
+  if (!confirm.isConfirmed) {
+    /*
+    |--------------------------------------------------------------------------
+    | Buka kembali agar catatan tidak hilang
+    |--------------------------------------------------------------------------
+    */
+    rejectDialog.value = true
+
+    return
+  }
+
+  rejectLoading.value = true
+
+  try {
+    showLoadingAlert(
+      'Reject Purchase Requisition...',
+      'Mohon tunggu sebentar',
+    )
+
+    const response = await axios.patch(
+      `/transaction/purchase-request/${encodeURIComponent(target.public_id)}/reject`,
+      {
+        notes,
+      },
+      {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+      },
+    )
+
+    closeAlert()
+
+    rejectNotes.value = ''
+    rejectTarget.value = null
+
+    showSuccessToast({
+      title: 'Berhasil',
+      text: response.data?.message
+        || `Purchase Requisition "${target.nomor_pr || '-'}" berhasil direject.`,
+    })
+
+    await fetchPurchaseRequests()
+  }
+  catch (error: unknown) {
+    closeAlert()
+
+    /*
+    |--------------------------------------------------------------------------
+    | Kalau gagal, tampilkan kembali dialog catatan
+    |--------------------------------------------------------------------------
+    */
+    rejectDialog.value = true
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(
+        error,
+        'Gagal reject Purchase Requisition.',
+      ),
+    })
+  }
+  finally {
+    rejectLoading.value = false
+  }
+}
+
+const canCreatePurchaseRequest = computed(() => {
+  return abilities.value.can_create
+})
+
+const canUpdatePurchaseRequest = computed(() => {
+  return abilities.value.can_update
+})
+
+const canDeletePurchaseRequest = computed(() => {
+  return abilities.value.can_delete
+})
 
 const statusItems = [
   { title: 'Semua', value: '' },
@@ -213,6 +828,10 @@ const fetchPurchaseRequests = async (): Promise<void> => {
       ? responseData.data
       : []
 
+    abilities.value = normalizeModuleAbilities(
+      responseData?.abilities,
+    )
+
     const meta = responseData?.meta
 
     totalData.value = Number(meta?.total ?? rows.value.length ?? 0)
@@ -222,11 +841,11 @@ const fetchPurchaseRequests = async (): Promise<void> => {
     loadError.value = true
     const err = error as AxiosErrorShape
 
-    console.error('[Purchase Request] FETCH ERROR:', err)
+    console.error('[Purchase Requisition] FETCH ERROR:', err)
 
     showErrorToast({
       title: 'Error',
-      text: getApiErrorMessage(err, 'Gagal memuat data purchase request'),
+      text: getApiErrorMessage(err, 'Gagal memuat data purchase requisition'),
     })
 
     rows.value = []
@@ -236,6 +855,14 @@ const fetchPurchaseRequests = async (): Promise<void> => {
     loading.value = false
   }
 }
+
+const handlePurchaseRequestRefresh = async (): Promise<void> => {
+  await fetchPurchaseRequests()
+}
+
+usePolling(fetchPurchaseRequests, {
+  interval: 30000,
+})
 
 const resetFilters = async (): Promise<void> => {
   searchQuery.value = ''
@@ -248,11 +875,42 @@ const resetFilters = async (): Promise<void> => {
   await fetchPurchaseRequests()
 }
 
+const openSubmitPurchaseRequest = async (
+  row: PurchaseRequestItem,
+): Promise<void> => {
+  if (!row?.public_id)
+    return
+
+  selectedPr.value = row
+  pendingAction.value = 'submit'
+
+  try {
+    const hasSignature = await checkUserSignature()
+
+    if (!hasSignature) {
+      await openSignatureDialog()
+
+      return
+    }
+
+    await submitPurchaseRequest(row)
+  }
+  catch (error: unknown) {
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(
+        error,
+        'Gagal memeriksa tanda tangan digital.',
+      ),
+    })
+  }
+}
+
 const submitPurchaseRequest = async (row: any): Promise<void> => {
   if (!row?.public_id) return
 
   const confirm = await showConfirmAlert({
-    title: 'Submit Purchase Request?',
+    title: 'Submit Purchase Requisition?',
     text: `${row.nomor_pr} akan dikirim untuk proses approval`,
     confirmButtonText: 'Ya, submit',
     cancelButtonText: 'Batal',
@@ -261,7 +919,7 @@ const submitPurchaseRequest = async (row: any): Promise<void> => {
   if (!confirm.isConfirmed) return
 
   try {
-    showLoadingAlert('Submit Purchase Request...', 'Mohon tunggu sebentar')
+    showLoadingAlert('Submit Purchase Requisition...', 'Mohon tunggu sebentar')
 
     const response = await axios.patch(
       `/transaction/purchase-request/${row.public_id}/submit`,
@@ -277,7 +935,7 @@ const submitPurchaseRequest = async (row: any): Promise<void> => {
 
     showSuccessToast({
       title: 'Berhasil',
-      text: response.data?.message || 'Purchase Request berhasil disubmit.',
+      text: response.data?.message || 'Purchase Requisition berhasil disubmit.',
     })
 
     await fetchPurchaseRequests()
@@ -286,7 +944,7 @@ const submitPurchaseRequest = async (row: any): Promise<void> => {
 
     showErrorToast({
       title: 'Error',
-      text: getApiErrorMessage(error, 'Gagal submit Purchase Request.'),
+      text: getApiErrorMessage(error, 'Gagal submit Purchase Requisition.'),
     })
   }
 }
@@ -305,7 +963,7 @@ const openDelete = async (row: any): Promise<void> => {
   if (String(row.status || '').toUpperCase() !== 'DRAFT') {
     showErrorToast({
       title: 'Tidak dapat dihapus',
-      text: 'Purchase Request hanya dapat dihapus jika status masih DRAFT.',
+      text: 'Purchase Requisition hanya dapat dihapus jika status masih DRAFT.',
     })
 
     return
@@ -315,8 +973,8 @@ const openDelete = async (row: any): Promise<void> => {
 
   const confirm = await showConfirmAlert({
     icon: 'question',
-    title: 'Hapus Purchase Request?',
-    html: `Apakah Anda yakin ingin menghapus Purchase Request <strong>${nomorPr}</strong>?`,
+    title: 'Hapus Purchase Requisition?',
+    html: `Apakah Anda yakin ingin menghapus Purchase Requisition <strong>${nomorPr}</strong>?`,
     confirmButtonText: 'Ya, hapus',
     cancelButtonText: 'Batal',
   })
@@ -324,7 +982,7 @@ const openDelete = async (row: any): Promise<void> => {
   if (!confirm.isConfirmed) return
 
   try {
-    showLoadingAlert('Menghapus Purchase Request...', 'Mohon tunggu sebentar.')
+    showLoadingAlert('Menghapus Purchase Requisition...', 'Mohon tunggu sebentar.')
 
     const response = await axios.delete(
       `/transaction/purchase-request/${encodeURIComponent(row.public_id)}`,
@@ -340,7 +998,7 @@ const openDelete = async (row: any): Promise<void> => {
     if (response.data?.success) {
       showSuccessToast({
         title: 'Berhasil',
-        text: `Purchase Request "${nomorPr}" berhasil dihapus`,
+        text: `Purchase Requisition "${nomorPr}" berhasil dihapus`,
       })
 
       await fetchPurchaseRequests()
@@ -350,14 +1008,14 @@ const openDelete = async (row: any): Promise<void> => {
 
     showErrorToast({
       title: 'Gagal',
-      text: response.data?.message || 'Gagal menghapus Purchase Request',
+      text: response.data?.message || 'Gagal menghapus Purchase Requisition',
     })
   } catch (error: any) {
     closeAlert()
 
     showErrorToast({
       title: 'Gagal',
-      text: error.response?.data?.message || 'Gagal menghapus Purchase Request',
+      text: error.response?.data?.message || 'Gagal menghapus Purchase Requisition',
     })
   }
 }
@@ -382,7 +1040,7 @@ const openDetail = async (publicId: string): Promise<void> => {
     const detail = response.data?.data
 
     if (!detail) {
-      throw new Error('Data purchase request tidak ditemukan')
+      throw new Error('Data purchase requisition tidak ditemukan')
     }
 
     detailPurchaseRequest.value = detail
@@ -396,7 +1054,7 @@ const openDetail = async (publicId: string): Promise<void> => {
 
     detailError.value = getApiErrorMessage(
       err,
-      'Gagal memuat detail purchase request',
+      'Gagal memuat detail purchase requisition',
     )
 
     detailLoading.value = false
@@ -459,9 +1117,26 @@ watch(tanggalMulai, async (newValue) => {
 })
 
 onMounted(async () => {
+  await permissionStore.loadPermissions()
+
+  if (!canView.value) {
+    await router.replace('/forbidden')
+    return
+  }
+
+  isCheckingPermission.value = false
+
+
   await fetchPurchaseRequests()
 
   const success = route.query.success
+
+  window.addEventListener('purchase-order:refresh', handlePurchaseRequestRefresh)
+
+  window.addEventListener(
+    'resize',
+    resizeSignatureCanvas,
+  )
 
   if (success) {
     await router.replace({
@@ -473,18 +1148,22 @@ onMounted(async () => {
       if (success === 'created') {
         showSuccessToast({
           title: 'Berhasil',
-          text: 'Purchase Request berhasil disimpan.',
+          text: 'Purchase Requisition berhasil disimpan.',
         })
       }
 
       if (success === 'updated') {
         showSuccessToast({
           title: 'Berhasil',
-          text: 'Purchase Request berhasil diperbarui.',
+          text: 'Purchase Requisition berhasil diperbarui.',
         })
       }
     }, 300)
   }
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('purchase-request:refresh', handlePurchaseRequestRefresh)
 })
 </script>
 
@@ -498,7 +1177,7 @@ onMounted(async () => {
             <VTextField
               v-model="searchQuery"
               label="Cari kode PR"
-              placeholder="Cari purchase request..."
+              placeholder="Cari purchase requisition..."
               density="compact"
               clearable
             />
@@ -624,8 +1303,14 @@ onMounted(async () => {
     <!-- Table -->
     <VCard>
       <VCardText class="d-flex flex-wrap gap-4 align-center">
-        <VBtn color="primary" @click="goToCreate" class="text-none">
-          + Tambah Purchase Request
+        <VBtn
+          v-if="canCreatePurchaseRequest"
+          color="primary"
+          prepend-icon="tabler-plus"
+          class="text-none"
+          @click="goToCreate"
+        >
+          Tambah Purchase Requisition
         </VBtn>
 
         <VSpacer />
@@ -671,11 +1356,40 @@ onMounted(async () => {
         </thead>
 
         <tbody>
-          <tr v-for="(v, index) in rows" :key="v.id">
+          <tr
+            v-for="(v, index) in rows"
+            :key="v.id"
+            :class="{
+              'pr-row-need-approval':
+                canApprovePurchaseRequest(v),
+            }"
+          >
             <td class="text-medium-emphasis">
               {{ ((currentPage - 1) * rowPerPage) + Number(index) + 1 }}
             </td>
-            <td class="text-medium-emphasis">{{ v.nomor_pr || '-' }}</td>
+            <td>
+              <div class="d-flex flex-column gap-1">
+                <div class="font-weight-medium">
+                  {{ v.nomor_pr || '-' }}
+                </div>
+
+                <VChip
+                  v-if="canApprovePurchaseRequest(v)"
+                  size="x-small"
+                  color="warning"
+                  variant="tonal"
+                  class="pr-approval-chip"
+                >
+                  <VIcon
+                    icon="tabler-alert-circle"
+                    size="14"
+                    start
+                  />
+
+                  Menunggu Approval Anda
+                </VChip>
+              </div>
+            </td>
             <td class="text-medium-emphasis">{{ formatDate(v.tanggal_pr) }}</td>
             <td class="text-medium-emphasis">{{ v.cabang || '-' }}</td>
             <td class="text-medium-emphasis">{{ v.department || '-' }}</td>
@@ -730,9 +1444,101 @@ onMounted(async () => {
                     </VListItem>
 
                     <VListItem
+                      href="javascript:void(0)"
+                      @click="openApprovalHistory(v)"
+                    >
+                      <template #prepend>
+                        <VIcon
+                          icon="tabler-git-merge"
+                          :size="20"
+                          class="me-3"
+                        />
+                      </template>
+
+                      <VListItemTitle>
+                        History Approval
+                      </VListItemTitle>
+                    </VListItem>
+
+                    <VListItem
+                      v-if="
+                        !['draft', 'rejected'].includes(
+                          String(v.status || '').toLowerCase()
+                        )
+                      "
+                      href="javascript:void(0)"
+                      :disabled="printLoadingId === v.public_id"
+                      @click="printPurchaseRequisition(v.public_id)"
+                    >
+                      <template #prepend>
+                        <VProgressCircular
+                          v-if="printLoadingId === v.public_id"
+                          indeterminate
+                          size="18"
+                          width="2"
+                          class="me-3"
+                        />
+
+                        <VIcon
+                          v-else
+                          icon="tabler-printer"
+                          :size="20"
+                          class="me-3"
+                        />
+                      </template>
+
+                      <VListItemTitle>
+                        {{
+                          printLoadingId === v.public_id
+                            ? 'Membuka...'
+                            : 'Cetak'
+                        }}
+                      </VListItemTitle>
+                    </VListItem>
+
+                    <VListItem
+                      v-if="canApprovePurchaseRequest(v)"
+                      href="javascript:void(0)"
+                      :disabled="approveLoading"
+                      @click="openApprovePurchaseRequest(v)"
+                    >
+                      <template #prepend>
+                        <VIcon
+                          icon="tabler-circle-check"
+                          :size="20"
+                          class="me-3 text-success"
+                        />
+                      </template>
+
+                      <VListItemTitle class="text-success">
+                        Approve
+                      </VListItemTitle>
+                    </VListItem>
+
+                    <VListItem
+                      v-if="canApprovePurchaseRequest(v)"
+                      href="javascript:void(0)"
+                      :disabled="rejectLoading"
+                      @click="openRejectPurchaseRequest(v)"
+                    >
+                      <template #prepend>
+                        <VIcon
+                          icon="mdi-close-circle-outline"
+                          :size="20"
+                          color="error"
+                          class="me-3"
+                        />
+                      </template>
+
+                      <VListItemTitle class="text-error">
+                        Reject
+                      </VListItemTitle>
+                    </VListItem>
+
+                    <VListItem
                       v-if="String(v.status).toLowerCase() === 'draft'"
                       href="javascript:void(0)"
-                      @click="submitPurchaseRequest(v)"
+                      @click="openSubmitPurchaseRequest(v)"
                     >
                       <template #prepend>
                         <VIcon icon="mdi-send-outline" :size="20" class="me-3" />
@@ -742,7 +1548,10 @@ onMounted(async () => {
                     </VListItem>
 
                     <VListItem
-                      v-if="String(v.status).toLowerCase() === 'draft'"
+                      v-if="
+                        String(v.status).toLowerCase() === 'draft'
+                          && canUpdatePurchaseRequest
+                      "
                       href="javascript:void(0)"
                       @click="goToEdit(v.public_id)"
                     >
@@ -754,11 +1563,16 @@ onMounted(async () => {
                         />
                       </template>
 
-                      <VListItemTitle>Edit</VListItemTitle>
+                      <VListItemTitle>
+                        Edit
+                      </VListItemTitle>
                     </VListItem>
 
                     <VListItem
-                      v-if="String(v.status).toLowerCase() === 'draft'"
+                      v-if="
+                        String(v.status).toLowerCase() === 'draft'
+                          && canDeletePurchaseRequest
+                      "
                       href="javascript:void(0)"
                       @click="openDelete(v)"
                     >
@@ -770,7 +1584,9 @@ onMounted(async () => {
                         />
                       </template>
 
-                      <VListItemTitle class="text-error">Hapus</VListItemTitle>
+                      <VListItemTitle class="text-error">
+                        Hapus
+                      </VListItemTitle>
                     </VListItem>
                   </VList>
                 </VMenu>
@@ -838,7 +1654,7 @@ onMounted(async () => {
 
             <div>
               <div class="text-h6 font-weight-bold">
-                Detail Purchase Request
+                Detail Purchase Requisition
               </div>
             </div>
 
@@ -877,7 +1693,7 @@ onMounted(async () => {
               color="primary"
             />
             <div class="mt-4 text-medium-emphasis">
-              Memuat detail purchase request...
+              Memuat detail purchase requisition...
             </div>
           </div>
 
@@ -913,7 +1729,7 @@ onMounted(async () => {
                     <div class="d-flex align-center justify-space-between flex-wrap gap-3 mb-4">
                       <div>
                         <div class="text-caption text-medium-emphasis">
-                          Purchase Request
+                          Purchase Requisition
                         </div>
                         <div class="text-h6 font-weight-bold">
                           {{ detailPurchaseRequest.nomor_pr || '-' }}
@@ -1176,7 +1992,7 @@ onMounted(async () => {
                       color="primary"
                     />
                     <div class="text-subtitle-1 font-weight-bold">
-                      Lampiran Purchase Request
+                      Lampiran Purchase Requisition
                     </div>
                   </div>
 
@@ -1213,7 +2029,7 @@ onMounted(async () => {
                   variant="tonal"
                   density="compact"
                 >
-                  Tidak ada lampiran purchase request.
+                  Tidak ada lampiran purchase requisition.
                 </VAlert>
               </VCardText>
             </VCard>
@@ -1227,7 +2043,7 @@ onMounted(async () => {
                 <div class="d-flex align-center justify-space-between flex-wrap gap-3 mb-4">
                   <div>
                     <div class="text-subtitle-1 font-weight-bold">
-                      Daftar Item Purchase Request
+                      Daftar Item Purchase Requisition
                     </div>
                   </div>
 
@@ -1361,6 +2177,183 @@ onMounted(async () => {
         </VCardActions>
       </VCard>
     </VDialog>
+
+    <VDialog
+      v-model="signatureDialog"
+      max-width="720"
+      persistent
+    >
+      <VCard class="signature-dialog-card">
+        <VCardTitle class="d-flex align-center gap-3 px-6 py-5">
+          <VAvatar
+            color="primary"
+            variant="tonal"
+            size="42"
+          >
+            <VIcon icon="tabler-signature" />
+          </VAvatar>
+
+          <div>
+            <div class="text-h6 font-weight-bold">
+              Registrasi Tanda Tangan Digital
+            </div>
+
+            <div class="text-caption text-medium-emphasis">
+              Tanda tangan dibutuhkan untuk proses approval.
+            </div>
+          </div>
+        </VCardTitle>
+
+        <VDivider />
+
+        <VCardText class="pa-6">
+          <VAlert
+            type="info"
+            variant="tonal"
+            class="mb-5"
+          >
+            Anda belum memiliki tanda tangan digital.
+            Silakan buat tanda tangan terlebih dahulu untuk melanjutkan approval.
+          </VAlert>
+
+          <div class="signature-wrapper">
+            <div class="d-flex align-center justify-space-between mb-2">
+              <span class="text-subtitle-2 font-weight-medium">
+                Tanda tangan
+              </span>
+
+              <VBtn
+                variant="text"
+                color="error"
+                size="small"
+                :disabled="signatureLoading"
+                @click="signaturePad?.clear()"
+              >
+                Clear
+              </VBtn>
+            </div>
+
+            <canvas
+              ref="signatureCanvasRef"
+              class="signature-canvas"
+            />
+          </div>
+
+          <div class="signature-agreement">
+            <VCheckbox
+              v-model="signatureAgree"
+              density="compact"
+              hide-details
+              :disabled="signatureLoading"
+            />
+
+            <span>
+              Saya menyetujui penggunaan tanda tangan digital ini sebagai identitas persetujuan saya pada dokumen dan transaksi yang memerlukan proses approval di sistem.
+            </span>
+          </div>
+
+          <div
+            v-if="signatureError"
+            class="signature-error"
+          >
+            {{ signatureError }}
+          </div>
+        </VCardText>
+
+        <VDivider />
+
+        <VCardActions class="signature-footer">
+          <VBtn
+            variant="tonal"
+            color="secondary"
+            :disabled="signatureLoading"
+            @click="signatureDialog = false"
+          >
+            Batal
+          </VBtn>
+
+          <VBtn
+            color="primary"
+            :loading="signatureLoading"
+            @click="saveSignatureAndContinue"
+          >
+            Simpan & Lanjutkan
+          </VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <VDialog
+      v-model="rejectDialog"
+      max-width="560"
+      persistent
+    >
+      <VCard>
+        <VCardTitle class="d-flex align-center gap-2">
+          <VIcon
+            icon="mdi-close-circle-outline"
+            color="error"
+          />
+
+          Reject Purchase Requisition
+        </VCardTitle>
+
+        <VDivider />
+
+        <VCardText>
+          <p class="text-body-2 mb-4">
+            Anda akan menolak Purchase Requisition:
+
+            <strong>
+              {{ rejectTarget?.nomor_pr || '-' }}
+            </strong>
+          </p>
+
+          <VTextarea
+            v-model="rejectNotes"
+            label="Catatan reject"
+            placeholder="Masukkan alasan reject jika diperlukan"
+            rows="4"
+            auto-grow
+            clearable
+            :disabled="rejectLoading"
+          />
+
+          <div class="text-caption text-medium-emphasis mt-2">
+            Catatan bersifat opsional, namun disarankan diisi agar requester mengetahui alasan penolakan.
+          </div>
+        </VCardText>
+
+        <VDivider />
+
+        <VCardActions>
+          <VSpacer />
+
+          <VBtn
+            variant="tonal"
+            color="secondary"
+            :disabled="rejectLoading"
+            @click="rejectDialog = false"
+          >
+            Batal
+          </VBtn>
+
+          <VBtn
+            color="error"
+            :loading="rejectLoading"
+            @click="rejectPurchaseRequisition"
+          >
+            Reject
+          </VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <ApprovalHistoryDialog
+      v-model="isApprovalHistoryDialogOpen"
+      :nomor-pr="selectedPRNomor"
+      :approvals="selectedApprovalHistory"
+    />
 
   </section>
 </template>
@@ -1740,5 +2733,61 @@ onMounted(async () => {
     margin-top: 16px;
     padding-top: 20px;
   }
+}
+
+.pr-row-need-approval {
+  background: rgba(var(--v-theme-warning), 0.055);
+
+  &:hover {
+    background: rgba(var(--v-theme-warning), 0.09);
+  }
+}
+
+.pr-approval-chip {
+  width: fit-content;
+}
+
+.signature-dialog-card {
+  border-radius: 12px !important;
+}
+
+.signature-wrapper {
+  padding: 16px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.18);
+  border-radius: 12px;
+  background: rgba(var(--v-theme-surface), 1);
+}
+
+.signature-canvas {
+  display: block;
+  width: 100%;
+  height: 220px;
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.28);
+  border-radius: 10px;
+  background: #fff;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.signature-agreement {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-block-start: 18px;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.signature-error {
+  margin-block-start: 12px;
+  color: rgb(var(--v-theme-error));
+  font-size: 13px;
+}
+
+.signature-footer {
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 24px;
 }
 </style>

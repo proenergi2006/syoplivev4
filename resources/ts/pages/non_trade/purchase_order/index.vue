@@ -19,6 +19,12 @@ import { useDeleteConfirm } from '@core/composable/useDeleteConfirm'
 import { formatDate, formatStatusPKP, formatNumberWithoutRp, toTitleCase, formatDecimalQty } from '@/utils/textFormatter'
 import { usePolling } from '@core/composable/usePolling'
 import ApprovalHistoryDialog from '@core/components/ApprovalHistoryPODialog.vue'
+import {
+  defaultModuleAbilities,
+  normalizeModuleAbilities,
+  type ModuleAbilities,
+} from '@/types/abilities'
+import { usePermissionStore } from '@/stores/permission'
 
 interface ApprovalHistoryItem {
   id?: number
@@ -46,7 +52,10 @@ interface PurchaseOrderItem {
   top: number | null
   total_nilai: number | null
   status: string | null
-  can_approve: boolean | number | string | null
+  can_approve?: boolean
+  can_update?: boolean
+  can_delete?: boolean
+  is_owner?: boolean
   status_receive: string | null
 }
 
@@ -60,6 +69,7 @@ interface PurchaseOrderApiResponse {
     per_page: number
     total: number
   }
+  abilities?: ModuleAbilities
 }
 
 interface AxiosErrorShape {
@@ -71,6 +81,26 @@ interface AxiosErrorShape {
     }
   }
 }
+
+const permissionStore = usePermissionStore()
+
+const canView = computed(() => {
+  return permissionStore.can('purchase_order.view')
+})
+
+const canCreate = computed(() => {
+  return permissionStore.can('purchase_order.create')
+})
+
+const canUpdate = computed(() => {
+  return permissionStore.can('purchase_order.update')
+})
+
+const canDelete = computed(() => {
+  return permissionStore.can('purchase_order.delete')
+})
+
+const isCheckingPermission = ref(true)
 
 const route = useRoute()
 const router = useRouter()
@@ -130,15 +160,15 @@ const isApprovalHistoryDialogOpen = ref(false)
 const selectedApprovalHistory = ref<ApprovalHistoryItem[]>([])
 const selectedPONomor = ref('-')
 
+const abilities = ref<ModuleAbilities>(
+  defaultModuleAbilities(),
+)
+
 const canApprovePO = (row: PurchaseOrderItem): boolean => {
   const status = String(row.status || '').toUpperCase()
 
-  const canApprove = row.can_approve === true
-    || row.can_approve === 1
-    || row.can_approve === '1'
-    || String(row.can_approve).toLowerCase() === 'true'
-
-  return status === 'IN PROGRESS' && canApprove
+  return status === 'IN PROGRESS'
+    && row.can_approve === true
 }
 
 const openApprovalHistory = async (item: any): Promise<void> => {
@@ -332,6 +362,10 @@ const fetchPurchaseOrders = async (): Promise<void> => {
     rows.value = Array.isArray(responseData?.data)
       ? responseData.data
       : []
+
+    abilities.value = normalizeModuleAbilities(
+      responseData?.abilities,
+    )
 
     const meta = responseData?.meta
 
@@ -868,6 +902,15 @@ watch(tanggalMulai, async (newValue) => {
 })
 
 onMounted(async () => {
+  await permissionStore.loadPermissions()
+
+  if (!canView.value) {
+    await router.replace('/forbidden')
+    return
+  }
+
+  isCheckingPermission.value = false
+
   await fetchPurchaseOrders()
   await loadCurrentUser()
 
@@ -975,7 +1018,7 @@ onBeforeUnmount(() => {
     <!-- Table -->
     <VCard>
       <VCardText class="d-flex flex-wrap gap-4 align-center">
-        <VBtn color="primary" @click="goToCreate" class="text-none">
+        <VBtn color="primary" @click="goToCreate" class="text-none" v-if="canCreate">
           + Tambah Purchase Order
         </VBtn>
 
@@ -1074,12 +1117,20 @@ onBeforeUnmount(() => {
             
             <td class="text-center">
               <VChip
+                v-if="String(v.status || '').toUpperCase() === 'APPROVED'"
                 :color="getStatusReceiveColor(v.status_receive)"
                 size="small"
                 class="text-capitalize"
               >
                 {{ formatStatusReceive(v.status_receive) }}
               </VChip>
+
+              <span
+                v-else
+                class="text-medium-emphasis"
+              >
+                -
+              </span>
             </td>
 
             <td class="text-center" style="width: 5rem;">
@@ -1185,7 +1236,7 @@ onBeforeUnmount(() => {
                     </VListItem>
 
                     <VListItem
-                      v-if="String(v.status).toLowerCase() === 'draft'"
+                      v-if="String(v.status).toLowerCase() === 'draft' && canUpdate"
                       href="javascript:void(0)"
                       @click="goToEdit(v.public_id)"
                     >
@@ -1196,7 +1247,7 @@ onBeforeUnmount(() => {
                     </VListItem>
 
                     <VListItem
-                      v-if="String(v.status).toLowerCase() === 'draft'"
+                      v-if="String(v.status).toLowerCase() === 'draft' && canDelete"
                       href="javascript:void(0)"
                       @click="openDelete(v)"
                     >
@@ -2411,6 +2462,14 @@ onBeforeUnmount(() => {
 
   .signature-footer .v-btn {
     width: 100%;
+  }
+}
+
+.po-row-need-approval {
+  background: rgba(var(--v-theme-warning), 0.055);
+
+  &:hover {
+    background: rgba(var(--v-theme-warning), 0.09);
   }
 }
 </style>

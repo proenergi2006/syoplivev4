@@ -19,6 +19,7 @@ import {
 } from '@/utils/textFormatter'
 import { useNativeDatePicker } from '@core/composable/useNativeDatePicker'
 import { useDisplay } from 'vuetify'
+import { usePermissionStore } from '@/stores/permission'
 
 interface PrItem {
   nama_item: string
@@ -65,6 +66,9 @@ interface UnitItem {
 
 const router = useRouter()
 const { mobile } = useDisplay()
+const permissionStore = usePermissionStore()
+
+const isCheckingPermission = ref(true)
 
 const isSubmitted = ref(false)
 const isSaving = ref(false)
@@ -91,6 +95,10 @@ const itemDialog = ref(false)
 const confirmCloseItemDialog = ref(false)
 const itemDialogSaved = ref(false)
 const tempItems = ref<PrItem[]>([])
+
+const canCreate = computed(() => {
+  return permissionStore.can('purchase_request.create')
+})
 
 const createEmptyItem = (): PrItem => ({
   nama_item: '',
@@ -752,6 +760,16 @@ const goBack = async (): Promise<void> => {
 }
 
 onMounted(async () => {
+
+  await permissionStore.loadPermissions()
+
+  if (!canCreate.value) {
+    await router.replace('/forbidden')
+    return
+  }
+
+  isCheckingPermission.value = false
+
   form.tanggal_pr = today()
 
   await loadUnits(false)
@@ -764,7 +782,16 @@ onMounted(async () => {
 </script>
 
 <template>
-  <section>
+  <div
+    v-if="isCheckingPermission"
+    class="d-flex justify-center align-center"
+    style="min-height: 300px;"
+  >
+    <VProgressCircular indeterminate />
+  </div>
+
+  <div v-else>
+    <section>
     <VRow>
     <VCol cols="12">
       <VCard>
@@ -1525,6 +1552,8 @@ onMounted(async () => {
       </VCard>
     </VDialog>
   </section>
+  </div>
+  
 </template>
 
 <style scoped>

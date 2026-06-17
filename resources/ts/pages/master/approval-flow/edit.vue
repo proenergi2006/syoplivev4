@@ -115,6 +115,8 @@ const APPROVAL_FLOW_UPDATE_ENDPOINT = '/master/approval-flows'
 
 const isLoading = ref(true)
 const isLoaded = ref(false)
+const isLoadError = ref(false)
+const loadErrorMessage = ref('')
 const isSubmitted = ref(false)
 const submitLoading = ref(false)
 
@@ -575,12 +577,23 @@ const assignFlowToForm = (flow: ApprovalFlowResponse): void => {
 }
 
 const loadApprovalFlow = async (): Promise<void> => {
+  if (!publicId.value) {
+    isLoading.value = false
+    isLoaded.value = false
+    isLoadError.value = true
+    loadErrorMessage.value = 'ID approval flow tidak ditemukan.'
+
+    return
+  }
+
   isLoading.value = true
   isLoaded.value = false
+  isLoadError.value = false
+  loadErrorMessage.value = ''
 
   try {
     const response = await axios.get(
-      `${APPROVAL_FLOW_DETAIL_ENDPOINT}/${encodeURIComponent(publicId.value)}`,
+      `/master/approval-flows/${encodeURIComponent(publicId.value)}`,
       {
         headers: {
           Accept: 'application/json',
@@ -590,20 +603,65 @@ const loadApprovalFlow = async (): Promise<void> => {
 
     const flow = response.data?.data ?? response.data
 
+    if (!flow) {
+      throw new Error('Data approval flow tidak ditemukan.')
+    }
+
     assignFlowToForm(flow)
 
     isLoaded.value = true
+    isLoadError.value = false
   } catch (error: any) {
-    const err = error as AxiosErrorShape
+    isLoaded.value = false
+    isLoadError.value = true
+
+    loadErrorMessage.value = getApiErrorMessage(
+      error,
+      'Gagal memuat detail approval flow.',
+    )
 
     showErrorToast({
       title: 'Gagal Memuat Data',
-      text: getApiErrorMessage(err, 'Gagal memuat detail approval flow.'),
+      text: loadErrorMessage.value,
     })
   } finally {
     isLoading.value = false
   }
 }
+
+const reloadApprovalFlow = async (): Promise<void> => {
+  isLoading.value = true
+  isLoaded.value = false
+  isLoadError.value = false
+  loadErrorMessage.value = ''
+
+  try {
+    await Promise.all([
+      loadApproverOptions(),
+      loadDepartmentOptions(),
+    ])
+
+    await loadApprovalFlow()
+  } catch (error: any) {
+    isLoading.value = false
+    isLoaded.value = false
+    isLoadError.value = true
+
+    loadErrorMessage.value = getApiErrorMessage(
+      error,
+      'Gagal memuat data pendukung approval flow.',
+    )
+  }
+}
+
+const canSubmit = computed(() => {
+  return Boolean(
+    isLoaded.value
+    && !isLoading.value
+    && !isLoadError.value
+    && !submitLoading.value,
+  )
+})
 
 const getApproverItems = (approverType: 'ROLE' | 'USER'): DropdownOption[] => {
   return approverType === 'ROLE'
@@ -850,6 +908,9 @@ const buildPayload = () => {
 }
 
 const submit = async (): Promise<void> => {
+  if (!canSubmit.value)
+    return
+
   if (submitLoading.value)
     return
 
@@ -967,7 +1028,7 @@ const formatAmount = (value: number | string | null | undefined): string => {
               color="primary"
               prepend-icon="tabler-device-floppy"
               :loading="submitLoading"
-              :disabled="isLoading"
+              :disabled="!canSubmit"
               class="text-none"
               @click="submit"
             >
@@ -983,6 +1044,56 @@ const formatAmount = (value: number | string | null | undefined): string => {
     title="Memuat data Approval Flow..."
     subtitle="Mohon tunggu sebentar"
     />
+
+    <VCard
+      v-else-if="isLoadError"
+      class="mb-6 rounded-lg"
+      elevation="2"
+    >
+      <VCardText class="pa-6">
+        <div class="d-flex flex-column flex-md-row align-md-center justify-space-between gap-4">
+          <div class="d-flex align-start gap-4">
+            <VAvatar
+              color="warning"
+              variant="tonal"
+              size="48"
+              rounded
+            >
+              <VIcon
+                icon="tabler-alert-triangle"
+                size="26"
+              />
+            </VAvatar>
+
+            <div>
+              <div class="text-h6 font-weight-bold mb-1">
+                Data Approval Flow Gagal Dimuat
+              </div>
+
+              <div class="text-body-2 text-medium-emphasis">
+                {{ loadErrorMessage || 'Terjadi kesalahan saat memuat detail approval flow.' }}
+              </div>
+
+              <div class="text-body-2 text-medium-emphasis mt-1">
+                Periksa koneksi atau kondisi data, kemudian coba muat ulang.
+              </div>
+            </div>
+          </div>
+
+          <div class="d-flex flex-wrap gap-2">
+            <VBtn
+              color="warning"
+              prepend-icon="tabler-refresh"
+              class="text-none"
+              :loading="isLoading"
+              @click="reloadApprovalFlow"
+            >
+              Muat Ulang
+            </VBtn>
+          </div>
+        </div>
+      </VCardText>
+    </VCard>
 
     <VRow v-else-if="isLoaded">
       <VCol

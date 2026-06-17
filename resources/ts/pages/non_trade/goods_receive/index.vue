@@ -14,6 +14,12 @@ import { formatDate, formatStatusPKP, formatNumberWithoutRp, toTitleCase, format
 import { getApiErrorMessage } from '@/utils/apiHelper'
 import { useDeleteConfirm } from '@core/composable/useDeleteConfirm'
 import { nextTick } from 'vue'
+import {
+  defaultModuleAbilities,
+  normalizeModuleAbilities,
+  type ModuleAbilities,
+} from '@/types/abilities'
+import { usePermissionStore } from '@/stores/permission'
 
 interface AxiosErrorShape {
   response?: {
@@ -37,6 +43,26 @@ interface GoodsReceiveDetailItem {
   notes: string | null
 }
 
+const permissionStore = usePermissionStore()
+
+const canView = computed(() => {
+  return permissionStore.can('goods_receive.view')
+})
+
+const canCreate = computed(() => {
+  return permissionStore.can('goods_receive.create')
+})
+
+const canUpdate = computed(() => {
+  return permissionStore.can('goods_receive.update')
+})
+
+const canDelete = computed(() => {
+  return permissionStore.can('goods_receive.delete')
+})
+
+const isCheckingPermission = ref(true)
+
 const route = useRoute()
 const router = useRouter()
 
@@ -52,6 +78,10 @@ const searchQuery = ref('')
 const selectedStatus = ref<string | null>(null)
 const tanggalMulai = ref<string | null>(null)
 const tanggalSelesai = ref<string | null>(null)
+
+const abilities = ref<ModuleAbilities>(
+  defaultModuleAbilities(),
+)
 
 const detailDialog = ref(false)
 const selectedGr = ref<any>(null)
@@ -324,6 +354,10 @@ const fetchGoodsReceives = async (): Promise<void> => {
     totalData.value = Number(response.data?.total || 0)
     currentPage.value = Number(response.data?.current_page || 1)
     rowPerPage.value = Number(response.data?.per_page || 10)
+
+    abilities.value = normalizeModuleAbilities(
+      response.data?.abilities,
+    )
   } catch (error) {
     loadError.value = true
 
@@ -438,6 +472,15 @@ watch(rowPerPage, async () => {
 })
 
 onMounted(async () => {
+  await permissionStore.loadPermissions()
+
+  if (!canView.value) {
+    await router.replace('/forbidden')
+    return
+  }
+
+  isCheckingPermission.value = false
+
   fetchGoodsReceives()
 
   const success = route.query.success
@@ -559,6 +602,7 @@ onMounted(async () => {
     <VCard>
       <VCardText class="d-flex flex-wrap gap-4 align-center">
         <VBtn
+          v-if="canCreate"
           color="primary"
           @click="goToCreate"
           class="text-none"
@@ -711,7 +755,7 @@ onMounted(async () => {
                     </VListItem>
 
                     <VListItem
-                      v-if="String(v.status).toUpperCase() === 'DRAFT'"
+                      v-if="String(v.status).toUpperCase() === 'DRAFT' && canUpdate"
                       href="javascript:void(0)"
                       @click="goToEdit(v.public_id)"
                     >
@@ -729,7 +773,7 @@ onMounted(async () => {
                     </VListItem>
 
                     <VListItem
-                      v-if="String(v.status || '').toUpperCase() === 'DRAFT'"
+                      v-if="String(v.status || '').toUpperCase() === 'DRAFT' && canDelete"
                       href="javascript:void(0)"
                       @click="openDelete(v)"
                     >

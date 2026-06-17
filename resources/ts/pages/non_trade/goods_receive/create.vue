@@ -13,6 +13,7 @@ import {
 } from '@/utils/alert'
 import { getApiErrorMessage } from '@/utils/apiHelper'
 import { formatDate, formatStatusPKP, formatNumberWithoutRp, toTitleCase, formatDecimalQty } from '@/utils/textFormatter'
+import { usePermissionStore } from '@/stores/permission'
 
 interface AxiosErrorShape {
   response?: {
@@ -43,6 +44,15 @@ interface GrItem {
   receive_qty: number
   notes: string
 }
+
+const permissionStore = usePermissionStore()
+
+const canCreate = computed(() => {
+  return permissionStore.can('goods_receive.create')
+})
+
+const isCheckingPermission = ref(true)
+
 
 const router = useRouter()
 
@@ -398,6 +408,15 @@ const backToIndex = async (): Promise<void> => {
 }
 
 onMounted(async () => {
+  await permissionStore.loadPermissions()
+
+  if (!canCreate.value) {
+    await router.replace('/forbidden')
+    return
+  }
+
+  isCheckingPermission.value = false
+  
   loading.value = true
   await fetchPoOptions()
   loading.value = false

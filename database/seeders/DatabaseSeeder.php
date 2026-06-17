@@ -24,6 +24,8 @@ class DatabaseSeeder extends Seeder
             CabangSeeder::class,
             DepartmentSeeder::class,
             ApprovalFlowSeeder::class,
+            PermissionSeeder::class,
+            PermissionModuleSeeder::class,
         ]);
     }
 }

@@ -63,6 +63,14 @@ class ApprovalFlowController extends Controller
                 $query->where('is_active', false);
             }
 
+            if ($request->filled('area_type')) {
+                $query->where('area_type', strtoupper((string) $request->input('area_type')));
+            }
+
+            if ($request->filled('creator_department_id')) {
+                $query->where('creator_department_id', (int) $request->input('creator_department_id'));
+            }
+
             $approvalFlows = $query
                 ->orderBy('document_type')
                 ->orderByRaw('COALESCE(min_amount, 0) ASC')

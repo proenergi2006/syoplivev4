@@ -26,6 +26,9 @@ use App\Services\NonTrade\PurchaseOrder\PurchaseOrderNotificationService;
 use App\Services\NonTrade\PurchaseOrder\PurchaseOrderMailService;
 use App\Services\NonTrade\PurchaseOrder\PurchaseOrderRollbackService;
 use App\Services\NonTrade\PurchaseOrder\PurchaseOrderApprovalService;
+use App\Services\NonTrade\PurchaseOrder\PurchaseOrderApprovalGeneratorService;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Validation\ValidationException;
 
 class PurchaseOrderController extends Controller
 {
@@ -33,17 +36,20 @@ class PurchaseOrderController extends Controller
     protected PurchaseOrderMailService $poMailService;
     protected PurchaseOrderRollbackService $poRollbackService;
     protected PurchaseOrderApprovalService $poApprovalService;
+    protected PurchaseOrderApprovalGeneratorService $poApprovalGeneratorService;
 
     public function __construct(
         PurchaseOrderNotificationService $poNotificationService,
         PurchaseOrderMailService $poMailService,
         PurchaseOrderRollbackService $poRollbackService,
         PurchaseOrderApprovalService $poApprovalService,
+        PurchaseOrderApprovalGeneratorService $poApprovalGeneratorService,
     ) {
         $this->poNotificationService = $poNotificationService;
         $this->poMailService = $poMailService;
         $this->poRollbackService = $poRollbackService;
         $this->poApprovalService = $poApprovalService;
+        $this->poApprovalGeneratorService = $poApprovalGeneratorService;
     }
 
     public function index(Request $request)
@@ -51,238 +57,845 @@ class PurchaseOrderController extends Controller
         try {
             $user = $request->user();
 
-            $userRoleIds = collect();
+            /*
+        |--------------------------------------------------------------------------
+        | Permission Purchase Order
+        |--------------------------------------------------------------------------
+        | Sesuaikan slug permission ini dengan master permission project.
+        |--------------------------------------------------------------------------
+        */
+            $canView = $user->hasPermission(
+                'purchase_order.view',
+            );
 
-            if (isset($user->role_id) && $user->role_id) {
-                $userRoleIds->push((int) $user->role_id);
-            }
+            $viewScope = strtoupper(
+                trim(
+                    (string) $user->getPermissionScope(
+                        'purchase_order.view',
+                    ),
+                ),
+            );
 
-            /**
-             * Kalau suatu saat user-role memakai pivot role_user.
-             */
-            if (\Illuminate\Support\Facades\Schema::hasTable('role_user')) {
-                $pivotRoleIds = DB::table('role_user')
-                    ->where('user_id', $user->id)
-                    ->pluck('role_id')
-                    ->map(fn($id) => (int) $id);
+            $canCreate = $user->hasPermission(
+                'purchase_order.create',
+            );
 
-                $userRoleIds = $userRoleIds->merge($pivotRoleIds);
-            }
+            $canUpdate = $user->hasPermission(
+                'purchase_order.update',
+            );
 
-            /**
-             * Kalau suatu saat user-role memakai pivot user_roles.
-             */
-            if (\Illuminate\Support\Facades\Schema::hasTable('user_roles')) {
-                $pivotRoleIds = DB::table('user_roles')
-                    ->where('user_id', $user->id)
-                    ->pluck('role_id')
-                    ->map(fn($id) => (int) $id);
-
-                $userRoleIds = $userRoleIds->merge($pivotRoleIds);
-            }
-
-            $userRoleIds = $userRoleIds
-                ->filter()
-                ->unique()
-                ->values();
-
-            $query = PurchaseOrder::with([
-                'vendor:id,nama_vendor,status_pkp,jenis_pembayaran,top',
-                'cabangData:id,nama_cabang,inisial_cabang',
-                'departmentData:id,kode,nama',
-                'purchaseRequests:id,nomor_pr',
-                'approvals:id,purchase_order_id,approver_type,approver_id,status,step_order',
-            ])->orderByDesc('id');
+            $canDelete = $user->hasPermission(
+                'purchase_order.delete',
+            );
 
             /*
         |--------------------------------------------------------------------------
-        | Filter Visibility PO
-        |--------------------------------------------------------------------------
-        | - Creator/requester melihat PO miliknya.
-        | - Approver USER melihat PO jika approver_id = user id.
-        | - Approver ROLE melihat PO jika approver_id ada di role_id user.
+        | Normalisasi permission scope
         |--------------------------------------------------------------------------
         */
+            $allowedScopes = [
+                'NONE',
+                'OWN_DATA',
+                'OWN_DEPARTMENT',
+                'OWN_CABANG',
+                'ALL',
+            ];
 
-            $query->where(function ($visibilityQuery) use ($user, $userRoleIds) {
-                /**
-                 * PO milik requester / creator.
-                 */
-                $visibilityQuery->where(function ($q) use ($user) {
-                    $q->where('created_by', $user->id)
-                        ->orWhere('requester_signed_by', $user->id);
+            if (!in_array($viewScope, $allowedScopes, true)) {
+                $viewScope = 'NONE';
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Department dan cabang user login
+        |--------------------------------------------------------------------------
+        */
+            $userDepartmentId = (int) (
+                $user->department_id
+                ?? 0
+            );
+
+            $userCabangId = (int) (
+                $user->cabang_id
+                ?? 0
+            );
+
+            /*
+        |--------------------------------------------------------------------------
+        | Ambil seluruh role user
+        |--------------------------------------------------------------------------
+        */
+            $userRoleIds = collect();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Compatibility: users.role_id
+        |--------------------------------------------------------------------------
+        */
+            if (
+                isset($user->role_id)
+                && $user->role_id
+            ) {
+                $userRoleIds->push(
+                    (int) $user->role_id,
+                );
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Compatibility: role_user
+        |--------------------------------------------------------------------------
+        */
+            if (Schema::hasTable('role_user')) {
+                $pivotRoleIds = DB::table('role_user')
+                    ->where('user_id', $user->id)
+                    ->pluck('role_id')
+                    ->map(
+                        fn($id) => (int) $id,
+                    );
+
+                $userRoleIds = $userRoleIds
+                    ->merge($pivotRoleIds);
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Struktur utama: user_roles
+        |--------------------------------------------------------------------------
+        */
+            if (Schema::hasTable('user_roles')) {
+                $pivotRoleIds = DB::table('user_roles')
+                    ->where('user_id', $user->id)
+                    ->pluck('role_id')
+                    ->map(
+                        fn($id) => (int) $id,
+                    );
+
+                $userRoleIds = $userRoleIds
+                    ->merge($pivotRoleIds);
+            }
+
+            $userRoleIds = $userRoleIds
+                ->filter(
+                    fn($id) => (int) $id > 0,
+                )
+                ->map(
+                    fn($id) => (int) $id,
+                )
+                ->unique()
+                ->values();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Query Purchase Order
+        |--------------------------------------------------------------------------
+        */
+            $query = PurchaseOrder::query()
+                ->with([
+                    'vendor:id,nama_vendor,status_pkp,jenis_pembayaran,top',
+
+                    'cabangData:id,nama_cabang,inisial_cabang',
+
+                    'departmentData:id,kode,nama',
+
+                    'purchaseRequests:id,nomor_pr',
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Seluruh approval tetap dimuat
+                |--------------------------------------------------------------------------
+                | Dibutuhkan untuk:
+                | - visibility approver;
+                | - approval ANY/ALL;
+                | - can_approve;
+                | - riwayat approver.
+                |--------------------------------------------------------------------------
+                */
+                    'approvals' => function ($approvalQuery) {
+                        $approvalQuery
+                            ->select([
+                                'id',
+                                'purchase_order_id',
+                                'approval_flow_id',
+                                'approval_flow_step_id',
+                                'approver_type',
+                                'approver_id',
+                                'approver_name_snapshot',
+                                'approval_mode',
+                                'label',
+                                'status',
+                                'step_order',
+                            ])
+                            ->orderBy('step_order')
+                            ->orderBy('id');
+                    },
+                ])
+                ->orderByDesc('id');
+
+            /*
+        |--------------------------------------------------------------------------
+        | Visibility berdasarkan permission dan keterlibatan approval
+        |--------------------------------------------------------------------------
+        |
+        | Sumber visibility:
+        | 1. Permission view scope.
+        | 2. User pernah menjadi approver langsung.
+        | 3. Role user pernah menjadi approver.
+        |--------------------------------------------------------------------------
+        */
+            $query->where(function (
+                $visibilityQuery
+            ) use (
+                $user,
+                $userRoleIds,
+                $canView,
+                $viewScope,
+                $userDepartmentId,
+                $userCabangId,
+            ) {
+                /*
+            |--------------------------------------------------------------------------
+            | Visibility berdasarkan permission scope
+            |--------------------------------------------------------------------------
+            */
+                $visibilityQuery->where(function (
+                    $scopeQuery
+                ) use (
+                    $user,
+                    $canView,
+                    $viewScope,
+                    $userDepartmentId,
+                    $userCabangId,
+                ) {
+                    /*
+                |--------------------------------------------------------------------------
+                | Tidak memiliki permission view
+                |--------------------------------------------------------------------------
+                */
+                    if (
+                        !$canView
+                        || $viewScope === 'NONE'
+                    ) {
+                        $scopeQuery->whereRaw('1 = 0');
+
+                        return;
+                    }
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Semua data
+                |--------------------------------------------------------------------------
+                */
+                    if ($viewScope === 'ALL') {
+                        $scopeQuery->whereRaw('1 = 1');
+
+                        return;
+                    }
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Data yang dibuat/request oleh user login
+                |--------------------------------------------------------------------------
+                */
+                    if ($viewScope === 'OWN_DATA') {
+                        $scopeQuery->where(function ($q) use ($user) {
+                            $q
+                                ->where(
+                                    'created_by',
+                                    $user->id,
+                                )
+                                ->orWhere(
+                                    'requester_signed_by',
+                                    $user->id,
+                                );
+                        });
+
+                        return;
+                    }
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Data department user login
+                |--------------------------------------------------------------------------
+                */
+                    if ($viewScope === 'OWN_DEPARTMENT') {
+                        if ($userDepartmentId <= 0) {
+                            $scopeQuery->whereRaw('1 = 0');
+
+                            return;
+                        }
+
+                        $scopeQuery->where(
+                            'id_department',
+                            $userDepartmentId,
+                        );
+
+                        return;
+                    }
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Data cabang user login
+                |--------------------------------------------------------------------------
+                */
+                    if ($viewScope === 'OWN_CABANG') {
+                        if ($userCabangId <= 0) {
+                            $scopeQuery->whereRaw('1 = 0');
+
+                            return;
+                        }
+
+                        $scopeQuery->where(
+                            'cabang',
+                            $userCabangId,
+                        );
+
+                        return;
+                    }
+
+                    $scopeQuery->whereRaw('1 = 0');
                 });
 
-                /**
-                 * PO yang user ini menjadi approver langsung.
-                 */
-                $visibilityQuery->orWhereHas('approvals', function ($q) use ($user) {
-                    $q->where('approver_type', 'USER')
-                        ->where('approver_id', $user->id);
-                });
+                /*
+            |--------------------------------------------------------------------------
+            | Approver langsung USER
+            |--------------------------------------------------------------------------
+            | Tetap dapat melihat PO tempat dia terlibat meskipun di luar scope.
+            |--------------------------------------------------------------------------
+            */
+                $visibilityQuery->orWhereHas(
+                    'approvals',
+                    function ($q) use ($user) {
+                        $q
+                            ->whereRaw(
+                                'UPPER(TRIM(approver_type)) = ?',
+                                ['USER'],
+                            )
+                            ->where(
+                                'approver_id',
+                                $user->id,
+                            );
+                    },
+                );
 
-                /**
-                 * PO yang user ini menjadi approver berdasarkan role.
-                 */
+                /*
+            |--------------------------------------------------------------------------
+            | Approver berdasarkan ROLE
+            |--------------------------------------------------------------------------
+            */
                 if ($userRoleIds->isNotEmpty()) {
-                    $visibilityQuery->orWhereHas('approvals', function ($q) use ($userRoleIds) {
-                        $q->where('approver_type', 'ROLE')
-                            ->whereIn('approver_id', $userRoleIds->toArray());
-                    });
+                    $visibilityQuery->orWhereHas(
+                        'approvals',
+                        function ($q) use ($userRoleIds) {
+                            $q
+                                ->whereRaw(
+                                    'UPPER(TRIM(approver_type)) = ?',
+                                    ['ROLE'],
+                                )
+                                ->whereIn(
+                                    'approver_id',
+                                    $userRoleIds->all(),
+                                );
+                        },
+                    );
                 }
             });
 
             /*
         |--------------------------------------------------------------------------
-        | Search
+        | Search nomor PO
         |--------------------------------------------------------------------------
         */
-
-            if ($request->search) {
-                $search = trim((string) $request->search);
+            if ($request->filled('search')) {
+                $search = trim(
+                    (string) $request->search,
+                );
 
                 if ($search !== '') {
                     $query->where(function ($q) use ($search) {
-                        $q->where('nomor_po', 'ILIKE', "%{$search}%");
+                        $q->where(
+                            'nomor_po',
+                            'ILIKE',
+                            "%{$search}%",
+                        );
                     });
                 }
             }
 
             /*
         |--------------------------------------------------------------------------
-        | Filter Status
-        |--------------------------------------------------------------------------
-        | Jangan filter kalau status = semua / all / kosong.
+        | Filter status
         |--------------------------------------------------------------------------
         */
-
-            $status = strtoupper(trim((string) $request->status));
+            $status = strtoupper(
+                trim((string) $request->status),
+            );
 
             if (
                 $status !== ''
                 && $status !== 'ALL'
                 && $status !== 'SEMUA'
             ) {
-                $query->whereRaw('UPPER(status) = ?', [$status]);
+                $query->whereRaw(
+                    'UPPER(TRIM(status)) = ?',
+                    [$status],
+                );
             }
 
-            if ($request->tanggal_mulai) {
-                $query->whereDate('tanggal_po', '>=', $request->tanggal_mulai);
+            /*
+        |--------------------------------------------------------------------------
+        | Filter tanggal
+        |--------------------------------------------------------------------------
+        */
+            if ($request->filled('tanggal_mulai')) {
+                $query->whereDate(
+                    'tanggal_po',
+                    '>=',
+                    $request->tanggal_mulai,
+                );
             }
 
-            if ($request->tanggal_selesai) {
-                $query->whereDate('tanggal_po', '<=', $request->tanggal_selesai);
+            if ($request->filled('tanggal_selesai')) {
+                $query->whereDate(
+                    'tanggal_po',
+                    '<=',
+                    $request->tanggal_selesai,
+                );
             }
 
-            $year = (int) ($request->year ?? now()->year);
+            /*
+        |--------------------------------------------------------------------------
+        | Filter tahun
+        |--------------------------------------------------------------------------
+        */
+            $year = (int) (
+                $request->year
+                ?? now()->year
+            );
 
-            $query->whereYear('tanggal_po', $year);
+            if ($year > 0) {
+                $query->whereYear(
+                    'tanggal_po',
+                    $year,
+                );
+            }
 
-            $perPage = (int) ($request->per_page ?? 10);
-            $perPage = $perPage > 0 ? $perPage : 10;
+            /*
+        |--------------------------------------------------------------------------
+        | Pagination
+        |--------------------------------------------------------------------------
+        */
+            $perPage = (int) (
+                $request->per_page
+                ?? 10
+            );
+
+            $perPage = $perPage > 0
+                ? $perPage
+                : 10;
 
             $pos = $query->paginate($perPage);
 
-            $pos->getCollection()->transform(function ($po) use ($user, $userRoleIds) {
-                /*
-            |--------------------------------------------------------------------------
-            | Current Approval
-            |--------------------------------------------------------------------------
-            | Step aktif sekarang statusnya WAITING.
-            | PENDING artinya belum waktunya approve.
-            |--------------------------------------------------------------------------
-            */
+            /*
+        |--------------------------------------------------------------------------
+        | Transform response
+        |--------------------------------------------------------------------------
+        */
+            $pos->getCollection()->transform(
+                function ($po) use (
+                    $user,
+                    $userRoleIds,
+                    $canUpdate,
+                    $canDelete,
+                ) {
+                    /*
+                |--------------------------------------------------------------------------
+                | Ambil seluruh approval WAITING
+                |--------------------------------------------------------------------------
+                */
+                    $waitingApprovals = $po->approvals
+                        ->filter(function ($approval) {
+                            return strtoupper(
+                                trim(
+                                    (string) $approval->status,
+                                ),
+                            ) === PurchaseOrderApproval::STATUS_WAITING;
+                        })
+                        ->values();
 
-                $currentApproval = $po->approvals
-                    ->where('status', 'WAITING')
-                    ->sortBy('step_order')
-                    ->first();
+                    /*
+                |--------------------------------------------------------------------------
+                | Cari step aktif terkecil
+                |--------------------------------------------------------------------------
+                */
+                    $currentStepOrder = $waitingApprovals
+                        ->min('step_order');
 
-                $canApprove = false;
+                    /*
+                |--------------------------------------------------------------------------
+                | Semua kandidat approval pada step aktif
+                |--------------------------------------------------------------------------
+                */
+                    $currentStepApprovals = $currentStepOrder !== null
+                        ? $waitingApprovals
+                        ->filter(function (
+                            $approval
+                        ) use (
+                            $currentStepOrder,
+                        ) {
+                            return (int) $approval->step_order
+                                === (int) $currentStepOrder;
+                        })
+                        ->sortBy('id')
+                        ->values()
+                        : collect();
 
-                if ($currentApproval) {
-                    $approverType = strtoupper((string) $currentApproval->approver_type);
+                    /*
+                |--------------------------------------------------------------------------
+                | Cari approval aktif yang cocok dengan user login
+                |--------------------------------------------------------------------------
+                */
+                    $userCurrentApproval = $currentStepApprovals
+                        ->first(function (
+                            $approval
+                        ) use (
+                            $user,
+                            $userRoleIds,
+                        ) {
+                            $approverType = strtoupper(
+                                trim(
+                                    (string) $approval->approver_type,
+                                ),
+                            );
 
-                    if (
-                        $approverType === 'USER'
-                        && (int) $currentApproval->approver_id === (int) $user->id
-                    ) {
-                        $canApprove = true;
-                    }
+                            /*
+                        |--------------------------------------------------------------------------
+                        | Approver langsung USER
+                        |--------------------------------------------------------------------------
+                        */
+                            if (
+                                $approverType
+                                === PurchaseOrderApproval::APPROVER_TYPE_USER
+                            ) {
+                                return (int) $approval->approver_id
+                                    === (int) $user->id;
+                            }
 
-                    if (
-                        $approverType === 'ROLE'
-                        && $userRoleIds->contains((int) $currentApproval->approver_id)
-                    ) {
-                        $canApprove = true;
-                    }
-                }
+                            /*
+                        |--------------------------------------------------------------------------
+                        | Approver berdasarkan ROLE
+                        |--------------------------------------------------------------------------
+                        */
+                            if (
+                                $approverType
+                                === PurchaseOrderApproval::APPROVER_TYPE_ROLE
+                            ) {
+                                return $userRoleIds->contains(
+                                    (int) $approval->approver_id,
+                                );
+                            }
 
-                return [
-                    'id' => $po->id,
-                    'public_id' => $po->encrypted_id,
-                    'nomor_po' => $po->nomor_po,
-                    'tanggal_po' => $po->tanggal_po,
+                            return false;
+                        });
 
-                    'vendor_id' => $po->vendor_id,
-                    'vendor' => $po->vendor->nama_vendor ?? '-',
-                    'status_pkp' => $po->vendor->status_pkp ?? 'NON_PKP',
+                    $poStatus = strtoupper(
+                        trim((string) $po->status),
+                    );
 
-                    'jenis_pembayaran' => $po->vendor->jenis_pembayaran ?? '-',
-                    'top' => $po->vendor->top ?? null,
+                    /*
+                |--------------------------------------------------------------------------
+                | Hak approve per row
+                |--------------------------------------------------------------------------
+                */
+                    $canApprove = (
+                        $poStatus === 'IN PROGRESS'
+                        && $userCurrentApproval !== null
+                    );
 
-                    'cabang_id' => $po->cabang,
-                    'cabang' => $po->cabangData->nama_cabang ?? '-',
+                    /*
+                |--------------------------------------------------------------------------
+                | Hak update dan delete per row
+                |--------------------------------------------------------------------------
+                | Hanya PO DRAFT yang dapat diedit/dihapus.
+                |--------------------------------------------------------------------------
+                */
+                    $canUpdateRow = (
+                        $canUpdate
+                        && $poStatus === 'DRAFT'
+                    );
 
-                    'department_id' => $po->id_department,
-                    'department' => $po->departmentData->kode ?? '-',
+                    $canDeleteRow = (
+                        $canDelete
+                        && $poStatus === 'DRAFT'
+                    );
 
-                    'dpp' => $po->dpp,
-                    'ppn' => $po->ppn,
-                    'total_nilai' => $po->total_nilai,
-                    'status' => $po->status,
-                    'notes' => $po->notes,
-                    'status_receive' => $po->status_receive,
+                    /*
+                |--------------------------------------------------------------------------
+                | Current approval untuk response
+                |--------------------------------------------------------------------------
+                | Prioritas:
+                | 1. Approval yang cocok dengan user.
+                | 2. Kandidat pertama pada step aktif.
+                |--------------------------------------------------------------------------
+                */
+                    $currentApproval = $userCurrentApproval
+                        ?? $currentStepApprovals->first();
 
-                    'can_approve' => $canApprove,
+                    return [
+                        'id' => $po->id,
 
-                    'current_approval' => $currentApproval ? [
-                        'id' => $currentApproval->id,
-                        'step_order' => $currentApproval->step_order,
-                        'approver_type' => $currentApproval->approver_type,
-                        'approver_id' => $currentApproval->approver_id,
-                        'status' => $currentApproval->status,
-                    ] : null,
+                        'public_id'
+                        => $po->encrypted_id,
 
-                    'purchase_requests' => $po->purchaseRequests
-                        ->pluck('nomor_pr')
-                        ->values(),
-                ];
-            });
+                        'nomor_po'
+                        => $po->nomor_po,
+
+                        'tanggal_po'
+                        => $po->tanggal_po,
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Vendor
+                    |--------------------------------------------------------------------------
+                    */
+                        'vendor_id'
+                        => $po->vendor_id,
+
+                        'vendor'
+                        => $po->vendor?->nama_vendor
+                            ?? '-',
+
+                        'status_pkp'
+                        => $po->vendor?->status_pkp
+                            ?? 'NON_PKP',
+
+                        'jenis_pembayaran'
+                        => $po->vendor?->jenis_pembayaran
+                            ?? '-',
+
+                        'top'
+                        => $po->vendor?->top,
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Cabang
+                    |--------------------------------------------------------------------------
+                    */
+                        'cabang_id'
+                        => $po->cabang,
+
+                        'cabang'
+                        => $po->cabangData?->nama_cabang
+                            ?? '-',
+
+                        'inisial_cabang'
+                        => $po->cabangData?->inisial_cabang
+                            ?? '-',
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Department
+                    |--------------------------------------------------------------------------
+                    */
+                        'department_id'
+                        => $po->id_department,
+
+                        'department'
+                        => $po->departmentData?->kode
+                            ?? '-',
+
+                        'department_name'
+                        => $po->departmentData?->nama
+                            ?? '-',
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Nilai Purchase Order
+                    |--------------------------------------------------------------------------
+                    */
+                        'dpp'
+                        => $po->dpp,
+
+                        'ppn'
+                        => $po->ppn,
+
+                        'total_nilai'
+                        => $po->total_nilai,
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Status
+                    |--------------------------------------------------------------------------
+                    */
+                        'status'
+                        => $po->status,
+
+                        'status_receive'
+                        => $po->status_receive,
+
+                        'notes'
+                        => $po->notes,
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Abilities per row
+                    |--------------------------------------------------------------------------
+                    */
+                        'can_approve'
+                        => $canApprove,
+
+                        'can_update'
+                        => $canUpdateRow,
+
+                        'can_delete'
+                        => $canDeleteRow,
+
+                        'is_owner'
+                        => (int) $po->created_by
+                            === (int) $user->id,
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Informasi approval aktif
+                    |--------------------------------------------------------------------------
+                    */
+                        'current_step_order'
+                        => $currentStepOrder !== null
+                            ? (int) $currentStepOrder
+                            : null,
+
+                        'current_approval_candidates_count'
+                        => $currentStepApprovals->count(),
+
+                        'current_approval'
+                        => $currentApproval
+                            ? [
+                                'id'
+                                => $currentApproval->id,
+
+                                'step_order'
+                                => (int) $currentApproval
+                                    ->step_order,
+
+                                'approver_type'
+                                => $currentApproval
+                                    ->approver_type,
+
+                                'approver_id'
+                                => $currentApproval
+                                    ->approver_id,
+
+                                'approver_name_snapshot'
+                                => $currentApproval
+                                    ->approver_name_snapshot,
+
+                                'approval_mode'
+                                => strtoupper(
+                                    trim(
+                                        (string) (
+                                            $currentApproval
+                                            ->approval_mode
+                                            ?: PurchaseOrderApproval::MODE_ANY
+                                        ),
+                                    ),
+                                ),
+
+                                'label'
+                                => $currentApproval->label,
+
+                                'status'
+                                => $currentApproval->status,
+                            ]
+                            : null,
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Daftar Purchase Request
+                    |--------------------------------------------------------------------------
+                    */
+                        'purchase_requests'
+                        => $po->purchaseRequests
+                            ->pluck('nomor_pr')
+                            ->values(),
+                    ];
+                },
+            );
 
             return response()->json([
                 'success' => true,
-                'message' => 'Data Purchase Order berhasil dimuat.',
-                'data' => $pos->items(),
+
+                'message'
+                => 'Data Purchase Order berhasil dimuat.',
+
+                'data'
+                => $pos->items(),
+
                 'meta' => [
-                    'current_page' => $pos->currentPage(),
-                    'last_page' => $pos->lastPage(),
-                    'per_page' => $pos->perPage(),
-                    'total' => $pos->total(),
+                    'current_page'
+                    => $pos->currentPage(),
+
+                    'last_page'
+                    => $pos->lastPage(),
+
+                    'per_page'
+                    => $pos->perPage(),
+
+                    'total'
+                    => $pos->total(),
+                ],
+
+                /*
+            |--------------------------------------------------------------------------
+            | Global abilities module Purchase Order
+            |--------------------------------------------------------------------------
+            */
+                'abilities' => [
+                    'can_view'
+                    => $canView,
+
+                    'view_scope'
+                    => $viewScope,
+
+                    'can_create'
+                    => $canCreate,
+
+                    'can_update'
+                    => $canUpdate,
+
+                    'can_delete'
+                    => $canDelete,
                 ],
             ], 200);
         } catch (\Throwable $e) {
-            Log::error('[Purchase Order] Index error', [
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-            ]);
+            Log::error(
+                '[Purchase Order] Index error',
+                [
+                    'user_id'
+                    => $request->user()?->id,
+
+                    'message'
+                    => $e->getMessage(),
+
+                    'file'
+                    => $e->getFile(),
+
+                    'line'
+                    => $e->getLine(),
+                ],
+            );
 
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal memuat data Purchase Order.',
+
+                'message'
+                => 'Gagal memuat data Purchase Order.',
+
                 'data' => [],
-                'debug' => app()->environment('local') ? $e->getMessage() : null,
+
+                'debug'
+                => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
     }
@@ -298,7 +911,6 @@ class PurchaseOrderController extends Controller
                 'tanggal_po' => ['required', 'date_format:Y-m-d'],
                 'vendor_id' => ['required', 'integer'],
                 'cabang' => ['required'],
-                'id_department' => ['required', 'integer'],
                 'purchase_request_ids' => ['required', 'array', 'min:1'],
                 'items' => ['required', 'array', 'min:1'],
                 'items.*.purchase_request_id' => ['required', 'integer'],
@@ -312,12 +924,30 @@ class PurchaseOrderController extends Controller
 
             $nomorPo = $this->generateDraftPONumber();
 
+            $user = $request->user();
+
+            $departmentId = (int) ($user->departemen_id ?? 0);
+
+            if ($departmentId <= 0) {
+                DB::rollBack();
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Department akun Anda belum tersedia.',
+                    'errors' => [
+                        'id_department' => [
+                            'Department akun login tidak ditemukan. Silakan hubungi administrator.',
+                        ],
+                    ],
+                ], 422);
+            }
+
             $po = PurchaseOrder::create([
                 'nomor_po' => $nomorPo,
                 'tanggal_po' => $request->tanggal_po,
                 'vendor_id' => (int) $request->vendor_id,
                 'cabang' => $clean($request->cabang),
-                'id_department' => (int) $request->id_department,
+                'id_department' => $departmentId,
                 'notes' => $clean($request->notes),
                 'total_nilai' => (float) ($request->total_nilai ?? 0),
                 'dpp' => (float) ($request->dpp ?? 0),
@@ -427,7 +1057,7 @@ class PurchaseOrderController extends Controller
                     'id' => $po->id,
                     'public_id' => $po->encrypted_id,
                     'nomor_po' => $po->nomor_po,
-                    'tanggal_pr' => $po->tanggal_po
+                    'tanggal_po' => $po->tanggal_po
                         ? \Carbon\Carbon::parse($po->tanggal_po)->format('Y-m-d')
                         : null,
 
@@ -925,45 +1555,83 @@ class PurchaseOrderController extends Controller
     //     }
     // }
 
-    public function submit(Request $request, $publicId)
-    {
+    public function submit(
+        Request $request,
+        $publicId,
+    ) {
         DB::beginTransaction();
 
         try {
+            /*
+        |--------------------------------------------------------------------------
+        | Decrypt public ID
+        |--------------------------------------------------------------------------
+        */
             $id = Crypt::decryptString($publicId);
 
-            $po = PurchaseOrder::with(['items'])->findOrFail($id);
+            /*
+        |--------------------------------------------------------------------------
+        | Lock PO selama proses submit
+        |--------------------------------------------------------------------------
+        | Mencegah dua request submit berjalan bersamaan.
+        |--------------------------------------------------------------------------
+        */
+            $po = PurchaseOrder::query()
+                ->with(['items'])
+                ->lockForUpdate()
+                ->findOrFail($id);
+
             $items = $po->getRelation('items');
 
-            if (strtolower((string) $po->status) !== 'draft') {
-                DB::rollBack();
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Purchase Order hanya dapat disubmit jika status masih Draft.',
-                ], 422);
+            /*
+        |--------------------------------------------------------------------------
+        | Validasi status
+        |--------------------------------------------------------------------------
+        */
+            if (
+                strtolower(trim((string) $po->status))
+                !== 'draft'
+            ) {
+                throw ValidationException::withMessages([
+                    'status' => [
+                        'Purchase Order hanya dapat disubmit jika status masih Draft.',
+                    ],
+                ]);
             }
 
+            /*
+        |--------------------------------------------------------------------------
+        | Validasi item
+        |--------------------------------------------------------------------------
+        */
             if ($items->isEmpty()) {
-                DB::rollBack();
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Purchase Order tidak dapat disubmit karena item belum tersedia.',
-                ], 422);
+                throw ValidationException::withMessages([
+                    'items' => [
+                        'Purchase Order tidak dapat disubmit karena item belum tersedia.',
+                    ],
+                ]);
             }
 
+            /*
+        |--------------------------------------------------------------------------
+        | Validasi total nilai
+        |--------------------------------------------------------------------------
+        */
             if ((float) ($po->total_nilai ?? 0) <= 0) {
-                DB::rollBack();
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Purchase Order tidak dapat disubmit karena total nilai masih 0.',
-                ], 422);
+                throw ValidationException::withMessages([
+                    'total_nilai' => [
+                        'Purchase Order tidak dapat disubmit karena total nilai masih 0.',
+                    ],
+                ]);
             }
 
             $user = $request->user();
 
+            /*
+        |--------------------------------------------------------------------------
+        | Validasi tanda tangan requester
+        |--------------------------------------------------------------------------
+        */
             if (empty($user->signature_path)) {
                 DB::rollBack();
 
@@ -974,30 +1642,78 @@ class PurchaseOrderController extends Controller
                 ], 422);
             }
 
-            if (str_starts_with((string) $po->nomor_po, 'DRAFT/')) {
+            /*
+        |--------------------------------------------------------------------------
+        | Generate nomor PO resmi
+        |--------------------------------------------------------------------------
+        */
+            if (
+                str_starts_with(
+                    (string) $po->nomor_po,
+                    'DRAFT/',
+                )
+            ) {
                 $po->nomor_po = generatePONumber($po);
             }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Update status dan snapshot tanda tangan requester
+        |--------------------------------------------------------------------------
+        */
             $po->status = 'IN PROGRESS';
             $po->submitted_at = now();
-            $po->requester_signature_path = $user->signature_path;
+
+            $po->requester_signature_path
+                = $user->signature_path;
+
             $po->requester_signed_at = now();
             $po->requester_signed_by = $user->id;
+
             $po->save();
 
-            $this->generatePurchaseOrderApprovals($po);
+            /*
+        |--------------------------------------------------------------------------
+        | Generate snapshot approval PO
+        |--------------------------------------------------------------------------
+        | Menggantikan:
+        |
+        | $this->generatePurchaseOrderApprovals($po);
+        |--------------------------------------------------------------------------
+        */
+            $this->poApprovalGeneratorService->generate($po);
+
             DB::commit();
 
+            /*
+        |--------------------------------------------------------------------------
+        | Notifikasi dan email dijalankan setelah commit
+        |--------------------------------------------------------------------------
+        | Jika email gagal, submit PO tetap dianggap berhasil.
+        |--------------------------------------------------------------------------
+        */
             try {
                 $po->refresh();
 
-                $this->poNotificationService->notifyApprovalRequest($po);
-                $this->poMailService->sendApprovalRequest($po);
-            } catch (\Throwable $mailError) {
-                Log::error('[Purchase Order] Email approver submit gagal dikirim', [
-                    'po_id' => $po->id,
-                    'nomor_po' => $po->nomor_po,
-                    'message' => $mailError->getMessage(),
-                ]);
+                $this->poNotificationService
+                    ->notifyApprovalRequest($po);
+
+                $this->poMailService
+                    ->sendApprovalRequest($po);
+            } catch (\Throwable $notificationError) {
+                Log::error(
+                    '[Purchase Order] Notifikasi approver submit gagal dikirim',
+                    [
+                        'po_id' => $po->id,
+                        'nomor_po' => $po->nomor_po,
+                        'message'
+                        => $notificationError->getMessage(),
+                        'file'
+                        => $notificationError->getFile(),
+                        'line'
+                        => $notificationError->getLine(),
+                    ],
+                );
             }
 
             return response()->json([
@@ -1009,30 +1725,66 @@ class PurchaseOrderController extends Controller
                     'nomor_po' => $po->nomor_po,
                     'status' => $po->status,
                     'submitted_at' => $po->submitted_at,
-                    'requester_signature_path' => asset('storage/' . $po->requester_signature_path),
-                    'requester_signed_at' => $po->requester_signed_at,
+
+                    'requester_signature_path'
+                    => $po->requester_signature_path
+                        ? asset(
+                            'storage/'
+                                . $po->requester_signature_path
+                        )
+                        : null,
+
+                    'requester_signed_at'
+                    => $po->requester_signed_at,
                 ],
             ], 200);
+        } catch (ValidationException $e) {
+            DB::rollBack();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Ambil pesan validasi pertama
+        |--------------------------------------------------------------------------
+        */
+            $errors = $e->errors();
+
+            $firstMessage = collect($errors)
+                ->flatten()
+                ->first();
+
+            return response()->json([
+                'success' => false,
+                'message' => $firstMessage
+                    ?: 'Data Purchase Order tidak valid.',
+                'errors' => $errors,
+            ], 422);
         } catch (\Throwable $e) {
             DB::rollBack();
 
-            Log::error('[Purchase Order] Submit error', [
-                'public_id' => $publicId,
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-            ]);
+            Log::error(
+                '[Purchase Order] Submit error',
+                [
+                    'public_id' => $publicId,
+                    'message' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ],
+            );
 
             return response()->json([
                 'success' => false,
                 'message' => 'Gagal submit Purchase Order.',
-                'debug' => app()->environment('local') ? $e->getMessage() : null,
+                'debug' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
     }
 
-    public function approve(Request $request, $publicId)
-    {
+    public function approve(
+        Request $request,
+        $publicId,
+    ) {
         DB::beginTransaction();
 
         try {
@@ -1042,15 +1794,25 @@ class PurchaseOrderController extends Controller
 
             $id = Crypt::decryptString($publicId);
 
-            $po = PurchaseOrder::with(['approvals'])->findOrFail($id);
+            /*
+        |--------------------------------------------------------------------------
+        | Lock PO untuk mencegah approval bersamaan
+        |--------------------------------------------------------------------------
+        */
+            $po = PurchaseOrder::query()
+                ->with(['approvals'])
+                ->lockForUpdate()
+                ->findOrFail($id);
 
-            if (strtolower((string) $po->status) !== 'in progress') {
-                DB::rollBack();
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Purchase Order hanya dapat diapprove jika status masih In Progress.',
-                ], 422);
+            if (
+                strtolower(trim((string) $po->status))
+                !== 'in progress'
+            ) {
+                throw ValidationException::withMessages([
+                    'status' => [
+                        'Purchase Order hanya dapat diapprove jika status masih In Progress.',
+                    ],
+                ]);
             }
 
             $user = $request->user();
@@ -1065,109 +1827,275 @@ class PurchaseOrderController extends Controller
                 ], 422);
             }
 
-            $currentApproval = $this->poApprovalService->getCurrentPendingApproval($po);
-
-            if (!$currentApproval) {
-                DB::rollBack();
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Tidak ada approval pending untuk Purchase Order ini.',
-                ], 422);
-            }
-
-            if (!$this->poApprovalService->userCanApprove($currentApproval, $user)) {
-                DB::rollBack();
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Anda bukan approver pada tahap approval ini.',
-                ], 403);
-            }
-
-            $this->poApprovalService->approveCurrentStep(
-                $currentApproval,
-                $user,
-                $request->notes
-            );
-
-            $hasPendingApproval = $this->poApprovalService->hasPendingApproval($po);
-
-            if (!$hasPendingApproval) {
-                $this->poApprovalService->markPurchaseOrderApproved($po, $user);
-                $po->refresh();
-            }
-
-            $this->poNotificationService->notifyApprovalStep(
-                $po,
-                $user,
-                $currentApproval,
-                $hasPendingApproval
-            );
-
-            try {
-                $this->poMailService->sendApprovalStep(
+            /*
+        |--------------------------------------------------------------------------
+        | Ambil approval aktif yang benar-benar cocok dengan user
+        |--------------------------------------------------------------------------
+        |
+        | Tidak lagi memakai getCurrentPendingApproval(), karena satu step dapat
+        | mempunyai beberapa kandidat USER/ROLE.
+        |--------------------------------------------------------------------------
+        */
+            $currentApproval = $this->poApprovalService
+                ->getUserCurrentApproval(
                     $po,
                     $user,
-                    $hasPendingApproval
+                    true,
                 );
-            } catch (\Throwable $mailError) {
-                Log::error('[Purchase Order] Email requester approval status gagal dikirim', [
-                    'po_id' => $po->id,
-                    'nomor_po' => $po->nomor_po,
-                    'message' => $mailError->getMessage(),
+
+            if (!$currentApproval) {
+                $hasWaitingApproval = $po->approvals
+                    ->contains(function ($approval) {
+                        return strtoupper(
+                            trim((string) $approval->status),
+                        ) === 'WAITING';
+                    });
+
+                if ($hasWaitingApproval) {
+                    DB::rollBack();
+
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Anda bukan approver pada tahap approval Purchase Order saat ini.',
+                    ], 403);
+                }
+
+                throw ValidationException::withMessages([
+                    'approval' => [
+                        'Tidak ada approval yang sedang menunggu untuk Purchase Order ini.',
+                    ],
                 ]);
             }
 
-            if ($hasPendingApproval) {
-                $this->poNotificationService->notifyApprovalRequest($po);
+            /*
+        |--------------------------------------------------------------------------
+        | Proses ANY / ALL
+        |--------------------------------------------------------------------------
+        |
+        | Return:
+        | step_completed
+        | has_next_step
+        | next_step_order
+        | is_final_approved
+        |--------------------------------------------------------------------------
+        */
+            $approvalResult = $this->poApprovalService
+                ->approveCurrentStep(
+                    $currentApproval,
+                    $user,
+                    $request->notes,
+                );
 
-                try {
-                    $this->poMailService->sendApprovalRequest($po);
-                } catch (\Throwable $mailError) {
-                    Log::error('[Purchase Order] Email next approver gagal dikirim', [
+            $stepCompleted = (bool) (
+                $approvalResult['step_completed']
+                ?? false
+            );
+
+            $hasNextStep = (bool) (
+                $approvalResult['has_next_step']
+                ?? false
+            );
+
+            $isFinalApproved = (bool) (
+                $approvalResult['is_final_approved']
+                ?? false
+            );
+
+            $processedApproval = $approvalResult['approval']
+                ?? $currentApproval->fresh();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Final approval
+        |--------------------------------------------------------------------------
+        */
+            if ($isFinalApproved) {
+                $this->poApprovalService
+                    ->markPurchaseOrderApproved(
+                        $po,
+                        $user,
+                    );
+
+                $po->refresh();
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Commit perubahan database dahulu
+        |--------------------------------------------------------------------------
+        |
+        | Email dan notifikasi jangan dijalankan di dalam transaksi supaya
+        | kegagalan email tidak menahan atau merusak transaksi approval.
+        |--------------------------------------------------------------------------
+        */
+            DB::commit();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Notifikasi requester terkait approval yang baru diproses
+        |--------------------------------------------------------------------------
+        */
+            try {
+                /*
+            | hasPendingApproval di sini berarti PO belum final approved.
+            */
+                $hasPendingApproval = !$isFinalApproved;
+
+                $this->poNotificationService
+                    ->notifyApprovalStep(
+                        $po,
+                        $user,
+                        $processedApproval,
+                        $hasPendingApproval,
+                    );
+
+                $this->poMailService
+                    ->sendApprovalStep(
+                        $po,
+                        $user,
+                        $hasPendingApproval,
+                    );
+            } catch (\Throwable $notificationError) {
+                Log::error(
+                    '[Purchase Order] Notifikasi status approval gagal dikirim',
+                    [
                         'po_id' => $po->id,
                         'nomor_po' => $po->nomor_po,
-                        'message' => $mailError->getMessage(),
-                    ]);
+                        'approval_id' => $processedApproval?->id,
+                        'message' => $notificationError->getMessage(),
+                        'file' => $notificationError->getFile(),
+                        'line' => $notificationError->getLine(),
+                    ],
+                );
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Notifikasi approver berikutnya
+        |--------------------------------------------------------------------------
+        |
+        | Hanya dilakukan apabila:
+        | - step saat ini sudah selesai; dan
+        | - memang ada step berikutnya.
+        |
+        | Pada mode ALL ketika baru satu kandidat approve, step_completed=false,
+        | sehingga approver tahap berikutnya belum menerima notifikasi.
+        |--------------------------------------------------------------------------
+        */
+            if ($stepCompleted && $hasNextStep) {
+                try {
+                    $po->refresh();
+
+                    $this->poNotificationService
+                        ->notifyApprovalRequest($po);
+
+                    $this->poMailService
+                        ->sendApprovalRequest($po);
+                } catch (\Throwable $nextApproverError) {
+                    Log::error(
+                        '[Purchase Order] Notifikasi next approver gagal dikirim',
+                        [
+                            'po_id' => $po->id,
+                            'nomor_po' => $po->nomor_po,
+                            'next_step_order'
+                            => $approvalResult['next_step_order']
+                                ?? null,
+                            'message'
+                            => $nextApproverError->getMessage(),
+                            'file'
+                            => $nextApproverError->getFile(),
+                            'line'
+                            => $nextApproverError->getLine(),
+                        ],
+                    );
                 }
             }
 
-            DB::commit();
+            /*
+        |--------------------------------------------------------------------------
+        | Pesan response sesuai kondisi
+        |--------------------------------------------------------------------------
+        */
+            if ($isFinalApproved) {
+                $message = 'Purchase Order berhasil disetujui.';
+            } elseif (!$stepCompleted) {
+                $message = 'Approval berhasil diproses. Tahap ini masih menunggu persetujuan approver lainnya.';
+            } else {
+                $message = 'Approval Purchase Order berhasil diproses dan dilanjutkan ke tahap berikutnya.';
+            }
 
             return response()->json([
                 'success' => true,
-                'message' => $hasPendingApproval
-                    ? 'Approval Purchase Order berhasil diproses.'
-                    : 'Purchase Order berhasil disetujui.',
+                'message' => $message,
                 'data' => [
                     'id' => $po->id,
                     'public_id' => $po->encrypted_id,
                     'nomor_po' => $po->nomor_po,
                     'status' => $po->status,
                     'approved_at' => $po->approved_at,
+
+                    'approval' => [
+                        'id' => $processedApproval?->id,
+                        'step_order'
+                        => $processedApproval?->step_order,
+                        'approval_mode'
+                        => $processedApproval?->approval_mode,
+                        'status'
+                        => $processedApproval?->status,
+                    ],
+
+                    'step_completed' => $stepCompleted,
+                    'has_next_step' => $hasNextStep,
+                    'next_step_order'
+                    => $approvalResult['next_step_order']
+                        ?? null,
+                    'is_final_approved' => $isFinalApproved,
                 ],
             ], 200);
-        } catch (\Throwable $e) {
-            DB::rollBack();
+        } catch (ValidationException $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
 
-            Log::error('[Purchase Order] Approve error', [
-                'public_id' => $publicId,
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-            ]);
+            $errors = $e->errors();
+
+            return response()->json([
+                'success' => false,
+                'message' => collect($errors)
+                    ->flatten()
+                    ->first()
+                    ?? 'Data approval Purchase Order tidak valid.',
+                'errors' => $errors,
+            ], 422);
+        } catch (\Throwable $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+
+            Log::error(
+                '[Purchase Order] Approve error',
+                [
+                    'public_id' => $publicId,
+                    'message' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ],
+            );
 
             return response()->json([
                 'success' => false,
                 'message' => 'Gagal approve Purchase Order.',
-                'debug' => app()->environment('local') ? $e->getMessage() : null,
+                'debug' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
     }
 
-    public function reject(Request $request, $publicId)
-    {
+    public function reject(
+        Request $request,
+        $publicId,
+    ) {
         DB::beginTransaction();
 
         try {
@@ -1177,104 +2105,153 @@ class PurchaseOrderController extends Controller
 
             $id = Crypt::decryptString($publicId);
 
-            $po = PurchaseOrder::with([
-                'approvals',
-                'items',
-                'purchaseRequests',
-            ])->findOrFail($id);
+            /*
+        |--------------------------------------------------------------------------
+        | Lock PO selama proses reject
+        |--------------------------------------------------------------------------
+        */
+            $po = PurchaseOrder::query()
+                ->with([
+                    'approvals',
+                    'items',
+                    'purchaseRequests',
+                ])
+                ->lockForUpdate()
+                ->findOrFail($id);
 
-            if (strtolower((string) $po->status) !== 'in progress') {
-                DB::rollBack();
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Purchase Order hanya dapat direject jika status masih In Progress.',
-                ], 422);
+            if (
+                strtolower(trim((string) $po->status))
+                !== 'in progress'
+            ) {
+                throw ValidationException::withMessages([
+                    'status' => [
+                        'Purchase Order hanya dapat direject jika status masih In Progress.',
+                    ],
+                ]);
             }
 
             $user = $request->user();
 
-            $currentApproval = $this->poApprovalService->getCurrentPendingApproval($po);
-
-            if (!$currentApproval) {
-                DB::rollBack();
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Tidak ada approval yang sedang menunggu untuk Purchase Order ini.',
-                ], 422);
-            }
-
-            if (!$this->poApprovalService->userCanApprove($currentApproval, $user)) {
-                DB::rollBack();
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Anda bukan approver pada tahap approval ini.',
-                ], 403);
-            }
-
             /*
         |--------------------------------------------------------------------------
-        | Reject current WAITING step
+        | Cari approval WAITING yang cocok dengan user login
         |--------------------------------------------------------------------------
         */
-            $this->poApprovalService->rejectCurrentStep(
-                $currentApproval,
-                $user,
-                $request->notes
-            );
-
-            $currentApproval->refresh();
-
-            /*
-        |--------------------------------------------------------------------------
-        | Stop approval flow
-        |--------------------------------------------------------------------------
-        | Step berikutnya yang masih PENDING/WAITING dibatalkan.
-        | Tidak ada notifikasi ke approver berikutnya.
-        |--------------------------------------------------------------------------
-        */
-            $this->poApprovalService->cancelRemainingPendingApprovals($po);
-
-            /*
-        |--------------------------------------------------------------------------
-        | Rollback PR item qty_po / qty_outstanding
-        |--------------------------------------------------------------------------
-        */
-            $this->poRollbackService->rollbackPurchaseRequestItems($po);
-
-            /*
-        |--------------------------------------------------------------------------
-        | Mark PO rejected
-        |--------------------------------------------------------------------------
-        */
-            $this->poApprovalService->markPurchaseOrderRejected($po);
-
-            $po->refresh();
-
-            /*
-        |--------------------------------------------------------------------------
-        | Notify requester only
-        |--------------------------------------------------------------------------
-        */
-            $this->poNotificationService->notifyRejected($po, $user);
-
-            try {
-                $this->poMailService->sendRejected(
+            $currentApproval = $this->poApprovalService
+                ->getUserCurrentApproval(
                     $po,
                     $user,
-                    $request->notes
+                    true,
                 );
-            } catch (\Throwable $mailError) {
-                Log::error('[Purchase Order] Email reject gagal dikirim', [
-                    'po_id' => $po->id,
-                    'nomor_po' => $po->nomor_po,
-                    'message' => $mailError->getMessage(),
+
+            if (!$currentApproval) {
+                $hasWaitingApproval = $po->approvals
+                    ->contains(function ($approval) {
+                        return strtoupper(
+                            trim((string) $approval->status),
+                        ) === 'WAITING';
+                    });
+
+                if ($hasWaitingApproval) {
+                    DB::rollBack();
+
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Anda bukan approver pada tahap approval Purchase Order saat ini.',
+                    ], 403);
+                }
+
+                throw ValidationException::withMessages([
+                    'approval' => [
+                        'Tidak ada approval yang sedang menunggu untuk Purchase Order ini.',
+                    ],
                 ]);
             }
 
+            /*
+        |--------------------------------------------------------------------------
+        | Reject row approval user
+        |--------------------------------------------------------------------------
+        */
+            $rejectedApproval = $this->poApprovalService
+                ->rejectCurrentStep(
+                    $currentApproval,
+                    $user,
+                    $request->notes,
+                );
+
+            /*
+        |--------------------------------------------------------------------------
+        | Hentikan seluruh flow
+        |--------------------------------------------------------------------------
+        |
+        | Kandidat lain dalam step yang sama maupun step berikutnya menjadi
+        | CANCELLED.
+        |--------------------------------------------------------------------------
+        */
+            $this->poApprovalService
+                ->cancelRemainingPendingApprovals($po);
+
+            /*
+        |--------------------------------------------------------------------------
+        | Rollback alokasi item PR
+        |--------------------------------------------------------------------------
+        */
+            $this->poRollbackService
+                ->rollbackPurchaseRequestItems($po);
+
+            /*
+        |--------------------------------------------------------------------------
+        | Tandai PO rejected
+        |--------------------------------------------------------------------------
+        */
+            $this->poApprovalService
+                ->markPurchaseOrderRejected($po);
+
+            $po->refresh();
+            $rejectedApproval->refresh();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Commit terlebih dahulu
+        |--------------------------------------------------------------------------
+        */
             DB::commit();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Notifikasi requester setelah commit
+        |--------------------------------------------------------------------------
+        */
+            try {
+                $this->poNotificationService
+                    ->notifyRejected(
+                        $po,
+                        $user,
+                    );
+
+                $this->poMailService
+                    ->sendRejected(
+                        $po,
+                        $user,
+                        $request->notes,
+                    );
+            } catch (\Throwable $notificationError) {
+                Log::error(
+                    '[Purchase Order] Notifikasi reject gagal dikirim',
+                    [
+                        'po_id' => $po->id,
+                        'nomor_po' => $po->nomor_po,
+                        'approval_id' => $rejectedApproval->id,
+                        'message'
+                        => $notificationError->getMessage(),
+                        'file'
+                        => $notificationError->getFile(),
+                        'line'
+                        => $notificationError->getLine(),
+                    ],
+                );
+            }
 
             return response()->json([
                 'success' => true,
@@ -1284,25 +2261,51 @@ class PurchaseOrderController extends Controller
                     'public_id' => $po->encrypted_id,
                     'nomor_po' => $po->nomor_po,
                     'status' => $po->status,
-                    'rejected_at' => $currentApproval->rejected_at,
-                    'rejected_by' => $currentApproval->approver_name_snapshot,
-                    'reject_notes' => $currentApproval->notes,
+                    'rejected_at'
+                    => $rejectedApproval->rejected_at,
+                    'rejected_by'
+                    => $rejectedApproval
+                        ->approver_name_snapshot,
+                    'reject_notes'
+                    => $rejectedApproval->notes,
                 ],
             ], 200);
-        } catch (\Throwable $e) {
-            DB::rollBack();
+        } catch (ValidationException $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
 
-            Log::error('[Purchase Order] Reject error', [
-                'public_id' => $publicId,
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-            ]);
+            $errors = $e->errors();
+
+            return response()->json([
+                'success' => false,
+                'message' => collect($errors)
+                    ->flatten()
+                    ->first()
+                    ?? 'Data reject Purchase Order tidak valid.',
+                'errors' => $errors,
+            ], 422);
+        } catch (\Throwable $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+
+            Log::error(
+                '[Purchase Order] Reject error',
+                [
+                    'public_id' => $publicId,
+                    'message' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ],
+            );
 
             return response()->json([
                 'success' => false,
                 'message' => 'Gagal reject Purchase Order.',
-                'debug' => app()->environment('local') ? $e->getMessage() : null,
+                'debug' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
     }
@@ -1320,26 +2323,39 @@ class PurchaseOrderController extends Controller
                 'items',
                 'items.unit:id,kode,nama',
                 'requesterSignedBy:id,name',
+
                 'approvals' => function ($q) {
-                    $q->orderBy('step_order');
+                    $q
+                        ->orderBy('step_order')
+                        ->orderBy('id');
                 },
             ])->findOrFail($id);
 
-            $terbilang = $this->terbilangRupiah((float) $po->total_nilai);
+            $terbilang = $this->terbilangRupiah(
+                (float) $po->total_nilai,
+            );
 
             $pdf = Pdf::loadView('pdf.purchase-order', [
                 'po' => $po,
                 'terbilang' => $terbilang,
             ])->setPaper('a4', 'portrait');
 
-            $fileName = str_replace(['/', '\\'], '-', $po->nomor_po);
+            $fileName = str_replace(
+                ['/', '\\'],
+                '-',
+                $po->nomor_po,
+            );
 
-            return $pdf->stream("PO-{$fileName}.pdf");
+            return $pdf->stream(
+                "PO-{$fileName}.pdf",
+            );
         } catch (\Throwable $e) {
             return response()->json([
                 'success' => false,
                 'message' => 'Gagal mencetak Purchase Order.',
-                'debug' => app()->environment('local') ? $e->getMessage() : null,
+                'debug' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
     }
@@ -1347,16 +2363,49 @@ class PurchaseOrderController extends Controller
     public function dropdownReceivable(Request $request)
     {
         try {
+            /*
+        |--------------------------------------------------------------------------
+        | Department user login
+        |--------------------------------------------------------------------------
+        | Dropdown PO hanya menampilkan PO milik department user yang
+        | sedang melakukan Goods Receipt.
+        |--------------------------------------------------------------------------
+        */
+            $user = $request->user();
+
+            $departmentId = (int) (
+                $user->departemen_id
+                ?? 0
+            );
+
+            if ($departmentId <= 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Department akun Anda belum tersedia.',
+                    'data' => [],
+                    'errors' => [
+                        'department_id' => [
+                            'Department akun login tidak ditemukan. Silakan hubungi administrator.',
+                        ],
+                    ],
+                ], 422);
+            }
+
             $remainingSql = "
             (
                 purchase_order_items.qty
-                - COALESCE(purchase_order_items.qty_received, 0)
+                - COALESCE(
+                    purchase_order_items.qty_received,
+                    0
+                )
                 - COALESCE((
                     SELECT SUM(gri.qty_receive)
                     FROM goods_receive_items gri
-                    JOIN goods_receives gr ON gr.id = gri.goods_receive_id
-                    WHERE gri.purchase_order_item_id = purchase_order_items.id
-                      AND gr.status = 'DRAFT'
+                    JOIN goods_receives gr
+                        ON gr.id = gri.goods_receive_id
+                    WHERE gri.purchase_order_item_id
+                        = purchase_order_items.id
+                      AND UPPER(TRIM(gr.status)) = 'DRAFT'
                       AND gr.deleted_at IS NULL
                 ), 0)
             )
@@ -1365,99 +2414,264 @@ class PurchaseOrderController extends Controller
             $purchaseOrders = PurchaseOrder::query()
                 ->with([
                     'vendor:id,nama_vendor,status_pkp,jenis_pembayaran,top',
+
                     'cabangData:id,nama_cabang,inisial_cabang',
+
                     'departmentData:id,kode,nama',
+
                     'items' => function ($q) use ($remainingSql) {
-                        $q->with('unit:id,kode,nama')
+                        $q
+                            ->with('unit:id,kode,nama')
                             ->whereNull('deleted_at')
-                            ->whereRaw("{$remainingSql} > 0");
+                            ->whereRaw(
+                                "{$remainingSql} > 0"
+                            );
                     },
                 ])
-                ->whereRaw('UPPER(status) = ?', ['APPROVED'])
+
+                /*
+            |--------------------------------------------------------------------------
+            | Hanya PO final approved
+            |--------------------------------------------------------------------------
+            */
+                ->whereRaw(
+                    'UPPER(TRIM(status)) = ?',
+                    ['APPROVED'],
+                )
+
+                /*
+            |--------------------------------------------------------------------------
+            | Filter department user login
+            |--------------------------------------------------------------------------
+            | Cabang tidak difilter.
+            |--------------------------------------------------------------------------
+            */
+                ->where(
+                    'id_department',
+                    $departmentId,
+                )
+
+                /*
+            |--------------------------------------------------------------------------
+            | Status penerimaan
+            |--------------------------------------------------------------------------
+            */
                 ->where(function ($q) {
-                    $q->whereNull('status_receive')
-                        ->orWhereRaw('UPPER(status_receive) IN (?, ?)', ['OPEN', 'PARTIAL']);
+                    $q
+                        ->whereNull('status_receive')
+                        ->orWhereRaw(
+                            'UPPER(TRIM(status_receive)) IN (?, ?)',
+                            [
+                                'OPEN',
+                                'PARTIAL',
+                            ],
+                        );
                 })
-                ->whereHas('items', function ($q) use ($remainingSql) {
-                    $q->whereNull('deleted_at')
-                        ->whereRaw("{$remainingSql} > 0");
-                })
+
+                /*
+            |--------------------------------------------------------------------------
+            | Harus masih memiliki item outstanding
+            |--------------------------------------------------------------------------
+            */
+                ->whereHas(
+                    'items',
+                    function ($q) use ($remainingSql) {
+                        $q
+                            ->whereNull('deleted_at')
+                            ->whereRaw(
+                                "{$remainingSql} > 0"
+                            );
+                    },
+                )
+
                 ->orderByDesc('id')
                 ->get();
 
-            $data = $purchaseOrders->map(function ($po) {
-                $items = $po->items
-                    ->map(function ($item) {
-                        $qty = (float) ($item->qty ?? 0);
-                        $qtyReceived = (float) ($item->qty_received ?? 0);
-                        $hargaUnit = (float) ($item->harga_unit ?? 0);
+            $data = $purchaseOrders
+                ->map(function ($po) {
+                    $items = $po->items
+                        ->map(function ($item) {
+                            $qty = (float) (
+                                $item->qty
+                                ?? 0
+                            );
 
-                        $draftQty = (float) DB::table('goods_receive_items as gri')
-                            ->join('goods_receives as gr', 'gr.id', '=', 'gri.goods_receive_id')
-                            ->where('gri.purchase_order_item_id', $item->id)
-                            ->where('gr.status', 'DRAFT')
-                            ->whereNull('gr.deleted_at')
-                            ->sum('gri.qty_receive');
+                            $qtyReceived = (float) (
+                                $item->qty_received
+                                ?? 0
+                            );
 
-                        $qtyOutstanding = max($qty - $qtyReceived - $draftQty, 0);
+                            $hargaUnit = (float) (
+                                $item->harga_unit
+                                ?? 0
+                            );
 
-                        return [
-                            'id' => $item->id,
-                            'nama_item' => $item->nama_item,
+                            /*
+                        |--------------------------------------------------------------------------
+                        | Qty yang masih berada pada GR Draft
+                        |--------------------------------------------------------------------------
+                        */
+                            $draftQty = (float) DB::table(
+                                'goods_receive_items as gri',
+                            )
+                                ->join(
+                                    'goods_receives as gr',
+                                    'gr.id',
+                                    '=',
+                                    'gri.goods_receive_id',
+                                )
+                                ->where(
+                                    'gri.purchase_order_item_id',
+                                    $item->id,
+                                )
+                                ->whereRaw(
+                                    'UPPER(TRIM(gr.status)) = ?',
+                                    ['DRAFT'],
+                                )
+                                ->whereNull('gr.deleted_at')
+                                ->sum('gri.qty_receive');
 
-                            'qty' => $qty,
-                            'qty_received' => $qtyReceived,
-                            'qty_draft_receive' => $draftQty,
-                            'qty_outstanding_receive' => $qtyOutstanding,
+                            $qtyOutstanding = max(
+                                $qty
+                                    - $qtyReceived
+                                    - $draftQty,
+                                0,
+                            );
 
-                            'satuan_id' => $item->satuan,
-                            'satuan' => $item->unit->nama ?? $item->unit->kode ?? '-',
-                            'unit' => $item->unit->nama ?? $item->unit->kode ?? '-',
+                            return [
+                                'id' => $item->id,
 
-                            'harga_unit' => $hargaUnit,
-                            'subtotal' => (float) ($item->subtotal ?? 0),
-                            'subtotal_gr' => $qtyReceived * $hargaUnit,
-                            'subtotal_draft' => $draftQty * $hargaUnit,
-                            'subtotal_outstanding' => $qtyOutstanding * $hargaUnit,
+                                'nama_item'
+                                => $item->nama_item,
 
-                            'keterangan' => $item->keterangan,
-                        ];
-                    })
-                    ->filter(fn($item) => (float) $item['qty_outstanding_receive'] > 0)
-                    ->values();
+                                'qty'
+                                => $qty,
 
-                return [
-                    'id' => Crypt::encryptString((string) $po->id),
-                    'public_id' => Crypt::encryptString((string) $po->id),
-                    'nomor_po' => $po->nomor_po,
-                    'tanggal_po' => $po->tanggal_po,
+                                'qty_received'
+                                => $qtyReceived,
 
-                    'cabang_id' => $po->cabang,
-                    'cabang' => $po->cabangData
-                        ? ($po->cabangData->inisial_cabang ?? '-')
-                        : '-',
+                                'qty_draft_receive'
+                                => $draftQty,
 
-                    'department_id' => $po->id_department,
-                    'department' => $po->departmentData
-                        ? ($po->departmentData->kode ?? '-')
-                        : '-',
+                                'qty_outstanding_receive'
+                                => $qtyOutstanding,
 
-                    'status' => $po->status,
-                    'status_receive' => $po->status_receive,
+                                'satuan_id'
+                                => $item->satuan,
 
-                    'vendor_id' => $po->vendor_id,
-                    'vendor' => $po->vendor ? [
-                        'id' => $po->vendor->id,
-                        'nama_vendor' => $po->vendor->nama_vendor ?? '-',
-                        'status_pkp' => $po->vendor->status_pkp ?? 'NON_PKP',
-                        'jenis_pembayaran' => $po->vendor->jenis_pembayaran ?? null,
-                        'top' => $po->vendor->top ?? null,
-                    ] : null,
+                                'satuan'
+                                => $item->unit?->nama
+                                    ?? $item->unit?->kode
+                                    ?? '-',
 
-                    'items' => $items,
-                ];
-            })
-                ->filter(fn($po) => $po['items']->count() > 0)
+                                'unit'
+                                => $item->unit?->nama
+                                    ?? $item->unit?->kode
+                                    ?? '-',
+
+                                'harga_unit'
+                                => $hargaUnit,
+
+                                'subtotal'
+                                => (float) (
+                                    $item->subtotal
+                                    ?? 0
+                                ),
+
+                                'subtotal_gr'
+                                => $qtyReceived
+                                    * $hargaUnit,
+
+                                'subtotal_draft'
+                                => $draftQty
+                                    * $hargaUnit,
+
+                                'subtotal_outstanding'
+                                => $qtyOutstanding
+                                    * $hargaUnit,
+
+                                'keterangan'
+                                => $item->keterangan,
+                            ];
+                        })
+                        ->filter(function ($item) {
+                            return (float) $item['qty_outstanding_receive'] > 0;
+                        })
+                        ->values();
+
+                    $encryptedId = Crypt::encryptString(
+                        (string) $po->id,
+                    );
+
+                    return [
+                        'id' => $encryptedId,
+
+                        'public_id' => $encryptedId,
+
+                        'nomor_po' => $po->nomor_po,
+
+                        'tanggal_po' => $po->tanggal_po,
+
+                        'cabang_id' => $po->cabang,
+
+                        'cabang' => $po->cabangData
+                            ? (
+                                $po->cabangData
+                                ->inisial_cabang
+                                ?? '-'
+                            )
+                            : '-',
+
+                        'department_id'
+                        => $po->id_department,
+
+                        'department'
+                        => $po->departmentData
+                            ? (
+                                $po->departmentData
+                                ->kode
+                                ?? '-'
+                            )
+                            : '-',
+
+                        'status' => $po->status,
+
+                        'status_receive'
+                        => $po->status_receive,
+
+                        'vendor_id'
+                        => $po->vendor_id,
+
+                        'vendor' => $po->vendor
+                            ? [
+                                'id'
+                                => $po->vendor->id,
+
+                                'nama_vendor'
+                                => $po->vendor
+                                    ->nama_vendor
+                                    ?? '-',
+
+                                'status_pkp'
+                                => $po->vendor
+                                    ->status_pkp
+                                    ?? 'NON_PKP',
+
+                                'jenis_pembayaran'
+                                => $po->vendor
+                                    ->jenis_pembayaran,
+
+                                'top'
+                                => $po->vendor->top,
+                            ]
+                            : null,
+
+                        'items' => $items,
+                    ];
+                })
+                ->filter(function ($po) {
+                    return $po['items']->count() > 0;
+                })
                 ->values();
 
             return response()->json([
@@ -1466,17 +2680,33 @@ class PurchaseOrderController extends Controller
                 'data' => $data,
             ], 200);
         } catch (\Throwable $e) {
-            Log::error('[Purchase Order] dropdownReceivable error', [
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-            ]);
+            Log::error(
+                '[Purchase Order] dropdownReceivable error',
+                [
+                    'user_id'
+                    => $request->user()?->id,
+
+                    'department_id'
+                    => $request->user()?->department_id,
+
+                    'message'
+                    => $e->getMessage(),
+
+                    'file'
+                    => $e->getFile(),
+
+                    'line'
+                    => $e->getLine(),
+                ],
+            );
 
             return response()->json([
                 'success' => false,
                 'message' => 'Gagal memuat Purchase Order.',
                 'data' => [],
-                'debug' => app()->environment('local') ? $e->getMessage() : null,
+                'debug' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
     }

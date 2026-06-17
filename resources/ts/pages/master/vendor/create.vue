@@ -14,6 +14,7 @@ import {
 import Swal from 'sweetalert2'
 import axios from '@axios'
 import { getApiErrorMessage } from '@/utils/apiHelper'
+import { usePermissionStore } from '@/stores/permission'
 
 interface VendorForm {
   nama_vendor: string
@@ -101,6 +102,14 @@ interface MasterTransaksiItem {
   kategori: string
   pasal_pajak: string
 }
+
+const permissionStore = usePermissionStore()
+
+const canCreate = computed(() => {
+  return permissionStore.can('vendor.create')
+})
+
+const isCheckingPermission = ref(true)
 
 const router = useRouter()
 const route = useRoute()
@@ -840,6 +849,15 @@ const toggleDokumen = (id: number) => {
 }
 
 onMounted(async () => {
+  await permissionStore.loadPermissions()
+
+  if (!canCreate.value) {
+    await router.replace('/forbidden')
+    return
+  }
+
+  isCheckingPermission.value = false
+  
   await loadTransaksi()
   await loadMasterDokumen()
   await loadMasterBanks()

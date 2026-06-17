@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use App\Models\User;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Http\JsonResponse;
 
 class AuthController extends Controller
 {
@@ -124,6 +125,43 @@ class AuthController extends Controller
                     : null,
             ],
         ]);
+    }
+
+    public function permissions(Request $request): JsonResponse
+    {
+        try {
+            $user = $request->user();
+
+            if (!$user) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'User tidak terautentikasi.',
+                ], 401);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Permission user berhasil dimuat.',
+                'data' => [
+                    'user' => [
+                        'id' => $user->id,
+                        'name' => $user->name,
+                        'email' => $user->email,
+                    ],
+                    'permissions' => $user->getPermissionAbilities(),
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('[Auth Permission] Load error', [
+                'message' => $e->getMessage(),
+                'user_id' => $request->user()?->id,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal memuat permission user.',
+            ], 500);
+        }
     }
 
     public function logout(Request $request)

@@ -20,8 +20,16 @@ use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
 use DocumentHelper;
 use App\Helpers\ApprovalHelper;
+use App\Models\PurchaseRequestApproval;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
+use App\Services\NonTrade\PurchaseRequest\PurchaseRequestApprovalGeneratorService;
+use App\Services\NonTrade\PurchaseRequest\PurchaseRequestApprovalService;
+use App\Services\NonTrade\PurchaseRequest\PurchaseRequestNotificationService;
+use App\Services\NonTrade\PurchaseRequest\PurchaseRequestMailService;
+use Illuminate\Validation\ValidationException;
+use Illuminate\Http\JsonResponse;
+use Barryvdh\DomPDF\Facade\Pdf;
 
 class PurchaseRequestController extends Controller
 {
@@ -40,126 +48,647 @@ class PurchaseRequestController extends Controller
         return "DRAFT/PR/$year/" . str_pad($count, 4, '0', STR_PAD_LEFT);
     }
 
-    public function index(Request $request)
-    {
+    public function index(
+        Request $request,
+        PurchaseRequestApprovalService $approvalService,
+    ): JsonResponse {
+        $user = $request->user();
+
         try {
-            $query = PurchaseRequest::with([
-                'cabangData',
-                'departmentData',
-                'recommendedVendor',
-                'items',
-            ])->orderBy('id', 'desc');
+            $perPage = (int) $request->input('per_page', 10);
+            $perPage = $perPage > 0 ? $perPage : 10;
 
-            if ($request->search) {
-                $search = $request->search;
+            /*
+        |--------------------------------------------------------------------------
+        | Authentication
+        |--------------------------------------------------------------------------
+        */
+            if (!$user) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'User tidak terautentikasi.',
+                    'data' => [],
+                    'meta' => [
+                        'current_page' => 1,
+                        'last_page' => 1,
+                        'per_page' => $perPage,
+                        'total' => 0,
+                    ],
+                    'abilities' => [
+                        'can_view' => false,
+                        'view_scope' => 'NONE',
+                        'can_create' => false,
+                        'can_update' => false,
+                        'can_delete' => false,
+                    ],
+                ], 401);
+            }
 
-                $query->where(function ($q) use ($search) {
-                    $q->where('nomor_pr', 'ILIKE', "%{$search}%")
-                        ->orWhere('kategori', 'ILIKE', "%{$search}%");
+            /*
+        |--------------------------------------------------------------------------
+        | Permission Scope: Purchase Requisition View
+        |--------------------------------------------------------------------------
+        | NONE           = tidak boleh melihat data umum
+        | OWN_DATA       = hanya PR yang dibuat user login
+        | OWN_DEPARTMENT = hanya PR department user login
+        | OWN_CABANG     = hanya PR cabang user login
+        | ALL            = semua PR
+        |
+        | Catatan:
+        | PR yang sedang menunggu approval user tetap dapat ditampilkan,
+        | meskipun berada di luar scope view biasa.
+        |--------------------------------------------------------------------------
+        */
+            $scope = strtoupper(
+                trim(
+                    (string) (
+                        $user->getPermissionScope(
+                            'purchase_request.view',
+                        ) ?? 'NONE'
+                    ),
+                ),
+            );
+
+            $allowedScopes = [
+                'NONE',
+                'OWN_DATA',
+                'OWN_DEPARTMENT',
+                'OWN_CABANG',
+                'ALL',
+            ];
+
+            if (!in_array($scope, $allowedScopes, true)) {
+                $scope = 'NONE';
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Ambil seluruh role ID user
+        |--------------------------------------------------------------------------
+        | Struktur utama project menggunakan user_roles.
+        |--------------------------------------------------------------------------
+        */
+            $userRoleIds = collect();
+
+            if ($user->getAttribute('role_id')) {
+                $userRoleIds->push(
+                    (int) $user->getAttribute('role_id'),
+                );
+            }
+
+            $activeRoleId = $user->getActiveRoleId();
+
+            if ($activeRoleId) {
+                $userRoleIds->push(
+                    (int) $activeRoleId,
+                );
+            }
+
+            $pivotRoleIds = DB::table('user_roles')
+                ->where('user_id', $user->id)
+                ->pluck('role_id');
+
+            $userRoleIds = $userRoleIds
+                ->merge($pivotRoleIds)
+                ->filter(
+                    fn($roleId) =>
+                    $roleId !== null
+                        && (int) $roleId > 0,
+                )
+                ->map(
+                    fn($roleId) => (int) $roleId,
+                )
+                ->unique()
+                ->values();
+
+            Log::info('[PR INDEX PERMISSION DEBUG]', [
+                'user_id' => $user->id,
+                'raw_role_id' => $user->getAttribute('role_id'),
+                'active_role_id' => $activeRoleId,
+                'all_role_ids' => $userRoleIds->all(),
+                'permission' => 'purchase_request.view',
+                'has_permission' => $user->hasPermission(
+                    'purchase_request.view',
+                ),
+                'scope' => $scope,
+            ]);
+
+            /*
+        |--------------------------------------------------------------------------
+        | Abilities
+        |--------------------------------------------------------------------------
+        | Tetap dikirim walaupun data kosong atau scope view NONE.
+        |--------------------------------------------------------------------------
+        */
+            $abilities = [
+                'can_view' => $user->hasPermission(
+                    'purchase_request.view',
+                ),
+
+                'view_scope' => $scope,
+
+                'can_create' => $user->hasPermission(
+                    'purchase_request.create',
+                ),
+
+                'can_update' => $user->hasPermission(
+                    'purchase_request.update',
+                ),
+
+                'can_delete' => $user->hasPermission(
+                    'purchase_request.delete',
+                ),
+            ];
+
+            /*
+        |--------------------------------------------------------------------------
+        | Base query
+        |--------------------------------------------------------------------------
+        */
+            $query = PurchaseRequest::query()
+                ->with([
+                    'cabangData',
+                    'departmentData',
+                    'recommendedVendor',
+                    'items',
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Hanya approval aktif yang dibutuhkan pada halaman index
+                |--------------------------------------------------------------------------
+                */
+                    'approvals' => function ($approvalQuery) {
+                        $approvalQuery
+                            ->orderBy('step_order')
+                            ->orderBy('id');
+                    },
+                ]);
+
+            /*
+        |--------------------------------------------------------------------------
+        | Apply Visibility Scope
+        |--------------------------------------------------------------------------
+        | Data yang dapat dilihat:
+        |
+        | 1. Data berdasarkan permission scope; ATAU
+        | 2. Data yang sedang menunggu approval user login.
+        |--------------------------------------------------------------------------
+        */
+            if ($scope !== 'ALL') {
+                $query->where(function ($visibilityQuery) use (
+                    $scope,
+                    $user,
+                    $userRoleIds,
+                ) {
+                    /*
+                |--------------------------------------------------------------------------
+                | Scope data normal
+                |--------------------------------------------------------------------------
+                */
+                    if ($scope === 'OWN_DATA') {
+                        if ($user->id) {
+                            $visibilityQuery->where(
+                                'purchase_requests.created_by',
+                                $user->id,
+                            );
+                        } else {
+                            $visibilityQuery->whereRaw('1 = 0');
+                        }
+                    } elseif ($scope === 'OWN_DEPARTMENT') {
+                        if ($user->departemen_id) {
+                            $visibilityQuery->where(
+                                'purchase_requests.id_department',
+                                $user->departemen_id,
+                            );
+                        } else {
+                            $visibilityQuery->whereRaw('1 = 0');
+                        }
+                    } elseif ($scope === 'OWN_CABANG') {
+                        if ($user->cabang_id) {
+                            $visibilityQuery->where(
+                                'purchase_requests.cabang',
+                                $user->cabang_id,
+                            );
+                        } else {
+                            $visibilityQuery->whereRaw('1 = 0');
+                        }
+                    } else {
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Scope NONE
+                    |--------------------------------------------------------------------------
+                    | Tidak boleh melihat data umum, tetapi masih boleh melihat
+                    | dokumen yang memang membutuhkan approval dirinya.
+                    |--------------------------------------------------------------------------
+                    */
+                        $visibilityQuery->whereRaw('1 = 0');
+                    }
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Dokumen yang menunggu approval user
+                |--------------------------------------------------------------------------
+                */
+                    $visibilityQuery->orWhereHas(
+                        'approvals',
+                        function ($approvalQuery) use (
+                            $user,
+                            $userRoleIds,
+                        ) {
+                            $approvalQuery->where(function ($approverQuery) use (
+                                $user,
+                                $userRoleIds,
+                            ) {
+                                $approverQuery->where(function ($userQuery) use ($user) {
+                                    $userQuery
+                                        ->where(
+                                            'purchase_request_approvals.approver_type',
+                                            PurchaseRequestApproval::APPROVER_TYPE_USER,
+                                        )
+                                        ->where(
+                                            'purchase_request_approvals.approver_id',
+                                            $user->id,
+                                        );
+                                });
+                                if ($userRoleIds->isNotEmpty()) {
+                                    $approverQuery->orWhere(function ($roleQuery) use ($userRoleIds) {
+                                        $roleQuery
+                                            ->where(
+                                                'purchase_request_approvals.approver_type',
+                                                PurchaseRequestApproval::APPROVER_TYPE_ROLE,
+                                            )
+                                            ->whereIn(
+                                                'purchase_request_approvals.approver_id',
+                                                $userRoleIds->all(),
+                                            );
+                                    });
+                                }
+                            });
+                        },
+                    );
                 });
             }
 
-            if ($request->tanggal_mulai) {
-                $query->whereDate('tanggal_pr', '>=', $request->tanggal_mulai);
+            /*
+        |--------------------------------------------------------------------------
+        | Filter Search
+        |--------------------------------------------------------------------------
+        */
+            if ($request->filled('search')) {
+                $search = trim(
+                    (string) $request->input('search'),
+                );
+
+                $query->where(function ($q) use ($search) {
+                    $q->where(
+                        'purchase_requests.nomor_pr',
+                        'ILIKE',
+                        "%{$search}%",
+                    )
+                        ->orWhere(
+                            'purchase_requests.kategori',
+                            'ILIKE',
+                            "%{$search}%",
+                        )
+                        ->orWhere(
+                            'purchase_requests.notes',
+                            'ILIKE',
+                            "%{$search}%",
+                        )
+                        ->orWhere(
+                            'purchase_requests.requested_by',
+                            'ILIKE',
+                            "%{$search}%",
+                        )
+                        ->orWhereHas(
+                            'departmentData',
+                            function ($departmentQuery) use ($search) {
+                                $departmentQuery
+                                    ->where(
+                                        'kode',
+                                        'ILIKE',
+                                        "%{$search}%",
+                                    )
+                                    ->orWhere(
+                                        'nama',
+                                        'ILIKE',
+                                        "%{$search}%",
+                                    );
+                            },
+                        )
+                        ->orWhereHas(
+                            'cabangData',
+                            function ($cabangQuery) use ($search) {
+                                $cabangQuery
+                                    ->where(
+                                        'nama_cabang',
+                                        'ILIKE',
+                                        "%{$search}%",
+                                    )
+                                    ->orWhere(
+                                        'inisial_cabang',
+                                        'ILIKE',
+                                        "%{$search}%",
+                                    );
+                            },
+                        );
+                });
             }
 
-            if ($request->tanggal_selesai) {
-                $query->whereDate('tanggal_pr', '<=', $request->tanggal_selesai);
+            /*
+        |--------------------------------------------------------------------------
+        | Filter Tanggal
+        |--------------------------------------------------------------------------
+        */
+            if ($request->filled('tanggal_mulai')) {
+                $query->whereDate(
+                    'purchase_requests.tanggal_pr',
+                    '>=',
+                    $request->input('tanggal_mulai'),
+                );
             }
 
-            if ($request->status) {
-                $query->where('status', $request->status);
+            if ($request->filled('tanggal_selesai')) {
+                $query->whereDate(
+                    'purchase_requests.tanggal_pr',
+                    '<=',
+                    $request->input('tanggal_selesai'),
+                );
             }
 
-            if ($request->status_po) {
-                $query->where('status_po', $request->status_po);
+            /*
+        |--------------------------------------------------------------------------
+        | Filter Status
+        |--------------------------------------------------------------------------
+        */
+            if ($request->filled('status')) {
+                $query->where(
+                    'purchase_requests.status',
+                    $request->input('status'),
+                );
             }
 
-            $perPage = (int) ($request->per_page ?? 10);
+            if ($request->filled('status_po')) {
+                $query->where(
+                    'purchase_requests.status_po',
+                    $request->input('status_po'),
+                );
+            }
 
-            $prs = $query->paginate($perPage);
+            /*
+        |--------------------------------------------------------------------------
+        | Optional filter department/cabang dari FE
+        |--------------------------------------------------------------------------
+        | Scope user sudah diterapkan sebelum filter tambahan ini.
+        |--------------------------------------------------------------------------
+        */
+            if ($request->filled('id_department')) {
+                $query->where(
+                    'purchase_requests.id_department',
+                    (int) $request->input('id_department'),
+                );
+            }
 
-            $prs->getCollection()->transform(function ($pr) {
-                return [
-                    'id'            => $pr->id,
-                    'public_id'     => $pr->encrypted_id,
-                    'nomor_pr'      => $pr->nomor_pr,
-                    'tanggal_pr'    => $pr->tanggal_pr,
+            if ($request->filled('cabang')) {
+                $query->where(
+                    'purchase_requests.cabang',
+                    (int) $request->input('cabang'),
+                );
+            }
 
-                    'cabang'        => $pr->cabangData->nama_cabang ?? '-',
-                    'cabang_id'     => $pr->cabang,
+            /*
+        |--------------------------------------------------------------------------
+        | Pagination
+        |--------------------------------------------------------------------------
+        */
+            $prs = $query
+                ->orderByDesc('purchase_requests.id')
+                ->paginate($perPage);
 
-                    'department'    => $pr->departmentData->kode ?? '-',
-                    'department_id' => $pr->id_department,
+            /*
+        |--------------------------------------------------------------------------
+        | Transform Response
+        |--------------------------------------------------------------------------
+        */
+            $prs->through(
+                function (PurchaseRequest $pr) use (
+                    $user,
+                    $approvalService,
+                ): array {
+                    /*
+                |--------------------------------------------------------------------------
+                | Cari approval aktif yang sesuai user login
+                |--------------------------------------------------------------------------
+                | Menggunakan relation approvals yang sudah di-eager-load.
+                |--------------------------------------------------------------------------
+                */
+                    $currentApproval = $pr->approvals
+                        ->first(
+                            function (
+                                PurchaseRequestApproval $approval,
+                            ) use (
+                                $approvalService,
+                                $user,
+                            ): bool {
+                                return strtoupper(
+                                    (string) $approval->status,
+                                ) === PurchaseRequestApproval::STATUS_WAITING
+                                    && $approvalService->userCanApprove(
+                                        $approval,
+                                        $user,
+                                    );
+                            },
+                        );
 
-                    'kategori'      => $pr->kategori,
-                    'notes'         => $pr->notes,
-                    'status'        => $pr->status,
-                    'status_po'     => $pr->status_po,
-                    'requested_by'  => $pr->requested_by,
+                    return [
+                        'id' => $pr->id,
+                        'public_id' => $pr->encrypted_id,
+                        'nomor_pr' => $pr->nomor_pr,
+                        'tanggal_pr' => $pr->tanggal_pr,
 
-                    'recommended_vendor_id' => $pr->recommended_vendor_id,
-                    'recommended_vendor'    => $pr->recommendedVendor ? [
-                        'id'          => $pr->recommendedVendor->id,
-                        'nama_vendor' => $pr->recommendedVendor->nama_vendor ?? '-',
-                        'status_pkp'  => $pr->recommendedVendor->status_pkp ?? '-',
-                    ] : null,
+                        'cabang' => $pr->cabangData?->nama_cabang
+                            ?? '-',
 
-                    'total_amount' => $pr->total_amount ?? $pr->items->sum('subtotal'),
+                        'cabang_id' => $pr->cabang,
 
-                    'items' => $pr->items->map(function ($item) {
-                        return [
-                            'id'          => $item->id,
-                            'nama_item'   => $item->nama_item,
-                            'qty'         => $item->qty,
-                            'satuan'      => $item->satuan,
-                            'spesifikasi' => $item->spesifikasi,
-                            'keterangan'  => $item->keterangan,
-                            'harga_unit'  => $item->harga_unit,
-                            'subtotal'    => $item->subtotal,
-                        ];
-                    })->values(),
-                ];
-            });
+                        'department' => $pr->departmentData?->kode
+                            ?? '-',
+
+                        'department_name' => $pr->departmentData?->nama
+                            ?? '-',
+
+                        'department_id' => $pr->id_department,
+
+                        'kategori' => $pr->kategori,
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Field tipe PR existing
+                    |--------------------------------------------------------------------------
+                    */
+                        'pr_type' => $pr->pr_type,
+
+                        'notes' => $pr->notes,
+                        'status' => $pr->status,
+                        'status_po' => $pr->status_po,
+                        'requested_by' => $pr->requested_by,
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Approval Ability untuk FE
+                    |--------------------------------------------------------------------------
+                    */
+                        'can_approve' => $currentApproval !== null,
+
+                        'approval_id' => $currentApproval?->id,
+
+                        'approval_step_order' => $currentApproval
+                            ? (int) $currentApproval->step_order
+                            : null,
+
+                        'approval_label' => $currentApproval?->label,
+
+                        'approval_mode' => $currentApproval?->approval_mode,
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Vendor Recommendation
+                    |--------------------------------------------------------------------------
+                    */
+                        'recommended_vendor_id'
+                        => $pr->recommended_vendor_id,
+
+                        'recommended_vendor'
+                        => $pr->recommendedVendor
+                            ? [
+                                'id' => $pr->recommendedVendor->id,
+
+                                'nama_vendor'
+                                => $pr->recommendedVendor
+                                    ->nama_vendor
+                                    ?? '-',
+
+                                'status_pkp'
+                                => $pr->recommendedVendor
+                                    ->status_pkp
+                                    ?? '-',
+                            ]
+                            : null,
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Total Amount
+                    |--------------------------------------------------------------------------
+                    */
+                        'total_amount' => $pr->total_amount
+                            ?? $pr->items->sum(
+                                fn($item) => (float) (
+                                    $item->subtotal ?? 0
+                                ),
+                            ),
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Audit
+                    |--------------------------------------------------------------------------
+                    */
+                        'created_at' => $pr->created_at,
+                        'created_by' => $pr->created_by,
+                        'created_by_name' => $pr->created_by_name
+                            ?? null,
+
+                        'submitted_at' => $pr->submitted_at,
+                        'submitted_by' => $pr->submitted_by,
+                        'submitted_by_name' => $pr->submitted_by_name
+                            ?? null,
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Items
+                    |--------------------------------------------------------------------------
+                    */
+                        'items' => $pr->items
+                            ->map(function ($item): array {
+                                return [
+                                    'id' => $item->id,
+                                    'nama_item' => $item->nama_item,
+                                    'qty' => $item->qty,
+                                    'satuan' => $item->satuan,
+                                    'spesifikasi' => $item->spesifikasi,
+                                    'keterangan' => $item->keterangan,
+                                    'harga_unit' => $item->harga_unit,
+                                    'subtotal' => $item->subtotal,
+                                ];
+                            })
+                            ->values(),
+                    ];
+                },
+            );
 
             return response()->json([
                 'success' => true,
-                'message' => 'Data Purchase Request berhasil dimuat.',
-                'data'    => $prs->items(),
-                'meta'    => [
+                'message' => 'Data Purchase Requisition berhasil dimuat.',
+                'data' => $prs->items(),
+                'meta' => [
                     'current_page' => $prs->currentPage(),
-                    'last_page'    => $prs->lastPage(),
-                    'per_page'     => $prs->perPage(),
-                    'total'        => $prs->total(),
+                    'last_page' => $prs->lastPage(),
+                    'per_page' => $prs->perPage(),
+                    'total' => $prs->total(),
                 ],
+                'abilities' => $abilities,
             ], 200);
         } catch (\Throwable $e) {
-            Log::error('[Purchase Request] Index error', [
+            Log::error('[Purchase Requisition] Index error', [
                 'message' => $e->getMessage(),
-                'file'    => $e->getFile(),
-                'line'    => $e->getLine(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'request' => $request->all(),
+                'user_id' => $user?->id,
             ]);
 
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal memuat data Purchase Request',
-                'data'    => [],
-                'meta'    => [
+                'message' => 'Gagal memuat data Purchase Requisition.',
+                'data' => [],
+                'meta' => [
                     'current_page' => 1,
-                    'last_page'    => 1,
-                    'per_page'     => (int) ($request->per_page ?? 10),
-                    'total'        => 0,
+                    'last_page' => 1,
+                    'per_page' => (int) $request->input(
+                        'per_page',
+                        10,
+                    ),
+                    'total' => 0,
                 ],
-                'debug' => app()->environment('local') ? $e->getMessage() : null,
+                'abilities' => [
+                    'can_view' => false,
+                    'view_scope' => 'NONE',
+                    'can_create' => false,
+                    'can_update' => false,
+                    'can_delete' => false,
+                ],
+                'debug' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
     }
+
     /**
      * POST /api/purchase-request
      * Simpan data baru dari form (axios.post)
      */
     public function store(Request $request)
     {
+
+        $user = $request->user();
+
+        if (!$user || !$user->hasPermission('purchase_request.create')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Anda tidak memiliki akses untuk membuat Purchase Requisition.',
+            ], 403);
+        }
+
         $storedPaths = [];
 
         DB::beginTransaction();
@@ -333,7 +862,7 @@ class PurchaseRequestController extends Controller
 
             return response()->json([
                 'success'  => true,
-                'message'  => 'Purchase Request berhasil disimpan.',
+                'message'  => 'Purchase Requisition berhasil disimpan.',
                 'nomor_pr' => $nomorPr,
                 'data'     => [
                     'id'        => $pr->id,
@@ -352,7 +881,7 @@ class PurchaseRequestController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal menyimpan Purchase Request. Silakan periksa data atau hubungi IT.',
+                'message' => 'Gagal menyimpan Purchase Requisition. Silakan periksa data atau hubungi IT.',
             ], 500);
         }
     }
@@ -378,21 +907,38 @@ class PurchaseRequestController extends Controller
                 'approvalHistories',
                 'creator',
                 'submitter',
+
+                /*
+            |--------------------------------------------------------------------------
+            | Snapshot approval Purchase Requisition
+            |--------------------------------------------------------------------------
+            | Semua status dimuat untuk kebutuhan History Approval:
+            | WAITING, PENDING, APPROVED, REJECTED, SKIPPED, CANCELLED.
+            |--------------------------------------------------------------------------
+            */
+                'approvals' => function ($approvalQuery) {
+                    $approvalQuery
+                        ->orderBy('step_order')
+                        ->orderBy('id');
+                },
             ])->findOrFail($id);
 
             $items = $pr->getRelation('items');
 
             $totalPo = $items->sum(function ($item) {
-                return (float) ($item->qty_po ?? 0) * (float) ($item->harga_unit ?? 0);
+                return (float) ($item->qty_po ?? 0)
+                    * (float) ($item->harga_unit ?? 0);
             });
 
             $totalOutstanding = $items->sum(function ($item) {
-                return (float) ($item->qty_outstanding ?? 0) * (float) ($item->harga_unit ?? 0);
+                return (float) ($item->qty_outstanding ?? 0)
+                    * (float) ($item->harga_unit ?? 0);
             });
 
             return response()->json([
                 'success' => true,
-                'message' => 'Detail Purchase Request berhasil dimuat.',
+                'message' => 'Detail Purchase Requisition berhasil dimuat.',
+
                 'data' => [
                     'id' => $pr->id,
                     'public_id' => $pr->encrypted_id,
@@ -400,23 +946,48 @@ class PurchaseRequestController extends Controller
                     'tanggal_pr' => $pr->tanggal_pr,
 
                     'cabang_id' => $pr->cabang,
+
                     'cabang' => $pr->cabangData
-                        ? trim(($pr->cabangData->inisial_cabang ?? '-') . ' - ' . ($pr->cabangData->nama_cabang ?? '-'))
+                        ? trim(
+                            ($pr->cabangData->inisial_cabang ?? '-')
+                                . ' - '
+                                . ($pr->cabangData->nama_cabang ?? '-')
+                        )
                         : '-',
 
                     'department_id' => $pr->id_department,
+
                     'department' => $pr->departmentData
-                        ? trim(($pr->departmentData->kode ?? '-') . ' - ' . ($pr->departmentData->nama ?? '-'))
+                        ? trim(
+                            ($pr->departmentData->kode ?? '-')
+                                . ' - '
+                                . ($pr->departmentData->nama ?? '-')
+                        )
                         : '-',
 
                     'recommended_vendor_id' => $pr->recommended_vendor_id,
-                    'recommended_vendor' => $pr->recommendedVendor ? [
-                        'id' => $pr->recommendedVendor->id,
-                        'nama_vendor' => $pr->recommendedVendor->nama_vendor ?? '-',
-                        'status_pkp' => $pr->recommendedVendor->status_pkp ?? 'NON_PKP',
-                        'jenis_pembayaran' => $pr->recommendedVendor->jenis_pembayaran ?? null,
-                        'top' => $pr->recommendedVendor->top ?? null,
-                    ] : null,
+
+                    'recommended_vendor' => $pr->recommendedVendor
+                        ? [
+                            'id' => $pr->recommendedVendor->id,
+
+                            'nama_vendor' => $pr->recommendedVendor
+                                ->nama_vendor
+                                ?? '-',
+
+                            'status_pkp' => $pr->recommendedVendor
+                                ->status_pkp
+                                ?? 'NON_PKP',
+
+                            'jenis_pembayaran' => $pr->recommendedVendor
+                                ->jenis_pembayaran
+                                ?? null,
+
+                            'top' => $pr->recommendedVendor
+                                ->top
+                                ?? null,
+                        ]
+                        : null,
 
                     'kategori' => $pr->kategori,
                     'pr_type' => $pr->pr_type,
@@ -424,12 +995,21 @@ class PurchaseRequestController extends Controller
                     'status' => $pr->status,
                     'status_po' => $pr->status_po,
 
+                    /*
+                |--------------------------------------------------------------------------
+                | Purchase Order terkait
+                |--------------------------------------------------------------------------
+                */
                     'purchase_orders' => $pr->purchaseOrders
                         ->filter(function ($po) {
-                            return !in_array(strtoupper((string) $po->status), [
-                                'REJECTED',
-                                'CANCELLED',
-                            ], true);
+                            return !in_array(
+                                strtoupper((string) $po->status),
+                                [
+                                    'REJECTED',
+                                    'CANCELLED',
+                                ],
+                                true,
+                            );
                         })
                         ->values()
                         ->map(function ($po) {
@@ -438,69 +1018,223 @@ class PurchaseRequestController extends Controller
                                 'public_id' => $po->encrypted_id,
                                 'nomor_po' => $po->nomor_po,
                                 'tanggal_po' => $po->tanggal_po,
-                                'total_nilai' => (float) ($po->total_nilai ?? 0),
+
+                                'total_nilai' => (float) (
+                                    $po->total_nilai ?? 0
+                                ),
+
                                 'status' => $po->status,
                             ];
                         })
                         ->values(),
 
+                    /*
+                |--------------------------------------------------------------------------
+                | Audit
+                |--------------------------------------------------------------------------
+                */
                     'created_at' => $pr->created_at,
                     'created_by' => $pr->created_by,
-                    'created_by_name' => $pr->creator?->name ?? '-',
+
+                    'created_by_name' => $pr->creator?->name
+                        ?? '-',
 
                     'submitted_at' => $pr->submitted_at,
                     'submitted_by' => $pr->submitted_by,
-                    'submitted_by_name' => $pr->submitter?->name ?? '-',
 
-                    'total_amount' => (float) ($pr->total_amount ?? 0),
+                    'submitted_by_name' => $pr->submitter?->name
+                        ?? '-',
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Nilai
+                |--------------------------------------------------------------------------
+                */
+                    'total_amount' => (float) (
+                        $pr->total_amount ?? 0
+                    ),
+
                     'total_po' => $totalPo,
                     'total_outstanding' => $totalOutstanding,
 
-                    'items' => $items->map(function ($item) {
-                        $qty = (float) ($item->qty ?? 0);
-                        $qtyPo = (float) ($item->qty_po ?? 0);
-                        $qtyOutstanding = (float) ($item->qty_outstanding ?? 0);
-                        $hargaUnit = (float) ($item->harga_unit ?? 0);
+                    /*
+                |--------------------------------------------------------------------------
+                | Items
+                |--------------------------------------------------------------------------
+                */
+                    'items' => $items
+                        ->map(function ($item) {
+                            $qty = (float) ($item->qty ?? 0);
+                            $qtyPo = (float) ($item->qty_po ?? 0);
 
-                        return [
-                            'id' => $item->id,
-                            'nama_item' => $item->nama_item,
-                            'qty' => $item->qty,
-                            'qty_po' => $item->qty_po,
-                            'qty_outstanding' => $item->qty_outstanding,
+                            $qtyOutstanding = (float) (
+                                $item->qty_outstanding ?? 0
+                            );
 
-                            'satuan_id' => $item->satuan,
-                            'satuan' => [
-                                'id' => $item->unit->id ?? null,
-                                'kode' => $item->unit->kode ?? '-',
-                                'nama' => $item->unit->nama ?? '-',
-                            ],
+                            $hargaUnit = (float) (
+                                $item->harga_unit ?? 0
+                            );
 
-                            'spesifikasi' => $item->spesifikasi,
-                            'harga_unit' => $item->harga_unit,
-                            'subtotal' => $item->subtotal,
-                            'subtotal_po' => $qtyPo * $hargaUnit,
-                            'subtotal_outstanding' => $qtyOutstanding * $hargaUnit,
-                            'keterangan' => $item->keterangan,
-                        ];
-                    })->values(),
+                            return [
+                                'id' => $item->id,
+                                'nama_item' => $item->nama_item,
+                                'qty' => $item->qty,
+                                'qty_po' => $item->qty_po,
+                                'qty_outstanding' => $item->qty_outstanding,
 
-                    'attachments' => $pr->attachments->map(function ($a) {
-                        return [
-                            'id' => $a->id,
-                            'filename' => $a->filename,
-                            'filepath' => asset('storage/' . $a->filepath),
-                            'file_size' => $a->file_size,
-                            'mime_type' => $a->mime_type,
-                            'original_filename' => $a->original_filename,
-                        ];
-                    })->values(),
+                                'satuan_id' => $item->satuan,
 
+                                'satuan' => [
+                                    'id' => $item->unit?->id,
+                                    'kode' => $item->unit?->kode ?? '-',
+                                    'nama' => $item->unit?->nama ?? '-',
+                                ],
+
+                                'spesifikasi' => $item->spesifikasi,
+                                'harga_unit' => $item->harga_unit,
+                                'subtotal' => $item->subtotal,
+
+                                'subtotal_po' => $qtyPo
+                                    * $hargaUnit,
+
+                                'subtotal_outstanding' => $qtyOutstanding
+                                    * $hargaUnit,
+
+                                'keterangan' => $item->keterangan,
+                            ];
+                        })
+                        ->values(),
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Attachments
+                |--------------------------------------------------------------------------
+                */
+                    'attachments' => $pr->attachments
+                        ->map(function ($attachment) {
+                            return [
+                                'id' => $attachment->id,
+                                'filename' => $attachment->filename,
+
+                                'filepath' => asset(
+                                    'storage/' . $attachment->filepath
+                                ),
+
+                                'file_size' => $attachment->file_size,
+                                'mime_type' => $attachment->mime_type,
+
+                                'original_filename' => $attachment
+                                    ->original_filename,
+                            ];
+                        })
+                        ->values(),
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Approval Histories existing
+                |--------------------------------------------------------------------------
+                | Tetap dipertahankan agar tidak merusak fitur existing.
+                |--------------------------------------------------------------------------
+                */
                     'approval_histories' => $pr->approvalHistories,
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Snapshot History Approval
+                |--------------------------------------------------------------------------
+                | Digunakan ApprovalHistoryPRDialog pada index.
+                |
+                | Jangan di-unique berdasarkan step_order karena mode ANY dapat
+                | memiliki beberapa calon approver pada tahap yang sama.
+                |--------------------------------------------------------------------------
+                */
+                    'approvals' => $pr->approvals
+                        ->filter(function ($approval) {
+                            return strtoupper(
+                                trim((string) $approval->status)
+                            ) !== PurchaseRequestApproval::STATUS_SKIPPED;
+                        })
+                        ->sortBy(function ($approval) {
+                            return sprintf(
+                                '%010d-%010d',
+                                (int) $approval->step_order,
+                                (int) $approval->id,
+                            );
+                        })
+                        ->unique(function ($approval) {
+                            $status = strtoupper(
+                                trim((string) $approval->status)
+                            );
+
+                            if (in_array($status, [
+                                PurchaseRequestApproval::STATUS_WAITING,
+                                PurchaseRequestApproval::STATUS_PENDING,
+                            ], true)) {
+                                return 'STEP-' . (int) $approval->step_order;
+                            }
+
+                            return 'ROW-' . (int) $approval->id;
+                        })
+
+                        ->values()
+                        ->map(function ($approval) {
+                            return [
+                                'id' => $approval->id,
+
+                                'approval_flow_id' => $approval
+                                    ->approval_flow_id,
+
+                                'approval_flow_step_id' => $approval
+                                    ->approval_flow_step_id,
+
+                                'step_order' => (int) (
+                                    $approval->step_order ?? 0
+                                ),
+
+                                'label' => $approval->label,
+
+                                'approver_type' => $approval
+                                    ->approver_type,
+
+                                'approver_id' => $approval
+                                    ->approver_id,
+
+                                'approver_name_snapshot' => $approval
+                                    ->approver_name_snapshot,
+
+                                'approval_mode' => $approval
+                                    ->approval_mode,
+
+                                'status' => strtoupper(
+                                    (string) $approval->status
+                                ),
+
+                                'signature_path' => $approval
+                                    ->signature_path,
+
+                                'signed_at' => $approval
+                                    ->signed_at,
+
+                                'approved_at' => $approval
+                                    ->approved_at,
+
+                                'rejected_at' => $approval
+                                    ->rejected_at,
+
+                                'notes' => $approval->notes,
+
+                                'created_at' => $approval
+                                    ->created_at,
+
+                                'updated_at' => $approval
+                                    ->updated_at,
+                            ];
+                        })
+                        ->values(),
                 ],
             ], 200);
         } catch (\Throwable $e) {
-            Log::error('[Purchase Request] Show error', [
+            Log::error('[Purchase Requisition] Show error', [
                 'public_id' => $publicId,
                 'message' => $e->getMessage(),
                 'file' => $e->getFile(),
@@ -509,9 +1243,12 @@ class PurchaseRequestController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal memuat detail Purchase Request.',
+                'message' => 'Gagal memuat detail Purchase Requisition.',
                 'data' => null,
-                'debug' => app()->environment('local') ? $e->getMessage() : null,
+
+                'debug' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
     }
@@ -523,6 +1260,16 @@ class PurchaseRequestController extends Controller
      */
     public function update(string $publicId, Request $request)
     {
+
+        $user = $request->user();
+
+        if (!$user || !$user->hasPermission('purchase_request.update')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Anda tidak memiliki akses untuk mengubah Purchase Requisition.',
+            ], 403);
+        }
+
         $storedPaths = [];
 
         DB::beginTransaction();
@@ -553,7 +1300,7 @@ class PurchaseRequestController extends Controller
             if ($pr->status === PurchaseRequest::STATUS_APPROVED) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Purchase request sudah diapprove. Tidak dapat diperbarui.',
+                    'message' => 'Purchase Requisition sudah diapprove. Tidak dapat diperbarui.',
                 ], 403);
             }
 
@@ -747,7 +1494,7 @@ class PurchaseRequestController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'Purchase Request berhasil diperbarui.',
+                'message' => 'Purchase Requisition berhasil diperbarui.',
                 'data' => [
                     'id' => $pr->id,
                     'public_id' => $pr->encrypted_id ?? null,
@@ -765,7 +1512,7 @@ class PurchaseRequestController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal update Purchase Request.',
+                'message' => 'Gagal update Purchase Requisition.',
                 'error'   => config('app.debug') ? $e->getMessage() : null,
                 'line'    => config('app.debug') ? $e->getLine() : null,
             ], 500);
@@ -776,8 +1523,18 @@ class PurchaseRequestController extends Controller
      * DELETE /api/purchase-request/{id}
      * Soft delete data
      */
-    public function destroy($publicId)
+    public function destroy(Request $request, $publicId)
     {
+
+        $user = $request->user();
+
+        if (!$user || !$user->hasPermission('purchase_request.delete')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Anda tidak memiliki akses untuk menghapus Purchase Requisition.',
+            ], 403);
+        }
+
         DB::beginTransaction();
 
         try {
@@ -794,7 +1551,7 @@ class PurchaseRequestController extends Controller
 
                 return response()->json([
                     'success' => false,
-                    'message' => 'Purchase Request tidak ditemukan.',
+                    'message' => 'Purchase Requisition tidak ditemukan.',
                 ], 404);
             }
 
@@ -803,7 +1560,7 @@ class PurchaseRequestController extends Controller
 
                 return response()->json([
                     'success' => false,
-                    'message' => 'Purchase Request hanya dapat dihapus jika status masih Draft.',
+                    'message' => 'Purchase Requisition hanya dapat dihapus jika status masih Draft.',
                 ], 422);
             }
 
@@ -849,12 +1606,12 @@ class PurchaseRequestController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'Purchase Request berhasil dihapus.',
+                'message' => 'Purchase Requisition berhasil dihapus.',
             ], 200);
         } catch (\Throwable $e) {
             DB::rollBack();
 
-            Log::error('[Purchase Request] Delete error', [
+            Log::error('[Purchase Requisition] Delete error', [
                 'public_id' => $publicId,
                 'message' => $e->getMessage(),
                 'file' => $e->getFile(),
@@ -863,7 +1620,7 @@ class PurchaseRequestController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal menghapus Purchase Request.',
+                'message' => 'Gagal menghapus Purchase Requisition.',
                 'debug' => app()->environment('local') ? $e->getMessage() : null,
             ], 500);
         }
@@ -910,8 +1667,18 @@ class PurchaseRequestController extends Controller
         );
     }
 
-    public function edit($publicId)
+    public function edit(Request $request, $publicId)
     {
+
+        $user = $request->user();
+
+        if (!$user || !$user->hasPermission('purchase_request.update')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Anda tidak memiliki akses untuk mengubah Purchase Requisition.',
+            ], 403);
+        }
+
         try {
             $id = Crypt::decryptString($publicId);
 
@@ -926,14 +1693,14 @@ class PurchaseRequestController extends Controller
             if (!$pr) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Purchase Request tidak ditemukan.',
+                    'message' => 'Purchase Requisition tidak ditemukan.',
                     'data' => null,
                 ], 404);
             }
 
             return response()->json([
                 'success' => true,
-                'message' => 'Data edit Purchase Request berhasil dimuat.',
+                'message' => 'Data edit Purchase Requisition berhasil dimuat.',
                 'data' => [
                     'id' => $pr->id,
                     'public_id' => $pr->encrypted_id,
@@ -997,7 +1764,7 @@ class PurchaseRequestController extends Controller
                 ],
             ], 200);
         } catch (\Throwable $e) {
-            Log::error('[Purchase Request] Edit error', [
+            Log::error('[Purchase Requisition] Edit error', [
                 'public_id' => $publicId,
                 'message' => $e->getMessage(),
                 'file' => $e->getFile(),
@@ -1006,7 +1773,7 @@ class PurchaseRequestController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal memuat data edit Purchase Request.',
+                'message' => 'Gagal memuat data edit Purchase Requisition.',
                 'data' => null,
                 'debug' => app()->environment('local') ? $e->getMessage() : null,
             ], 500);
@@ -1023,7 +1790,7 @@ class PurchaseRequestController extends Controller
             $pr = PurchaseRequest::find($attachment->purchase_request_id);
             if (!$pr) {
                 return response()->json([
-                    'message' => 'Purchase Request tidak ditemukan.'
+                    'message' => 'Purchase Requisition tidak ditemukan.'
                 ], 404);
             }
 
@@ -1060,125 +1827,324 @@ class PurchaseRequestController extends Controller
         }
     }
 
-    public function approve($id, Request $request)
-    {
+    public function approve(
+        string $publicId,
+        Request $request,
+        PurchaseRequestApprovalService $approvalService,
+        PurchaseRequestNotificationService $notificationService,
+        PurchaseRequestMailService $mailService,
+    ): JsonResponse {
+        $validated = $request->validate([
+            'notes' => [
+                'nullable',
+                'string',
+                'max:2000',
+            ],
+        ]);
+
         DB::beginTransaction();
 
         try {
-            $user = auth()->user();
-            $pr = PurchaseRequest::findOrFail($id);
+            $user = $request->user();
 
-            // Total PR untuk menentukan matrix
-            $totalPR = $pr->total_amount ?? $pr->total_amount ?? 0;
+            if (!$user) {
+                DB::rollBack();
 
-            // Ambil approval matrix sesuai nominal PR
-            $matrix = ApprovalMatrixPR::where('min_value', '<=', $totalPR)
-                ->where(function ($q) use ($totalPR) {
-                    $q->where('max_value', '>=', $totalPR)
-                        ->orWhereNull('max_value');
-                })
-                ->orderBy('level_order')
-                ->get();
-
-            if ($matrix->isEmpty()) {
-                return response()->json(['error' => 'Approval matrix tidak ditemukan'], 400);
-            }
-
-            // Ambil step yang sedang berjalan
-            $currentFlow = $matrix->firstWhere('level_order', $pr->current_level);
-
-            if (!$currentFlow) {
-                return response()->json(['error' => 'Flow approval tidak valid'], 400);
-            }
-
-            // CEK ROLE USER — wajib sama dengan matrix
-            if ($user->role != $currentFlow->approver_role) {
                 return response()->json([
-                    'error' => "Anda tidak berhak approve tahap ini. Dibutuhkan role: {$currentFlow->approver_role}"
-                ], 403);
+                    'success' => false,
+                    'message' => 'User tidak terautentikasi.',
+                ], 401);
             }
 
-            // ======================================
-            // 1. CATAT KE APPROVAL HISTORY
-            // ======================================
-            ApprovalHistoryPR::create([
-                'purchase_request_id'   => $pr->id,
-                'level'                 => $pr->current_level,
-                'approver_user_id'      => $request->id_user,
-                'approver_role'         => $user->role,
-                'status'                => 'APPROVED',
-                'notes'                 => $request->note,
-                'created_at'            => now(),
-            ]);
+            $id = Crypt::decryptString($publicId);
 
-            // ======================================
-            // 2. CEK APAKAH INI APPROVAL TERAKHIR
-            // ======================================
-            $maxLevel = $matrix->max('level_order');
-            $isLastApproval = $pr->current_level >= $maxLevel;
+            $purchaseRequest = PurchaseRequest::query()
+                ->lockForUpdate()
+                ->findOrFail($id);
 
-            if ($isLastApproval) {
+            if (
+                strtoupper((string) $purchaseRequest->status)
+                !== PurchaseRequest::STATUS_IN_PROGRESS
+            ) {
+                DB::rollBack();
 
-                // =========== GENERATE NOMOR PR RESMI ===========
-                if (!$pr->nomor_pr) {
-                    $nomorResmi = generatePRNumber($pr);
-                    $pr->nomor_pr = $nomorResmi;
-                }
-
-                // =============== RENAME FILE LAMPIRAN ============
-                if ($pr->lampiran_request && $pr->path_lampiran) {
-                    $oldPath = $pr->path_lampiran;
-                    $folder = dirname($oldPath);
-                    $ext = pathinfo($oldPath, PATHINFO_EXTENSION);
-
-                    $newFilename = str_replace("/", "-", $pr->nomor_pr) . "." . $ext;
-                    $newPath = $folder . "/" . $newFilename;
-
-                    Storage::disk('public')->move($oldPath, $newPath);
-
-                    $pr->lampiran_request = $newFilename;
-                    $pr->path_lampiran = $newPath;
-                }
-
-                // =============== FINAL APPROVE ===============
-                $pr->status = 'APPROVED';
-                $pr->approved_by = $user->id;
-                $pr->approved_at = now();
-            } else {
-                // =============== LANJUT KE LEVEL SELANJUTNYA ===============
-                $pr->current_level += 1;
-                $pr->status = 'IN_PROGRESS';
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Purchase Requisition tidak sedang dalam proses approval.',
+                ], 422);
             }
 
-            $pr->save();
+            $result = $approvalService->approveCurrentStep(
+                $purchaseRequest,
+                $user,
+                $validated['notes'] ?? null,
+            );
 
             DB::commit();
 
+            $purchaseRequest->refresh();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Setelah commit: notifikasi dan email
+        |--------------------------------------------------------------------------
+        */
+            try {
+                $notificationService->notifyApprovalStep(
+                    $purchaseRequest,
+                    $user,
+                    $result['approval'],
+                    $result['has_pending_approval'],
+                );
+
+                $mailService->sendApprovalStep(
+                    $purchaseRequest,
+                    $user,
+                    $result['has_pending_approval'],
+                );
+            } catch (\Throwable $notifyError) {
+                Log::error(
+                    '[Purchase Request] Notify approval result gagal',
+                    [
+                        'purchase_request_id' => $purchaseRequest->id,
+                        'message' => $notifyError->getMessage(),
+                    ],
+                );
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Jika step berikutnya aktif, kirim ke approver berikutnya
+        |--------------------------------------------------------------------------
+        */
+            if (
+                $result['step_completed']
+                && $result['has_pending_approval']
+                && $result['next_step_order'] !== null
+            ) {
+                try {
+                    $notificationService->notifyApprovalRequest(
+                        $purchaseRequest,
+                    );
+
+                    $mailService->sendApprovalRequest(
+                        $purchaseRequest,
+                    );
+                } catch (\Throwable $nextApproverError) {
+                    Log::error(
+                        '[Purchase Request] Notify next approver gagal',
+                        [
+                            'purchase_request_id' => $purchaseRequest->id,
+                            'next_step_order' => $result['next_step_order'],
+                            'message' => $nextApproverError->getMessage(),
+                        ],
+                    );
+                }
+            }
+
             return response()->json([
-                'message' => $isLastApproval
-                    ? 'PR berhasil disetujui dan FINAL APPROVED'
-                    : 'Approval berhasil, menunggu approval level berikutnya',
-                'current_level' => $pr->current_level,
-                'status' => $pr->status,
-                'nomor_pr' => $pr->nomor_pr ?? null
-            ]);
-        } catch (\Exception $e) {
+                'success' => true,
+
+                'message' => $result['is_final_approved']
+                    ? 'Purchase Requisition berhasil disetujui secara final.'
+                    : (
+                        $result['step_completed']
+                        ? 'Tahap approval Purchase Requisition berhasil disetujui.'
+                        : 'Approval Anda berhasil disimpan dan masih menunggu approver lain pada tahap yang sama.'
+                    ),
+
+                'data' => [
+                    'id' => $purchaseRequest->id,
+                    'public_id' => $purchaseRequest->encrypted_id,
+                    'nomor_pr' => $purchaseRequest->nomor_pr,
+                    'status' => $purchaseRequest->status,
+                    'status_po' => $purchaseRequest->status_po,
+                    'step_completed' => $result['step_completed'],
+                    'has_pending_approval' => $result['has_pending_approval'],
+                    'is_final_approved' => $result['is_final_approved'],
+                    'next_step_order' => $result['next_step_order'],
+                ],
+            ], 200);
+        } catch (ValidationException $e) {
             DB::rollBack();
+
             return response()->json([
-                'message' => 'Gagal approve PR',
-                'error' => $e->getMessage()
+                'success' => false,
+                'message' => collect($e->errors())
+                    ->flatten()
+                    ->first()
+                    ?? 'Approval tidak dapat diproses.',
+                'errors' => $e->errors(),
+            ], 422);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+
+            Log::error('[Purchase Request] Approve error', [
+                'public_id' => $publicId,
+                'user_id' => $request->user()?->id,
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal approve Purchase Requisition.',
+                'debug' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
     }
 
-    public function submit($publicId, Request $request)
-    {
+    public function reject(
+        string $publicId,
+        Request $request,
+        PurchaseRequestApprovalService $approvalService,
+        PurchaseRequestNotificationService $notificationService,
+        PurchaseRequestMailService $mailService,
+    ): JsonResponse {
+        $validated = $request->validate([
+            'notes' => [
+                'nullable',
+                'string',
+                'max:2000',
+            ],
+        ]);
+
         DB::beginTransaction();
 
         try {
+            $user = $request->user();
+
+            if (!$user) {
+                DB::rollBack();
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'User tidak terautentikasi.',
+                ], 401);
+            }
+
             $id = Crypt::decryptString($publicId);
 
-            $pr = PurchaseRequest::with(['items'])
+            $purchaseRequest = PurchaseRequest::query()
+                ->lockForUpdate()
+                ->findOrFail($id);
+
+            if (
+                strtoupper((string) $purchaseRequest->status)
+                !== PurchaseRequest::STATUS_IN_PROGRESS
+            ) {
+                DB::rollBack();
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Purchase Requisition tidak sedang dalam proses approval.',
+                ], 422);
+            }
+
+            $approval = $approvalService->rejectCurrentStep(
+                $purchaseRequest,
+                $user,
+                $validated['notes'] ?? null,
+            );
+
+            DB::commit();
+
+            $purchaseRequest->refresh();
+
+            try {
+                $notificationService->notifyRejected(
+                    $purchaseRequest,
+                    $user,
+                );
+
+                $mailService->sendRejected(
+                    $purchaseRequest,
+                    $user,
+                    $validated['notes'] ?? null,
+                );
+            } catch (\Throwable $notifyError) {
+                Log::error(
+                    '[Purchase Request] Notify reject gagal',
+                    [
+                        'purchase_request_id' => $purchaseRequest->id,
+                        'message' => $notifyError->getMessage(),
+                    ],
+                );
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Purchase Requisition berhasil ditolak.',
+                'data' => [
+                    'id' => $purchaseRequest->id,
+                    'public_id' => $purchaseRequest->encrypted_id,
+                    'nomor_pr' => $purchaseRequest->nomor_pr,
+                    'status' => $purchaseRequest->status,
+                    'approval_id' => $approval->id,
+                    'rejected_at' => $approval->rejected_at,
+                ],
+            ], 200);
+        } catch (ValidationException $e) {
+            DB::rollBack();
+
+            return response()->json([
+                'success' => false,
+                'message' => collect($e->errors())
+                    ->flatten()
+                    ->first()
+                    ?? 'Reject tidak dapat diproses.',
+                'errors' => $e->errors(),
+            ], 422);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+
+            Log::error('[Purchase Request] Reject error', [
+                'public_id' => $publicId,
+                'user_id' => $request->user()?->id,
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal reject Purchase Requisition.',
+                'debug' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
+            ], 500);
+        }
+    }
+
+    public function submit(
+        string $publicId,
+        Request $request,
+        PurchaseRequestApprovalGeneratorService $approvalGenerator,
+        PurchaseRequestNotificationService $notificationService,
+        PurchaseRequestMailService $mailService,
+    ): JsonResponse {
+        DB::beginTransaction();
+
+        try {
+            $user = $request->user();
+
+            if (!$user) {
+                DB::rollBack();
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'User tidak terautentikasi.',
+                ], 401);
+            }
+
+            $id = Crypt::decryptString($publicId);
+
+            $pr = PurchaseRequest::with([
+                'items',
+            ])
                 ->lockForUpdate()
                 ->findOrFail($id);
 
@@ -1187,7 +2153,7 @@ class PurchaseRequestController extends Controller
 
                 return response()->json([
                     'success' => false,
-                    'message' => 'Purchase Request hanya bisa disubmit dari status Draft.',
+                    'message' => 'Purchase Requisition hanya bisa disubmit dari status Draft.',
                 ], 422);
             }
 
@@ -1196,43 +2162,230 @@ class PurchaseRequestController extends Controller
 
                 return response()->json([
                     'success' => false,
-                    'message' => 'Purchase Request tidak dapat disubmit karena item belum tersedia.',
+                    'message' => 'Purchase Requisition tidak dapat disubmit karena item belum tersedia.',
                 ], 422);
             }
 
-            /*
-        |--------------------------------------------------------------------------
-        | Generate Nomor PR Resmi
-        |--------------------------------------------------------------------------
-        */
             if (str_starts_with((string) $pr->nomor_pr, 'DRAFT/')) {
                 $pr->nomor_pr = generatePRNumber($pr);
             }
 
+            /*
+        |--------------------------------------------------------------------------
+        | Generate snapshot approval PR
+        |--------------------------------------------------------------------------
+        */
+            $approvalGenerator->generate($pr);
+
+            /*
+        |--------------------------------------------------------------------------
+        | Update status PR
+        |--------------------------------------------------------------------------
+        | Tidak menggunakan current_level lagi.
+        |--------------------------------------------------------------------------
+        */
             $pr->status = PurchaseRequest::STATUS_IN_PROGRESS;
-            $pr->current_level = 1;
             $pr->submitted_at = now();
-            $pr->submitted_by = $request->user()->id ?? null;
+            $pr->submitted_by = $user->id;
             $pr->save();
 
             DB::commit();
 
+            /*
+            |--------------------------------------------------------------------------
+            | Notifikasi aplikasi setelah transaksi berhasil
+            |--------------------------------------------------------------------------
+            */
+            $pr->refresh();
+            $pr->loadMissing('items');
+
+            try {
+                $notificationService->notifyApprovalRequest($pr);
+            } catch (\Throwable $notificationError) {
+                Log::error(
+                    '[Purchase Requisition] Notifikasi approver gagal dibuat',
+                    [
+                        'purchase_request_id' => $pr->id,
+                        'nomor_pr' => $pr->nomor_pr,
+                        'message' => $notificationError->getMessage(),
+                    ],
+                );
+            }
+
+            try {
+                $mailService->sendApprovalRequest($pr);
+            } catch (\Throwable $mailError) {
+                Log::error(
+                    '[Purchase Requisition] Email approver gagal dikirim',
+                    [
+                        'purchase_request_id' => $pr->id,
+                        'nomor_pr' => $pr->nomor_pr,
+                        'message' => $mailError->getMessage(),
+                    ],
+                );
+            }
+
             return response()->json([
                 'success' => true,
-                'message' => 'Purchase Request berhasil disubmit.',
+                'message' => 'Purchase Requisition berhasil disubmit.',
                 'data' => [
                     'id' => $pr->id,
-                    'public_id' => $pr->encrypted_id ?? Crypt::encryptString((string) $pr->id),
+                    'public_id' => $pr->encrypted_id
+                        ?? Crypt::encryptString((string) $pr->id),
                     'nomor_pr' => $pr->nomor_pr,
                     'status' => $pr->status,
                     'submitted_at' => $pr->submitted_at,
                     'submitted_by' => $pr->submitted_by,
                 ],
             ], 200);
+        } catch (ValidationException $e) {
+            DB::rollBack();
+
+            return response()->json([
+                'success' => false,
+                'message' => collect($e->errors())
+                    ->flatten()
+                    ->first()
+                    ?? 'Konfigurasi approval tidak valid.',
+                'errors' => $e->errors(),
+            ], 422);
         } catch (\Throwable $e) {
             DB::rollBack();
 
-            Log::error('[Purchase Request] Submit error', [
+            Log::error('[Purchase Requisition] Submit error', [
+                'public_id' => $publicId,
+                'user_id' => $request->user()?->id,
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal submit Purchase Requisition.',
+                'debug' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
+            ], 500);
+        }
+    }
+
+    public function print($publicId)
+    {
+        try {
+            $id = Crypt::decryptString($publicId);
+
+            $pr = PurchaseRequest::with([
+                'cabangData:id,nama_cabang,inisial_cabang',
+                'departmentData:id,kode,nama',
+
+                'recommendedVendor:id,nama_vendor,status_pkp,jenis_pembayaran,top',
+
+                'items',
+                'items.unit:id,kode,nama',
+
+                'creator:id,name',
+                'submitter:id,name',
+
+                'approvals' => function ($query) {
+                    $query
+                        ->orderBy('step_order')
+                        ->orderBy('id');
+                },
+            ])->findOrFail($id);
+
+            $items = $pr->getRelation('items');
+
+            if (
+                strtoupper(trim((string) $pr->status))
+                !== PurchaseRequest::STATUS_APPROVED
+            ) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Purchase Requisition hanya dapat dicetak setelah final approval.',
+                ], 422);
+            }
+
+            $totalAmount = (float) (
+                $pr->total_amount
+                ?? $items->sum(function ($item) {
+                    $subtotal = (float) ($item->subtotal ?? 0);
+
+                    if ($subtotal > 0) {
+                        return $subtotal;
+                    }
+
+                    return (float) ($item->qty ?? 0)
+                        * (float) ($item->harga_unit ?? 0);
+                })
+            );
+            $terbilang = $this->terbilangRupiah($totalAmount);
+
+            $approvedApprovals = $pr->approvals
+                ->filter(function ($approval) {
+                    return strtoupper(
+                        trim((string) $approval->status)
+                    ) === PurchaseRequestApproval::STATUS_APPROVED;
+                })
+                ->sortBy(function ($approval) {
+                    return sprintf(
+                        '%010d-%010d',
+                        (int) $approval->step_order,
+                        (int) $approval->id,
+                    );
+                })
+                ->values();
+
+            $requesterSigner = collect([
+                (object) [
+                    'type' => 'REQUESTER',
+                    'label' => 'Requester',
+                    'name' => $pr->submitter?->name
+                        ?? $pr->creator?->name
+                        ?? '-',
+                    'signature_path' => $pr->requester_signature_path,
+                    'signed_at' => $pr->requester_signed_at
+                        ?? $pr->submitted_at,
+                ],
+            ]);
+
+            $approvalSigners = $approvedApprovals
+                ->map(function ($approval) {
+                    return (object) [
+                        'type' => 'APPROVER',
+                        'label' => $approval->label
+                            ?? 'Approver',
+                        'name' => $approval->approver_name_snapshot
+                            ?? '-',
+                        'signature_path' => $approval->signature_path,
+                        'signed_at' => $approval->approved_at
+                            ?? $approval->signed_at,
+                    ];
+                });
+
+            $signers = $requesterSigner
+                ->concat($approvalSigners)
+                ->values();
+
+            $pdf = Pdf::loadView('pdf.purchase-request', [
+                'pr' => $pr,
+                'totalAmount' => $totalAmount,
+                'terbilang' => $terbilang,
+                'approvedApprovals' => $approvedApprovals,
+                'signers' => $signers,
+            ])->setPaper('a4', 'portrait');
+
+            $fileName = str_replace(
+                ['/', '\\'],
+                '-',
+                (string) $pr->nomor_pr,
+            );
+
+            return $pdf->stream(
+                "PR-{$fileName}.pdf",
+            );
+        } catch (\Throwable $e) {
+            Log::error('[Purchase Requisition] Print error', [
                 'public_id' => $publicId,
                 'message' => $e->getMessage(),
                 'file' => $e->getFile(),
@@ -1241,10 +2394,57 @@ class PurchaseRequestController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal submit Purchase Request.',
-                'debug' => app()->environment('local') ? $e->getMessage() : null,
+                'message' => 'Gagal mencetak Purchase Requisition.',
+                'debug' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
+    }
+
+    private function terbilangRupiah(float $angka): string
+    {
+        return trim(preg_replace('/\s+/', ' ', $this->terbilang($angka))) . ' Rupiah';
+    }
+
+    private function terbilang($angka): string
+    {
+        $angka = abs((int) $angka);
+        $huruf = ['', 'Satu', 'Dua', 'Tiga', 'Empat', 'Lima', 'Enam', 'Tujuh', 'Delapan', 'Sembilan', 'Sepuluh', 'Sebelas'];
+
+        if ($angka < 12) {
+            return $huruf[$angka];
+        }
+
+        if ($angka < 20) {
+            return $this->terbilang($angka - 10) . ' Belas';
+        }
+
+        if ($angka < 100) {
+            return $this->terbilang($angka / 10) . ' Puluh ' . $this->terbilang($angka % 10);
+        }
+
+        if ($angka < 200) {
+            return 'Seratus ' . $this->terbilang($angka - 100);
+        }
+
+        if ($angka < 1000) {
+            return $this->terbilang($angka / 100) . ' Ratus ' . $this->terbilang($angka % 100);
+        }
+
+        if ($angka < 2000) {
+            return 'Seribu ' . $this->terbilang($angka - 1000);
+        }
+
+        if ($angka < 1000000) {
+            return $this->terbilang($angka / 1000) . ' Ribu ' . $this->terbilang($angka % 1000);
+        }
+
+        if ($angka < 1000000000) {
+            return $this->terbilang($angka / 1000000) . ' Juta ' . $this->terbilang($angka % 1000000);
+        }
+
+        return $this->terbilang($angka / 1000000000) . ' Miliar ' . $this->terbilang($angka % 1000000000);
     }
 
     public function prByVendor($vendorId)
@@ -1428,11 +2628,11 @@ class PurchaseRequestController extends Controller
 
             return response()->json([
                 'success' => true,
-                'message' => 'Purchase Request berhasil dimuat.',
+                'message' => 'Purchase Requisition berhasil dimuat.',
                 'data'    => $data,
             ], 200);
         } catch (\Throwable $e) {
-            Log::error('[Purchase Request] dropdownApproved error', [
+            Log::error('[Purchase Requisition] dropdownApproved error', [
                 'message' => $e->getMessage(),
                 'file'    => $e->getFile(),
                 'line'    => $e->getLine(),
@@ -1440,7 +2640,7 @@ class PurchaseRequestController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal memuat Purchase Request.',
+                'message' => 'Gagal memuat Purchase Requisition.',
                 'data'    => [],
                 'debug'   => app()->environment('local') ? $e->getMessage() : null,
             ], 500);

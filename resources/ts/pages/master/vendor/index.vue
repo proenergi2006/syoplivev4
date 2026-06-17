@@ -16,6 +16,7 @@ import {
 import { getApiErrorMessage } from '@/utils/apiHelper'
 import { formatStatusPKP, formatKategoriVendor, toTitleCase } from '@/utils/textFormatter'
 import { usePolling } from '@core/composable/usePolling'
+import { usePermissionStore } from '@/stores/permission'
 
 interface Vendor {
   id: number
@@ -58,6 +59,26 @@ interface AxiosErrorShape {
     data?: ApiErrorResponse
   }
 }
+
+const permissionStore = usePermissionStore()
+
+const canView = computed(() => {
+  return permissionStore.can('vendor.view')
+})
+
+const canCreate = computed(() => {
+  return permissionStore.can('vendor.create')
+})
+
+const canUpdate = computed(() => {
+  return permissionStore.can('vendor.update')
+})
+
+const canDelete = computed(() => {
+  return permissionStore.can('vendor.delete')
+})
+
+const isCheckingPermission = ref(true)
 
 type SnackbarColor = 'success' | 'error' | 'warning' | 'info'
 
@@ -738,6 +759,16 @@ onBeforeUnmount(() => {
 // Initial load
 // =========================
 onMounted(async () => {
+
+  await permissionStore.loadPermissions()
+
+  if (!canView.value) {
+    await router.replace('/forbidden')
+    return
+  }
+
+  isCheckingPermission.value = false
+
   await Promise.all([
     fetchRows(),
     loadMasterDokumen(),
@@ -818,7 +849,7 @@ onMounted(async () => {
     <!-- Table -->
     <VCard>
       <VCardText class="d-flex flex-wrap gap-4 align-center">
-        <VBtn color="primary" @click="goToCreate" class="text-none">
+        <VBtn color="primary" @click="goToCreate" class="text-none" v-if="canCreate">
           + Tambah Vendor
         </VBtn>
 
@@ -917,6 +948,7 @@ onMounted(async () => {
                     <!-- Hanya muncul jika DRAFT -->
                     <template v-if="isVendorDraft(v)">
                       <VListItem
+                        v-if="canUpdate"
                         href="javascript:void(0)"
                         @click="goToEdit(v.public_id)"
                       >
@@ -944,6 +976,7 @@ onMounted(async () => {
                       </VListItem>
 
                       <VListItem
+                        v-if="canDelete"
                         href="javascript:void(0)"
                         @click="openDelete(v)"
                       >

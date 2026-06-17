@@ -18,6 +18,7 @@ import {
   sanitizeDecimalInput,
   parseDecimalInput,
 } from '@/utils/textFormatter'
+import { usePermissionStore } from '@/stores/permission'
 
 interface AxiosErrorShape {
   response?: {
@@ -57,6 +58,14 @@ interface GrAttachmentItem {
   file_size: number
   is_existing: boolean
 }
+
+const permissionStore = usePermissionStore()
+
+const canUpdate = computed(() => {
+  return permissionStore.can('goods_receive.update')
+})
+
+const isCheckingPermission = ref(true)
 
 const route = useRoute()
 const router = useRouter()
@@ -499,6 +508,15 @@ const submit = async (): Promise<void> => {
 }
 
 onMounted(async () => {
+  await permissionStore.loadPermissions()
+
+  if (!canUpdate.value) {
+    await router.replace('/forbidden')
+    return
+  }
+
+  isCheckingPermission.value = false
+  
   await loadDetail()
 })
 </script>

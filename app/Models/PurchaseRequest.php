@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Facades\Crypt;
 
@@ -46,12 +47,26 @@ class PurchaseRequest extends Model
 
         'created_by',
         'updated_by',
+
+        'requester_signed_by',
+        'requester_signature_path',
+        'requester_signed_at',
     ];
 
     protected $casts = [
         'tanggal_pr' => 'date',
         'submitted_at' => 'datetime',
+        'requester_signed_at' => 'datetime',
     ];
+
+    public const HO_CABANG_ID = 1;
+
+    public function getApprovalAreaType(): string
+    {
+        return (string) $this->cabang === (string) self::HO_CABANG_ID
+            ? 'HO'
+            : 'CABANG';
+    }
 
     protected static function booted()
     {
@@ -228,6 +243,20 @@ class PurchaseRequest extends Model
     {
         return $this->hasMany(PurchaseRequestApproval::class, 'purchase_request_id')
             ->where('status', PurchaseRequestApproval::STATUS_PENDING)
+            ->orderBy('step_order')
+            ->orderBy('id');
+    }
+
+    public function unfinishedApprovals(): HasMany
+    {
+        return $this->hasMany(
+            PurchaseRequestApproval::class,
+            'purchase_request_id',
+        )
+            ->whereIn('status', [
+                PurchaseRequestApproval::STATUS_WAITING,
+                PurchaseRequestApproval::STATUS_PENDING,
+            ])
             ->orderBy('step_order')
             ->orderBy('id');
     }

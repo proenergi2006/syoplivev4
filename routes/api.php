@@ -40,6 +40,9 @@ use App\Http\Controllers\Api\Master\GroupCabangController;
 use App\Http\Controllers\Api\Master\MasterDokumenPendukungController;
 use App\Http\Controllers\Api\Master\MasterKeteranganTransaksiController;
 use App\Http\Controllers\Api\Master\MasterVendorController;
+use App\Http\Controllers\Api\Master\PermissionController;
+use App\Http\Controllers\Api\Master\PermissionModuleController;
+use App\Http\Controllers\Api\Master\RolePermissionController;
 use App\Http\Controllers\Api\PurchaseOrderInventoryController;
 use App\Http\Controllers\Api\Master\UnitController as MasterUnitController;
 use App\Http\Controllers\Api\NotificationController;
@@ -52,6 +55,7 @@ Route::post('/auth/login', [AuthController::class, 'login']);
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/auth/me', [AuthController::class, 'me']);
+    Route::get('/auth/me/permissions', [AuthController::class, 'permissions']);
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::get('/auth/my-menus', [MenuController::class, 'myMenus']);
     Route::put('/account/change-password', [AccountController::class, 'changePassword']);
@@ -76,9 +80,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('master/dropdown/users', [UserController::class, 'dropdown']);
     Route::get('master/dropdown/roles', [RoleController::class, 'dropdown']);
-
-    Route::apiResource('master/users', UserController::class);
-    Route::apiResource('master/roles', RoleController::class);
 
     Route::apiResource('master/produk', ProdukController::class);
     Route::apiResource('master/pbbkb', PbbkbController::class);
@@ -119,6 +120,24 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // ===================== DATA MASTER =====================
     Route::prefix('master')->group(function () {
+
+        // Module Permission
+        Route::get(
+            'permission-modules',
+            [PermissionModuleController::class, 'index'],
+        );
+
+        // Permissions
+        Route::get('permissions', [PermissionController::class, 'index']);
+        Route::get('permissions/{permission}', [PermissionController::class, 'show']);
+
+        Route::get('role-permissions', [RolePermissionController::class, 'index']);
+        Route::put('role-permissions/bulk', [RolePermissionController::class, 'bulkUpdate']);
+
+        // Users
+        Route::apiResource('users', UserController::class);
+        // Role
+        Route::apiResource('roles', RoleController::class);
 
         // Vendor
         Route::get('vendor/dropdown-select', [MasterVendorController::class, 'dropdownSelect']);
@@ -161,40 +180,130 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/approval-flows/{publicId}', [ApprovalFlowController::class, 'destroy']);
     });
 
-    Route::prefix('transaction')->name('transaction.')->group(function () {
-        // ===================== PURCHASE REQUEST =========================
-        Route::get('purchase-request/dropdown-approved', [PurchaseRequestController::class, 'dropdownApproved']);
-        Route::get('purchase-request/{publicId}/edit', [PurchaseRequestController::class, 'edit']);
-        Route::patch('purchase-request/{publicId}/submit', [PurchaseRequestController::class, 'submit']);
-        Route::apiResource('purchase-request', PurchaseRequestController::class)
-            ->parameters([
+    Route::prefix('transaction')
+        ->name('transaction.')
+        ->group(function () {
+            /*
+            |--------------------------------------------------------------------------
+            | PURCHASE REQUEST
+            |--------------------------------------------------------------------------
+            | Semua URL di dalam group ini otomatis diawali /transaction.
+            |--------------------------------------------------------------------------
+            */
+
+            Route::get(
+                'purchase-request/dropdown-approved',
+                [PurchaseRequestController::class, 'dropdownApproved'],
+            );
+
+            Route::get(
+                'purchase-request/{publicId}/edit',
+                [PurchaseRequestController::class, 'edit'],
+            );
+
+            Route::get(
+                'purchase-request/{publicId}/print',
+                [PurchaseRequestController::class, 'print'],
+            );
+
+            Route::patch(
+                'purchase-request/{publicId}/submit',
+                [PurchaseRequestController::class, 'submit'],
+            );
+
+            Route::patch(
+                'purchase-request/{publicId}/approve',
+                [PurchaseRequestController::class, 'approve'],
+            );
+
+            Route::patch(
+                'purchase-request/{publicId}/reject',
+                [PurchaseRequestController::class, 'reject'],
+            );
+
+            Route::apiResource(
+                'purchase-request',
+                PurchaseRequestController::class,
+            )->parameters([
                 'purchase-request' => 'publicId',
             ]);
 
-        // ===================== PURCHASE ORDER =========================
-        Route::get('purchase-order/{publicId}/edit', [PurchaseOrderController::class, 'edit']);
-        Route::get('purchase-order/{publicId}/print', [PurchaseOrderController::class, 'print']);
-        Route::patch('purchase-order/{publicId}/submit', [PurchaseOrderController::class, 'submit']);
-        Route::patch('purchase-order/{publicId}/approve', [PurchaseOrderController::class, 'approve']);
-        Route::patch('purchase-order/{publicId}/reject', [PurchaseOrderController::class, 'reject']);
-        Route::get('purchase-order/dropdown-receivable', [PurchaseOrderController::class, 'dropdownReceivable']);
-        Route::get('purchase-order/{publicId}/receivable-items', [PurchaseOrderController::class, 'receivableItems']);
-        Route::apiResource('purchase-order', PurchaseOrderController::class)
-            ->parameters([
+            /*
+        |--------------------------------------------------------------------------
+        | PURCHASE ORDER
+        |--------------------------------------------------------------------------
+        */
+
+            Route::get(
+                'purchase-order/dropdown-receivable',
+                [PurchaseOrderController::class, 'dropdownReceivable'],
+            );
+
+            Route::get(
+                'purchase-order/{publicId}/receivable-items',
+                [PurchaseOrderController::class, 'receivableItems'],
+            );
+
+            Route::get(
+                'purchase-order/{publicId}/edit',
+                [PurchaseOrderController::class, 'edit'],
+            );
+
+            Route::get(
+                'purchase-order/{publicId}/print',
+                [PurchaseOrderController::class, 'print'],
+            );
+
+            Route::patch(
+                'purchase-order/{publicId}/submit',
+                [PurchaseOrderController::class, 'submit'],
+            );
+
+            Route::patch(
+                'purchase-order/{publicId}/approve',
+                [PurchaseOrderController::class, 'approve'],
+            );
+
+            Route::patch(
+                'purchase-order/{publicId}/reject',
+                [PurchaseOrderController::class, 'reject'],
+            );
+
+            Route::apiResource(
+                'purchase-order',
+                PurchaseOrderController::class,
+            )->parameters([
                 'purchase-order' => 'publicId',
             ]);
 
-        // ===================== GOODS RECEIVE =========================
-        Route::post('goods-receive', [GoodsReceiveController::class, 'store']);
-        Route::patch('goods-receive/{publicId}/post', [GoodsReceiveController::class, 'post']);
-        Route::patch('goods-receive/{publicId}/cancel', [GoodsReceiveController::class, 'cancel']);
-        Route::get('goods-receive/{publicId}/edit', [GoodsReceiveController::class, 'edit']);
-        Route::patch('goods-receive/{publicId}/post', [GoodsReceiveController::class, 'post']);
-        Route::apiResource('goods-receive', GoodsReceiveController::class)
-            ->parameters([
+            /*
+        |--------------------------------------------------------------------------
+        | GOODS RECEIVE
+        |--------------------------------------------------------------------------
+        */
+
+            Route::patch(
+                'goods-receive/{publicId}/post',
+                [GoodsReceiveController::class, 'post'],
+            );
+
+            Route::patch(
+                'goods-receive/{publicId}/cancel',
+                [GoodsReceiveController::class, 'cancel'],
+            );
+
+            Route::get(
+                'goods-receive/{publicId}/edit',
+                [GoodsReceiveController::class, 'edit'],
+            );
+
+            Route::apiResource(
+                'goods-receive',
+                GoodsReceiveController::class,
+            )->parameters([
                 'goods-receive' => 'publicId',
             ]);
-    });
+        });
 
     //API ACCURATE
     // Route::get('accurate/products', [AccurateController::class, 'products']);
