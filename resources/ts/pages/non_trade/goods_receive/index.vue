@@ -604,10 +604,11 @@ onMounted(async () => {
         <VBtn
           v-if="canCreate"
           color="primary"
+          prepend-icon="tabler-plus"
           @click="goToCreate"
           class="text-none"
         >
-          + Tambah Goods Receipt
+        Tambah Goods Receipt
         </VBtn>
 
         <VSpacer />

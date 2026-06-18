@@ -40,6 +40,13 @@ class PermissionSeeder extends Seeder
             ],
             [
                 'module' => 'vendor',
+                'action' => 'submit',
+                'code' => 'vendor.submit',
+                'name' => 'Submit Master Vendor',
+                'description' => 'Submit Master Vendor ke proses approval',
+            ],
+            [
+                'module' => 'vendor',
                 'action' => 'delete',
                 'code' => 'vendor.delete',
                 'name' => 'Delete Master Vendor',

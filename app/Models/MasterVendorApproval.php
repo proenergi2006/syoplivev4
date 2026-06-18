@@ -15,8 +15,10 @@ class MasterVendorApproval extends Model
         'step_order',
         'approver_type',
         'approver_id',
-        'status',
         'approver_name_snapshot',
+        'approval_mode',
+        'label',
+        'status',
         'notes',
         'approved_at',
         'rejected_at',
@@ -48,4 +50,17 @@ class MasterVendorApproval extends Model
     {
         return $this->belongsTo(User::class, 'approver_id');
     }
+
+    public const STATUS_PENDING = 'PENDING';
+    public const STATUS_WAITING = 'WAITING';
+    public const STATUS_APPROVED = 'APPROVED';
+    public const STATUS_REJECTED = 'REJECTED';
+    public const STATUS_SKIPPED = 'SKIPPED';
+    public const STATUS_CANCELLED = 'CANCELLED';
+
+    public const MODE_ANY = 'ANY';
+    public const MODE_ALL = 'ALL';
+
+    public const APPROVER_TYPE_USER = 'USER';
+    public const APPROVER_TYPE_ROLE = 'ROLE';
 }

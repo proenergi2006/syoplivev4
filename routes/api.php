@@ -147,7 +147,6 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::patch('vendor/{publicId}/submit', [MasterVendorController::class, 'submit']);
         Route::patch('vendor/{publicId}/approve', [MasterVendorController::class, 'approve']);
         Route::patch('vendor/{publicId}/reject', [MasterVendorController::class, 'reject']);
-
         Route::apiResource('vendor', MasterVendorController::class)
             ->parameters([
                 'vendor' => 'publicId',

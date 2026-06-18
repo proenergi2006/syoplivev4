@@ -902,6 +902,14 @@ class PurchaseOrderController extends Controller
 
     public function store(Request $request)
     {
+        $user = $request->user();
+        if (!$user || !$user->hasPermission('purchase_order.create')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Anda tidak memiliki akses untuk membuat Purchase Order.',
+            ], 403);
+        }
+
         DB::beginTransaction();
 
         try {
@@ -1023,13 +1031,21 @@ class PurchaseOrderController extends Controller
         }
     }
 
-    public function edit($publicId)
+    public function edit($publicId, Request $request)
     {
-        return $this->show($publicId);
+        return $this->show($publicId, $request);
     }
 
-    public function show($publicId)
+    public function show($publicId, Request $request)
     {
+        $user = $request->user();
+        if (!$user || !$user->hasPermission('purchase_order.update')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Anda tidak memiliki akses untuk mengubah Purchase Order.',
+            ], 403);
+        }
+
         try {
             $id = Crypt::decryptString($publicId);
 
@@ -1408,8 +1424,16 @@ class PurchaseOrderController extends Controller
         }
     }
 
-    public function destroy($publicId)
+    public function destroy($publicId, Request $request)
     {
+        $user = $request->user();
+        if (!$user || !$user->hasPermission('purchase_order.delete')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Anda tidak memiliki akses untuk menghapus Purchase Order.',
+            ], 403);
+        }
+
         DB::beginTransaction();
 
         try {

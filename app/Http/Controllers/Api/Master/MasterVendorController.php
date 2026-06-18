@@ -23,112 +23,814 @@ use App\Models\MasterVendorApproval;
 use App\Models\User;
 use App\Models\Notification;
 use App\Mail\MasterVendorApprovalMail;
+use App\Models\Role;
 use Illuminate\Support\Facades\Mail;
 use App\Services\MasterVendor\MasterVendorApprovalService;
+use Illuminate\Support\Facades\Schema;
+use App\Services\MasterVendor\MasterVendorApprovalGeneratorService;
+use App\Services\MasterVendor\MasterVendorApprovalNotificationService;
+use Illuminate\Validation\ValidationException;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Collection;
 
 class MasterVendorController extends Controller
 {
 
     protected MasterVendorApprovalService $vendorApprovalService;
+    protected MasterVendorApprovalGeneratorService $vendorApprovalGeneratorService;
+    protected MasterVendorApprovalNotificationService $vendorApprovalNotificationService;
 
-    public function __construct(MasterVendorApprovalService $vendorApprovalService)
+    public function __construct(MasterVendorApprovalService $vendorApprovalService, MasterVendorApprovalGeneratorService $vendorApprovalGeneratorService, MasterVendorApprovalNotificationService $vendorApprovalNotificationService)
     {
         $this->vendorApprovalService = $vendorApprovalService;
+        $this->vendorApprovalGeneratorService = $vendorApprovalGeneratorService;
+        $this->vendorApprovalNotificationService = $vendorApprovalNotificationService;
     }
 
     public function index(Request $request)
     {
         try {
+            $user = $request->user();
+
+            if (!$user) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'User login tidak ditemukan.',
+                ], 401);
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Permission Master Vendor
+        |--------------------------------------------------------------------------
+        */
+            $canView = $user->hasPermission('vendor.view');
+            $canCreate = $user->hasPermission('vendor.create');
+            $canUpdate = $user->hasPermission('vendor.update');
+            $canSubmit = $user->hasPermission('vendor.submit');
+            $canDelete = $user->hasPermission('vendor.delete');
+
+            $viewScope = $canView
+                ? strtoupper(
+                    trim(
+                        (string) (
+                            $user->getPermissionScope('vendor.view')
+                            ?? 'NONE'
+                        ),
+                    ),
+                )
+                : 'NONE';
+
+            /*
+        |--------------------------------------------------------------------------
+        | Normalisasi scope
+        |--------------------------------------------------------------------------
+        */
+            if (!in_array(
+                $viewScope,
+                [
+                    'NONE',
+                    'OWN_DATA',
+                    'OWN_DEPARTMENT',
+                    'OWN_CABANG',
+                    'ALL',
+                ],
+                true,
+            )) {
+                $viewScope = 'NONE';
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Ambil seluruh role user
+        |--------------------------------------------------------------------------
+        */
+            $userRoleIds = collect();
+
+            if (method_exists($user, 'roles')) {
+                $userRoleIds = $user->roles()
+                    ->pluck('roles.id')
+                    ->map(
+                        fn($id) => (int) $id,
+                    );
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Compatibility jika user mempunyai role_id langsung
+        |--------------------------------------------------------------------------
+        */
+            if (
+                isset($user->role_id)
+                && $user->role_id
+            ) {
+                $userRoleIds->push(
+                    (int) $user->role_id,
+                );
+            }
+
+            $userRoleIds = $userRoleIds
+                ->filter(
+                    fn($id) => (int) $id > 0,
+                )
+                ->unique()
+                ->values();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Subquery Vendor yang melibatkan user sebagai approver USER
+        |--------------------------------------------------------------------------
+        */
+            $userApprovalVendorIds = DB::table(
+                'master_vendor_approvals',
+            )
+                ->whereRaw(
+                    'UPPER(TRIM(approver_type)) = ?',
+                    ['USER'],
+                )
+                ->where(
+                    'approver_id',
+                    $user->id,
+                )
+                ->select('vendor_id');
+
+            /*
+        |--------------------------------------------------------------------------
+        | Subquery Vendor yang melibatkan role user sebagai approver
+        |--------------------------------------------------------------------------
+        */
+            $roleApprovalVendorIds = null;
+
+            if ($userRoleIds->isNotEmpty()) {
+                $roleApprovalVendorIds = DB::table(
+                    'master_vendor_approvals',
+                )
+                    ->whereRaw(
+                        'UPPER(TRIM(approver_type)) = ?',
+                        ['ROLE'],
+                    )
+                    ->whereIn(
+                        'approver_id',
+                        $userRoleIds->all(),
+                    )
+                    ->select('vendor_id');
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Query utama
+        |--------------------------------------------------------------------------
+        */
             $query = MasterVendor::query();
 
             /*
+        |--------------------------------------------------------------------------
+        | Visibility Vendor
+        |--------------------------------------------------------------------------
+        |
+        | Vendor dapat terlihat apabila:
+        |
+        | 1. Memenuhi permission scope vendor.view; ATAU
+        | 2. User terlibat sebagai approver USER/ROLE.
+        |
+        | Keterlibatan approval hanya memberikan akses melihat dan memproses
+        | approval. Tidak otomatis memberikan akses edit/submit/delete.
+        |--------------------------------------------------------------------------
+        */
+            $query->where(function ($visibilityQuery) use (
+                $user,
+                $viewScope,
+                $userApprovalVendorIds,
+                $roleApprovalVendorIds,
+            ) {
+                /*
             |--------------------------------------------------------------------------
-            | Filter khusus Finance
-            |--------------------------------------------------------------------------
-            | Jika user login adalah Finance / FIN, maka hanya tampil vendor
-            | dengan status_approval PENDING REVIEW.
+            | Visibility berdasarkan view scope
             |--------------------------------------------------------------------------
             */
-            $user = $request->user();
+                $visibilityQuery->where(function ($scopeQuery) use (
+                    $user,
+                    $viewScope,
+                ) {
+                    switch ($viewScope) {
+                        case 'ALL':
+                            $scopeQuery->whereRaw('1 = 1');
+                            break;
 
-            $roleCodes = [];
+                        case 'OWN_DATA':
+                            $scopeQuery->where(
+                                'created_by',
+                                $user->id,
+                            );
+                            break;
 
-            if ($user && method_exists($user, 'roles')) {
-                $roleCodes = $user->roles()
-                    ->pluck('kode')
-                    ->map(fn($kode) => strtoupper((string) $kode))
-                    ->toArray();
-            }
+                        case 'OWN_DEPARTMENT':
+                            if (!empty($user->department_id)) {
+                                $scopeQuery->where(
+                                    'id_department',
+                                    $user->department_id,
+                                );
+                            } else {
+                                $scopeQuery->whereRaw('1 = 0');
+                            }
 
-            $isFinance = in_array('FIN', $roleCodes, true)
-                || in_array('FINANCE', $roleCodes, true);
+                            break;
 
-            if ($isFinance) {
-                $query->where('status_approval', '!=', 'DRAFT')->where('status_approval', '!=', 'REJECTED');
-            }
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Master Vendor belum menggunakan scope cabang
+                    |--------------------------------------------------------------------------
+                    */
+                        case 'OWN_CABANG':
+                        case 'NONE':
+                        default:
+                            $scopeQuery->whereRaw('1 = 0');
+                            break;
+                    }
+                });
 
-            // search
-            $search = trim((string) $request->get('search', ''));
+                /*
+            |--------------------------------------------------------------------------
+            | Tetap tampilkan Vendor yang melibatkan user sebagai approver
+            |--------------------------------------------------------------------------
+            */
+                $visibilityQuery->orWhereIn(
+                    'id',
+                    $userApprovalVendorIds,
+                );
+
+                if ($roleApprovalVendorIds !== null) {
+                    $visibilityQuery->orWhereIn(
+                        'id',
+                        $roleApprovalVendorIds,
+                    );
+                }
+            });
+
+            /*
+        |--------------------------------------------------------------------------
+        | Search
+        |--------------------------------------------------------------------------
+        */
+            $search = trim(
+                (string) $request->get(
+                    'search',
+                    '',
+                ),
+            );
 
             if ($search !== '') {
-                $query->where(function ($q) use ($search) {
-                    $q->where('kode_vendor', 'ILIKE', "%{$search}%")
-                        ->orWhere('nama_vendor', 'ILIKE', "%{$search}%")
-                        ->orWhere('inisial_vendor', 'ILIKE', "%{$search}%");
+                $query->where(function ($searchQuery) use ($search) {
+                    $searchQuery
+                        ->where(
+                            'kode_vendor',
+                            'ILIKE',
+                            "%{$search}%",
+                        )
+                        ->orWhere(
+                            'nama_vendor',
+                            'ILIKE',
+                            "%{$search}%",
+                        )
+                        ->orWhere(
+                            'inisial_vendor',
+                            'ILIKE',
+                            "%{$search}%",
+                        );
                 });
             }
 
-            // status
+            /*
+        |--------------------------------------------------------------------------
+        | Filter status aktif
+        |--------------------------------------------------------------------------
+        */
             $isActiveParam = $request->get('is_active');
 
-            if ($isActiveParam !== null && $isActiveParam !== '' && $isActiveParam !== 'all') {
-                $isActive = filter_var($isActiveParam, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            if (
+                $isActiveParam !== null
+                && $isActiveParam !== ''
+                && strtolower(
+                    trim((string) $isActiveParam),
+                ) !== 'all'
+            ) {
+                $isActive = filter_var(
+                    $isActiveParam,
+                    FILTER_VALIDATE_BOOLEAN,
+                    FILTER_NULL_ON_FAILURE,
+                );
 
                 if ($isActive !== null) {
-                    $query->where('is_active', $isActive);
+                    $query->where(
+                        'is_active',
+                        $isActive,
+                    );
                 }
             }
 
-            $perPage = (int) $request->get('per_page', 10);
+            /*
+        |--------------------------------------------------------------------------
+        | Filter status approval
+        |--------------------------------------------------------------------------
+        */
+            $statusApproval = strtoupper(
+                trim(
+                    (string) $request->get(
+                        'status_approval',
+                        '',
+                    ),
+                ),
+            );
+
+            if (
+                $statusApproval !== ''
+                && $statusApproval !== 'ALL'
+                && $statusApproval !== 'SEMUA'
+            ) {
+                $query->whereRaw(
+                    'UPPER(TRIM(status_approval)) = ?',
+                    [$statusApproval],
+                );
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Pagination
+        |--------------------------------------------------------------------------
+        */
+            $perPage = (int) $request->get(
+                'per_page',
+                10,
+            );
+
             if ($perPage <= 0) {
                 $perPage = 10;
             }
 
             $data = $query
-                ->orderBy('id', 'desc')
+                ->orderByDesc('id')
                 ->paginate($perPage);
 
-            $items = collect($data->items())->map(function ($item) {
-                $item->public_id = Crypt::encryptString((string) $item->id);
-                return $item;
-            })->values();
+            /*
+        |--------------------------------------------------------------------------
+        | Ambil approval seluruh Vendor pada halaman aktif
+        |--------------------------------------------------------------------------
+        */
+            $vendorIds = $data
+                ->getCollection()
+                ->pluck('id')
+                ->map(
+                    fn($id) => (int) $id,
+                )
+                ->filter()
+                ->values();
 
+            $approvalRowsByVendor = collect();
+
+            if ($vendorIds->isNotEmpty()) {
+                $approvalRowsByVendor = DB::table(
+                    'master_vendor_approvals',
+                )
+                    ->whereIn(
+                        'vendor_id',
+                        $vendorIds->all(),
+                    )
+                    ->select([
+                        'id',
+                        'vendor_id',
+                        'approval_flow_id',
+                        'approval_flow_step_id',
+                        'step_order',
+                        'approver_type',
+                        'approver_id',
+                        'approval_mode',
+                        'label',
+                        'status',
+                        'approver_name_snapshot',
+                        'notes',
+                        'approved_at',
+                        'rejected_at',
+                        'cancelled_at',
+                        'created_at',
+                        'updated_at',
+                    ])
+                    ->orderBy('step_order')
+                    ->orderBy('id')
+                    ->get()
+                    ->groupBy(
+                        fn($approval) => (int) $approval->vendor_id,
+                    );
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Transform response
+        |--------------------------------------------------------------------------
+        */
+            $items = $data
+                ->getCollection()
+                ->map(function ($item) use (
+                    $user,
+                    $userRoleIds,
+                    $approvalRowsByVendor,
+                    $canUpdate,
+                    $canSubmit,
+                    $canDelete,
+                ) {
+                    $item->public_id = Crypt::encryptString(
+                        (string) $item->id,
+                    );
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Status Vendor
+                |--------------------------------------------------------------------------
+                */
+                    $vendorStatus = strtoupper(
+                        trim(
+                            (string) $item->status_approval,
+                        ),
+                    );
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Ownership dan department
+                |--------------------------------------------------------------------------
+                */
+                    $isCreator = (
+                        !empty($item->created_by)
+                        && (int) $item->created_by
+                        === (int) $user->id
+                    );
+
+                    $isSameDepartment = (
+                        !empty($user->departemen_id)
+                        && !empty($item->id_department)
+                        && (int) $item->id_department
+                        === (int) $user->departemen_id
+                    );
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Approval snapshot Vendor
+                |--------------------------------------------------------------------------
+                */
+                    $vendorApprovals = collect(
+                        $approvalRowsByVendor->get(
+                            (int) $item->id,
+                            collect(),
+                        ),
+                    );
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Cari step aktif berdasarkan status WAITING
+                |--------------------------------------------------------------------------
+                */
+                    $waitingApprovals = $vendorApprovals
+                        ->filter(function ($approval) {
+                            return strtoupper(
+                                trim(
+                                    (string) $approval->status,
+                                ),
+                            ) === 'WAITING';
+                        })
+                        ->values();
+
+                    $currentStepOrder = $waitingApprovals
+                        ->min('step_order');
+
+                    $currentStepApprovals = $currentStepOrder !== null
+                        ? $waitingApprovals
+                        ->filter(function ($approval) use (
+                            $currentStepOrder,
+                        ) {
+                            return (int) $approval->step_order
+                                === (int) $currentStepOrder;
+                        })
+                        ->sortBy('id')
+                        ->values()
+                        : collect();
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Cari approval aktif yang cocok dengan USER/ROLE login
+                |--------------------------------------------------------------------------
+                */
+                    $userCurrentApproval = $currentStepApprovals
+                        ->first(function ($approval) use (
+                            $user,
+                            $userRoleIds,
+                        ) {
+                            $approverType = strtoupper(
+                                trim(
+                                    (string) $approval->approver_type,
+                                ),
+                            );
+
+                            if ($approverType === 'USER') {
+                                return (int) $approval->approver_id
+                                    === (int) $user->id;
+                            }
+
+                            if ($approverType === 'ROLE') {
+                                return $userRoleIds->contains(
+                                    (int) $approval->approver_id,
+                                );
+                            }
+
+                            return false;
+                        });
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Hak approve/reject
+                |--------------------------------------------------------------------------
+                |
+                | Tidak terkait permission update/submit/delete.
+                | Hanya berdasarkan kandidat WAITING pada step aktif.
+                |--------------------------------------------------------------------------
+                */
+                    $canApprove = (
+                        $vendorStatus === 'PENDING REVIEW'
+                        && $userCurrentApproval !== null
+                    );
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Apakah final approver wajib mengisi kode Vendor
+                |--------------------------------------------------------------------------
+                */
+                    $currentApprovalMode = strtoupper(
+                        trim(
+                            (string) (
+                                $userCurrentApproval?->approval_mode
+                                ?? 'ANY'
+                            ),
+                        ),
+                    );
+
+                    $hasNextStep = false;
+
+                    if ($currentStepOrder !== null) {
+                        $hasNextStep = $vendorApprovals
+                            ->contains(function ($approval) use (
+                                $currentStepOrder,
+                            ) {
+                                return (
+                                    (int) $approval->step_order
+                                    > (int) $currentStepOrder
+                                    && in_array(
+                                        strtoupper(
+                                            trim(
+                                                (string) $approval->status,
+                                            ),
+                                        ),
+                                        [
+                                            'PENDING',
+                                            'WAITING',
+                                        ],
+                                        true,
+                                    )
+                                );
+                            });
+                    }
+
+                    $currentWaitingCount = $currentStepApprovals
+                        ->filter(function ($approval) {
+                            return strtoupper(
+                                trim(
+                                    (string) $approval->status,
+                                ),
+                            ) === 'WAITING';
+                        })
+                        ->count();
+
+                    $requiresVendorCode = (
+                        $canApprove
+                        && !$hasNextStep
+                        && (
+                            $currentApprovalMode === 'ANY'
+                            || (
+                                $currentApprovalMode === 'ALL'
+                                && $currentWaitingCount === 1
+                            )
+                        )
+                    );
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Hak update per row
+                |--------------------------------------------------------------------------
+                |
+                | Syarat:
+                | - mempunyai vendor.update;
+                | - status DRAFT atau REJECTED;
+                | - creator ATAU satu department.
+                |--------------------------------------------------------------------------
+                */
+                    $rowCanUpdate = (
+                        $canUpdate
+                        && in_array(
+                            $vendorStatus,
+                            [
+                                'DRAFT',
+                                'REJECTED',
+                            ],
+                            true,
+                        )
+                        && (
+                            $isCreator
+                            || $isSameDepartment
+                        )
+                    );
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Hak submit per row
+                |--------------------------------------------------------------------------
+                |
+                | Syarat:
+                | - mempunyai vendor.submit;
+                | - status masih DRAFT;
+                | - creator ATAU satu department.
+                |--------------------------------------------------------------------------
+                */
+                    $rowCanSubmit = (
+                        $canSubmit
+                        && $vendorStatus === 'DRAFT'
+                        && (
+                            $isCreator
+                            || $isSameDepartment
+                        )
+                    );
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Hak delete per row
+                |--------------------------------------------------------------------------
+                |
+                | Syarat:
+                | - mempunyai vendor.delete;
+                | - status masih DRAFT;
+                | - hanya creator.
+                |
+                | Satu department tidak otomatis boleh menghapus Vendor.
+                |--------------------------------------------------------------------------
+                */
+                    $rowCanDelete = (
+                        $canDelete
+                        && $vendorStatus === 'DRAFT'
+                        && $isCreator
+                    );
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Response ownership
+                |--------------------------------------------------------------------------
+                */
+                    $item->is_creator = $isCreator;
+                    $item->is_same_department = $isSameDepartment;
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Response action per row
+                |--------------------------------------------------------------------------
+                */
+                    $item->can_update = $rowCanUpdate;
+                    $item->can_submit = $rowCanSubmit;
+                    $item->can_delete = $rowCanDelete;
+                    $item->can_approve = $canApprove;
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Alias untuk chip frontend
+                |--------------------------------------------------------------------------
+                */
+                    $item->is_waiting_my_approval = $canApprove;
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Informasi active approval
+                |--------------------------------------------------------------------------
+                */
+                    $item->current_step_order
+                        = $currentStepOrder !== null
+                        ? (int) $currentStepOrder
+                        : null;
+
+                    $item->current_approval_candidates_count
+                        = $currentStepApprovals->count();
+
+                    $item->requires_vendor_code
+                        = $requiresVendorCode;
+
+                    $item->current_approval = $userCurrentApproval
+                        ? [
+                            'id'
+                            => $userCurrentApproval->id,
+
+                            'step_order'
+                            => (int) $userCurrentApproval->step_order,
+
+                            'approver_type'
+                            => $userCurrentApproval->approver_type,
+
+                            'approver_id'
+                            => (int) $userCurrentApproval->approver_id,
+
+                            'approval_mode'
+                            => strtoupper(
+                                trim(
+                                    (string) (
+                                        $userCurrentApproval->approval_mode
+                                        ?? 'ANY'
+                                    ),
+                                ),
+                            ),
+
+                            'label'
+                            => $userCurrentApproval->label,
+
+                            'status'
+                            => $userCurrentApproval->status,
+                        ]
+                        : null;
+
+                    return $item;
+                })
+                ->values();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Response
+        |--------------------------------------------------------------------------
+        */
             return response()->json([
                 'success' => true,
                 'message' => 'Data vendor berhasil dimuat.',
                 'data' => $items,
+
                 'total' => $data->total(),
                 'last_page' => $data->lastPage(),
                 'current_page' => $data->currentPage(),
                 'per_page' => $data->perPage(),
+
+                /*
+            |--------------------------------------------------------------------------
+            | Abilities global
+            |--------------------------------------------------------------------------
+            |
+            | Abilities global hanya menunjukkan permission user.
+            | Tombol per-row tetap wajib memakai can_update/can_submit/can_delete
+            | dari masing-masing item.
+            |--------------------------------------------------------------------------
+            */
+                'abilities' => [
+                    'can_view' => $canView,
+                    'view_scope' => $viewScope,
+                    'can_create' => $canCreate,
+                    'can_update' => $canUpdate,
+                    'can_submit' => $canSubmit,
+                    'can_delete' => $canDelete,
+                ],
             ], 200);
         } catch (\Throwable $e) {
-            Log::error('Gagal memuat data vendor', [
-                'message' => $e->getMessage(),
-                'file'    => $e->getFile(),
-                'line'    => $e->getLine(),
-                'request' => $request->all(),
-            ]);
+            Log::error(
+                '[Master Vendor] Gagal memuat data vendor',
+                [
+                    'message' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                    'request' => $request->all(),
+                    'user_id' => $request->user()?->id,
+                ],
+            );
 
             return response()->json([
                 'success' => false,
                 'message' => 'Gagal memuat data vendor.',
+                'data' => [],
+
+                'debug' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
     }
 
     public function store(Request $request)
     {
+
+        $user = $request->user();
+
+        if (!$user || !$user->hasPermission('vendor.create')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Anda tidak memiliki akses untuk membuat Master Vendor.',
+            ], 403);
+        }
+
         DB::beginTransaction();
 
         try {
@@ -156,7 +858,7 @@ class MasterVendorController extends Controller
                 'email'             => $clean($request->email),
                 'jenis_perusahaan'  => $clean($request->jenis_perusahaan),
                 'kategori_vendor'   => $clean($request->kategori_vendor),
-                'id_department'     => $clean($request->id_department),
+                'id_department'     => $request->filled('id_department') ? (int) $request->id_department : null,
                 'no_ktp'            => $clean($request->nomor_ktp),
                 'alamat'            => $clean($request->alamat),
 
@@ -175,6 +877,8 @@ class MasterVendorController extends Controller
 
                 'jenis_pembayaran'  => $clean($request->jenis_pembayaran),
                 'top'               => $clean($request->top ?? 0),
+                'created_by'        => $user->id,
+                'updated_by'        => $user->id,
             ]);
 
             $vendorId = $vendor->id;
@@ -367,8 +1071,17 @@ class MasterVendorController extends Controller
         }
     }
 
-    public function destroy(string $publicId)
+    public function destroy(string $publicId, Request $request)
     {
+        $user = $request->user();
+
+        if (!$user || !$user->hasPermission('vendor.delete')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Anda tidak memiliki akses untuk menghapus Master Vendor.',
+            ], 403);
+        }
+
         DB::beginTransaction();
 
         try {
@@ -503,124 +1216,520 @@ class MasterVendorController extends Controller
         }
     }
 
-    public function show(string $publicId)
-    {
-        try {
-            $vendorId = (int) Crypt::decryptString($publicId);
+    public function show(
+        string $publicId,
+        Request $request,
+    ): JsonResponse {
+        $user = $request->user();
 
-            $vendor = MasterVendor::with([
-                'banks.masterBank',
-                'transaksi:id,vendor_id,transaksi_id',
-                'dokumenPendukung:id,vendor_id,dokumen_id,file_name,file_path',
-                'department'
-            ])->findOrFail($vendorId);
+        $canView = $user
+            && (
+                $user->hasPermission('vendor.view')
+                || $user->hasPermission('vendor.update')
+            );
+
+        if (!$canView) {
+            return response()->json([
+                'success' => false,
+                'message'
+                => 'Anda tidak memiliki akses untuk melihat Master Vendor.',
+            ], 403);
+        }
+
+        try {
+            $vendorId = (int) Crypt::decryptString(
+                $publicId,
+            );
+
+            $vendor = MasterVendor::query()
+                ->with([
+                    'banks.masterBank',
+
+                    'transaksi:id,vendor_id,transaksi_id',
+
+                    'dokumenPendukung:id,vendor_id,dokumen_id,file_name,file_path',
+
+                    'department',
+
+                    'approvals' => function ($query) {
+                        $query
+                            ->orderBy('step_order')
+                            ->orderBy('id');
+                    },
+                ])
+                ->findOrFail($vendorId);
+
+            $approvalUserIds = $vendor->approvals
+                ->filter(function (
+                    MasterVendorApproval $approval,
+                ) {
+                    return strtoupper(
+                        trim(
+                            (string) $approval->approver_type,
+                        ),
+                    ) === 'USER';
+                })
+                ->pluck('approver_id')
+                ->filter()
+                ->map(
+                    fn($id) => (int) $id,
+                )
+                ->unique()
+                ->values();
+
+            $approvalRoleIds = $vendor->approvals
+                ->filter(function (
+                    MasterVendorApproval $approval,
+                ) {
+                    return strtoupper(
+                        trim(
+                            (string) $approval->approver_type,
+                        ),
+                    ) === 'ROLE';
+                })
+                ->pluck('approver_id')
+                ->filter()
+                ->map(
+                    fn($id) => (int) $id,
+                )
+                ->unique()
+                ->values();
+
+            $approvalUsers = User::query()
+                ->whereIn(
+                    'id',
+                    $approvalUserIds->all(),
+                )
+                ->get()
+                ->keyBy('id');
+
+            $approvalRoles = Role::query()
+                ->whereIn(
+                    'id',
+                    $approvalRoleIds->all(),
+                )
+                ->get()
+                ->keyBy('id');
+
+            $approvals = $vendor->approvals
+                ->map(function (
+                    MasterVendorApproval $approval,
+                ) use (
+                    $approvalUsers,
+                    $approvalRoles,
+                ) {
+                    $approverType = strtoupper(
+                        trim(
+                            (string) $approval->approver_type,
+                        ),
+                    );
+
+                    $status = strtoupper(
+                        trim(
+                            (string) $approval->status,
+                        ),
+                    );
+
+                    $candidateName = null;
+
+                    if ($approverType === 'USER') {
+                        $candidateUser = $approvalUsers->get(
+                            (int) $approval->approver_id,
+                        );
+
+                        $candidateName = $candidateUser?->name
+                            ?? $candidateUser?->fullname
+                            ?? $candidateUser?->email
+                            ?? null;
+                    }
+
+                    if ($approverType === 'ROLE') {
+                        $candidateRole = $approvalRoles->get(
+                            (int) $approval->approver_id,
+                        );
+
+                        $candidateName = $candidateRole?->nama
+                            ?? $candidateRole?->name
+                            ?? $candidateRole?->kode
+                            ?? null;
+                    }
+
+                    $processedBy = in_array(
+                        $status,
+                        [
+                            'APPROVED',
+                            'REJECTED',
+                        ],
+                        true,
+                    )
+                        ? (
+                            $approval->approver_name_snapshot
+                            ?: null
+                        )
+                        : null;
+
+                    return [
+                        'id'
+                        => $approval->id,
+
+                        'step_order'
+                        => (int) $approval->step_order,
+
+                        'label'
+                        => $approval->label
+                            ?: (
+                                $candidateName
+                                ?: 'Tahap '
+                                . $approval->step_order
+                            ),
+
+                        'approver_type'
+                        => $approverType,
+
+                        'approver_id'
+                        => $approval->approver_id
+                            ? (int) $approval->approver_id
+                            : null,
+
+                        'approver_name_snapshot'
+                        => $approval->approver_name_snapshot
+                            ?: $candidateName,
+
+                        'candidate_name'
+                        => $candidateName,
+
+                        'processed_by'
+                        => $processedBy,
+
+                        'approval_mode'
+                        => strtoupper(
+                            trim(
+                                (string) (
+                                    $approval->approval_mode
+                                    ?: 'ANY'
+                                ),
+                            ),
+                        ),
+
+                        'status'
+                        => $status,
+
+                        'notes'
+                        => $approval->notes,
+
+                        'approved_at'
+                        => $approval->approved_at,
+
+                        'rejected_at'
+                        => $approval->rejected_at,
+
+                        'cancelled_at'
+                        => $approval->cancelled_at,
+
+                        'created_at'
+                        => $approval->created_at,
+
+                        'updated_at'
+                        => $approval->updated_at,
+                    ];
+                })
+                ->values();
 
             return response()->json([
                 'success' => true,
                 'message' => 'Detail vendor berhasil dimuat.',
+
                 'data' => [
-                    'public_id' => Crypt::encryptString((string) $vendor->id),
-                    'nama_vendor' => $vendor->nama_vendor,
-                    'inisial_vendor' => $vendor->inisial_vendor,
-                    'telepon' => $vendor->telepon,
-                    'fax' => $vendor->fax,
-                    'email' => $vendor->email,
-                    'jenis_perusahaan' => $vendor->jenis_perusahaan,
-                    'kategori_vendor' => $vendor->kategori_vendor,
+                    'public_id'
+                    => Crypt::encryptString(
+                        (string) $vendor->id,
+                    ),
+
+                    'nama_vendor'
+                    => $vendor->nama_vendor,
+
+                    'kode_vendor'
+                    => $vendor->kode_vendor,
+
+                    'inisial_vendor'
+                    => $vendor->inisial_vendor,
+
+                    'telepon'
+                    => $vendor->telepon,
+
+                    'fax'
+                    => $vendor->fax,
+
+                    'email'
+                    => $vendor->email,
+
+                    'jenis_perusahaan'
+                    => $vendor->jenis_perusahaan,
+
+                    'kategori_vendor'
+                    => $vendor->kategori_vendor,
+
+                    'id_department'
+                    => $vendor->id_department,
+
                     'department' => [
-                        'id' => $vendor->department?->id,
-                        'kode' => $vendor->department?->kode,
-                        'nama' => $vendor->department?->nama,
-                        'label' => trim(($vendor->department?->kode ?? '-') . ' - ' . ($vendor->department?->nama ?? '-')),
+                        'id'
+                        => $vendor->department?->id,
+
+                        'kode'
+                        => $vendor->department?->kode,
+
+                        'nama'
+                        => $vendor->department?->nama,
+
+                        'label'
+                        => trim(
+                            (
+                                $vendor->department?->kode
+                                ?? '-'
+                            )
+                                . ' - '
+                                . (
+                                    $vendor->department?->nama
+                                    ?? '-'
+                                ),
+                        ),
                     ],
-                    'nomor_ktp' => $vendor->nomor_ktp,
-                    'alamat' => $vendor->alamat,
-                    'is_active' => $vendor->is_active,
 
-                    'contact_nama' => $vendor->nama_pic,
-                    'contact_jabatan' => $vendor->jabatan_pic,
-                    'contact_hp' => $vendor->telp_pic,
-                    'contact_email' => $vendor->email_pic,
+                    'nomor_ktp'
+                    => $vendor->nomor_ktp,
 
-                    'status_pkp' => $vendor->status_pkp,
-                    'npwp' => $vendor->no_npwp,
-                    'npwp_alamat' => $vendor->alamat_npwp,
-                    'sppkp_nomor' => $vendor->no_sppkp,
-                    'sppkp_tanggal' => $vendor->tgl_sppkp
-                        ? Carbon::parse($vendor->tgl_sppkp)->format('Y-m-d')
+                    'alamat'
+                    => $vendor->alamat,
+
+                    'is_active'
+                    => $vendor->is_active,
+
+                    'contact_nama'
+                    => $vendor->nama_pic,
+
+                    'contact_jabatan'
+                    => $vendor->jabatan_pic,
+
+                    'contact_hp'
+                    => $vendor->telp_pic,
+
+                    'contact_email'
+                    => $vendor->email_pic,
+
+                    'status_pkp'
+                    => $vendor->status_pkp,
+
+                    'npwp'
+                    => $vendor->no_npwp,
+
+                    'npwp_alamat'
+                    => $vendor->alamat_npwp,
+
+                    'sppkp_nomor'
+                    => $vendor->no_sppkp,
+
+                    'sppkp_tanggal'
+                    => $vendor->tgl_sppkp
+                        ? Carbon::parse(
+                            $vendor->tgl_sppkp,
+                        )->format('Y-m-d')
                         : null,
-                    'sppkp_alamat' => $vendor->alamat_sppkp,
-                    'same_as_npwp' => (bool) $vendor->same_as_npwp,
 
-                    'jenis_pembayaran' => $vendor->jenis_pembayaran,
-                    'top' => $vendor->top,
+                    'sppkp_alamat'
+                    => $vendor->alamat_sppkp,
 
-                    'transaksi_ids' => $vendor->transaksi->pluck('transaksi_id')->values(),
-                    'dokumen_ids' => $vendor->dokumenPendukung->pluck('dokumen_id')->values(),
+                    'same_as_npwp'
+                    => (bool) $vendor->same_as_npwp,
 
-                    'dokumen_files' => $vendor->dokumenPendukung->map(function ($dokumen) {
-                        return [
-                            'id' => $dokumen->id,
-                            'dokumen_id' => $dokumen->dokumen_id,
-                            'file_name' => $dokumen->file_name,
-                            'file_path' => $dokumen->file_path,
-                            'file_url' => $dokumen->file_path ? asset('storage/' . $dokumen->file_path) : null,
-                        ];
-                    })->values(),
+                    'jenis_pembayaran'
+                    => $vendor->jenis_pembayaran,
 
-                    'banks' => $vendor->banks->map(function ($bank) {
-                        return [
-                            'id' => $bank->id,
-                            'bank_id' => $bank->bank_id,
-                            'nama_bank' => $bank->masterBank->nama_bank ?? '-',
-                            'nama_bank_pendek' => $bank->masterBank->nama_bank_pendek ?? null,
-                            'kode_bank' => $bank->masterBank->kode_bank ?? null,
-                            'atas_nama' => $bank->atas_nama,
-                            'nomor_rekening' => $bank->nomor_rekening,
-                            'cabang' => $bank->cabang,
-                            'alamat_bank' => $bank->alamat_bank,
-                            'swift_code' => $bank->swift_code_snapshot ?? ($bank->masterBank->swift_code ?? null),
-                        ];
-                    })->values(),
+                    'top'
+                    => $vendor->top,
+
+                    'status_approval'
+                    => $vendor->status_approval,
+
+                    'submitted_at'
+                    => $vendor->submitted_at,
+
+                    'submitted_by'
+                    => $vendor->submitted_by,
+
+                    'transaksi_ids'
+                    => $vendor->transaksi
+                        ->pluck('transaksi_id')
+                        ->values(),
+
+                    'dokumen_ids'
+                    => $vendor->dokumenPendukung
+                        ->pluck('dokumen_id')
+                        ->values(),
+
+                    'dokumen_files'
+                    => $vendor->dokumenPendukung
+                        ->map(function ($dokumen) {
+                            return [
+                                'id'
+                                => $dokumen->id,
+
+                                'dokumen_id'
+                                => $dokumen->dokumen_id,
+
+                                'file_name'
+                                => $dokumen->file_name,
+
+                                'file_path'
+                                => $dokumen->file_path,
+
+                                'file_url'
+                                => $dokumen->file_path
+                                    ? asset(
+                                        'storage/'
+                                            . $dokumen->file_path,
+                                    )
+                                    : null,
+                            ];
+                        })
+                        ->values(),
+
+                    'banks'
+                    => $vendor->banks
+                        ->map(function ($bank) {
+                            return [
+                                'id'
+                                => $bank->id,
+
+                                'bank_id'
+                                => $bank->bank_id,
+
+                                'nama_bank'
+                                => $bank
+                                    ->masterBank
+                                    ->nama_bank
+                                    ?? '-',
+
+                                'nama_bank_pendek'
+                                => $bank
+                                    ->masterBank
+                                    ->nama_bank_pendek
+                                    ?? null,
+
+                                'kode_bank'
+                                => $bank
+                                    ->masterBank
+                                    ->kode_bank
+                                    ?? null,
+
+                                'atas_nama'
+                                => $bank->atas_nama,
+
+                                'nomor_rekening'
+                                => $bank->nomor_rekening,
+
+                                'cabang'
+                                => $bank->cabang,
+
+                                'alamat_bank'
+                                => $bank->alamat_bank,
+
+                                'swift_code'
+                                => $bank
+                                    ->swift_code_snapshot
+                                    ?? (
+                                        $bank
+                                        ->masterBank
+                                        ->swift_code
+                                        ?? null
+                                    ),
+                            ];
+                        })
+                        ->values(),
+
+                    'approvals'
+                    => $approvals,
                 ],
             ], 200);
         } catch (DecryptException $e) {
-            Log::warning('Public ID vendor tidak valid', [
-                'public_id' => $publicId,
-                'message' => $e->getMessage(),
-            ]);
+            Log::warning(
+                'Public ID vendor tidak valid',
+                [
+                    'public_id'
+                    => $publicId,
+
+                    'message'
+                    => $e->getMessage(),
+                ],
+            );
 
             return response()->json([
                 'success' => false,
                 'message' => 'ID vendor tidak valid',
             ], 404);
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            Log::warning('Vendor tidak ditemukan', [
-                'public_id' => $publicId,
-                'message' => $e->getMessage(),
-            ]);
+        } catch (
+            \Illuminate\Database\Eloquent\ModelNotFoundException $e
+        ) {
+            Log::warning(
+                'Vendor tidak ditemukan',
+                [
+                    'public_id'
+                    => $publicId,
+
+                    'message'
+                    => $e->getMessage(),
+                ],
+            );
 
             return response()->json([
                 'success' => false,
                 'message' => 'Vendor tidak ditemukan',
             ], 404);
         } catch (\Throwable $e) {
-            Log::error('Gagal memuat detail vendor', [
-                'public_id' => $publicId,
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-            ]);
+            Log::error(
+                'Gagal memuat detail vendor',
+                [
+                    'public_id'
+                    => $publicId,
+
+                    'user_id'
+                    => $request->user()?->id,
+
+                    'message'
+                    => $e->getMessage(),
+
+                    'file'
+                    => $e->getFile(),
+
+                    'line'
+                    => $e->getLine(),
+                ],
+            );
 
             return response()->json([
                 'success' => false,
                 'message' => 'Gagal memuat data vendor',
+
+                'debug'
+                => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
     }
 
+
     public function update(Request $request, string $publicId)
     {
+        $user = $request->user();
+
+        if (!$user || !$user->hasPermission('vendor.update')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Anda tidak memiliki akses untuk mengubah Master Vendor.',
+            ], 403);
+        }
+
         $request->validate([
             'nama_vendor' => ['required', 'string', 'max:255'],
             'inisial_vendor' => ['required', 'string', 'max:50'],
@@ -631,6 +1740,7 @@ class MasterVendorController extends Controller
             'kategori_vendor' => ['required'],
             'nomor_ktp' => ['nullable', 'string', 'max:100'],
             'alamat' => ['nullable', 'string'],
+            'id_department' => ['required', 'integer'],
 
             'contact_nama' => ['nullable', 'string', 'max:255'],
             'contact_jabatan' => ['nullable', 'string', 'max:255'],
@@ -688,6 +1798,7 @@ class MasterVendorController extends Controller
                 'email' => $clean($request->email),
                 'jenis_perusahaan' => $clean($request->jenis_perusahaan),
                 'kategori_vendor' => $clean($request->kategori_vendor),
+                'id_department' => $clean($request->id_department),
                 'no_ktp' => $clean($request->nomor_ktp),
                 'alamat' => $clean($request->alamat),
 
@@ -708,6 +1819,7 @@ class MasterVendorController extends Controller
 
                 'jenis_pembayaran' => $clean($request->jenis_pembayaran),
                 'top' => $request->filled('top') ? $request->top : null,
+                'updated_by' => $user->id,
             ]);
 
             /*
@@ -1232,113 +2344,140 @@ class MasterVendorController extends Controller
         }
     }
 
-    public function submit($publicId)
-    {
+    public function submit(
+        Request $request,
+        string $publicId,
+    ): JsonResponse {
         DB::beginTransaction();
 
         try {
+            $user = $request->user();
+
+            if (!$user) {
+                DB::rollBack();
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'User login tidak ditemukan.',
+                ], 401);
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Decrypt dan lock vendor
+        |--------------------------------------------------------------------------
+        */
             $id = Crypt::decryptString($publicId);
 
-            $vendor = MasterVendor::findOrFail($id);
+            $vendor = MasterVendor::query()
+                ->lockForUpdate()
+                ->findOrFail($id);
 
-            if (strtoupper((string) $vendor->status_approval) !== 'DRAFT') {
+            /*
+        |--------------------------------------------------------------------------
+        | Vendor hanya dapat disubmit dari status DRAFT
+        |--------------------------------------------------------------------------
+        */
+            if (
+                strtoupper(
+                    trim((string) $vendor->status_approval),
+                ) !== 'DRAFT'
+            ) {
                 DB::rollBack();
 
                 return response()->json([
                     'success' => false,
-                    'message' => 'Vendor hanya dapat disubmit jika status masih DRAFT.',
+                    'message'
+                    => 'Vendor hanya dapat disubmit jika status masih DRAFT.',
                 ], 422);
             }
 
-            $user = request()->user();
+            /*
+        |--------------------------------------------------------------------------
+        | Generate snapshot approval
+        |--------------------------------------------------------------------------
+        |
+        | Generator akan:
+        | - membaca approval flow MASTER_VENDOR;
+        | - menghapus snapshot lama;
+        | - membuat kandidat approval;
+        | - mengaktifkan seluruh kandidat step pertama sebagai WAITING;
+        | - membuat step berikutnya sebagai PENDING.
+        |--------------------------------------------------------------------------
+        */
+            $this->vendorApprovalGeneratorService
+                ->generate($vendor);
 
-            $flow = ApprovalFlow::with(['steps' => function ($q) {
-                $q->orderBy('step_order');
-            }])
-                ->where('module_name', 'MASTER_VENDOR')
-                ->where('is_active', true)
-                ->first();
-
-            if (!$flow || $flow->steps->isEmpty()) {
-                DB::rollBack();
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Approval flow Master Vendor belum dikonfigurasi.',
-                ], 422);
-            }
-
-            MasterVendorApproval::where('vendor_id', $vendor->id)->delete();
-
-            foreach ($flow->steps as $step) {
-                MasterVendorApproval::create([
-                    'vendor_id' => $vendor->id,
-                    'approval_flow_id' => $flow->id,
-                    'approval_flow_step_id' => $step->id,
-                    'step_order' => $step->step_order,
-                    'approver_type' => $step->approver_type,
-                    'approver_id' => $step->approver_id,
-                    'status' => 'PENDING',
-                ]);
-            }
-
+            /*
+        |--------------------------------------------------------------------------
+        | Update status header Master Vendor
+        |--------------------------------------------------------------------------
+        */
             $vendor->status_approval = 'PENDING REVIEW';
             $vendor->submitted_at = now();
             $vendor->submitted_by = $user->id;
             $vendor->save();
 
-            $firstApproval = MasterVendorApproval::where('vendor_id', $vendor->id)
-                ->where('status', 'PENDING')
-                ->orderBy('step_order')
-                ->first();
-
-            if ($firstApproval) {
-                $approvers = $this->vendorApprovalService->resolveApprovers($firstApproval);
-
-                foreach ($approvers as $approver) {
-                    Notification::create([
-                        'user_id' => $approver->id,
-                        'type' => 'master_vendor_approval',
-                        'title' => 'Approval Master Vendor',
-                        'message' => 'Vendor ' . $vendor->nama_vendor . ' menunggu approval Anda.',
-                        'module' => 'master_vendor',
-                        'reference_type' => MasterVendor::class,
-                        'reference_id' => $vendor->id,
-                        'reference_public_id' => $vendor->encrypted_id,
-                        'url' => '/master/vendor',
-                    ]);
-
-                    try {
-                        Mail::to($approver->email)->queue(
-                            new MasterVendorApprovalMail($vendor, $approver, 'approval_request')
-                        );
-                    } catch (\Throwable $mailError) {
-                        Log::error('[Vendor] Email approval gagal dikirim', [
-                            'vendor_id' => $vendor->id,
-                            'approver_id' => $approver->id,
-                            'message' => $mailError->getMessage(),
-                        ]);
-                    }
-                }
-            }
-
             DB::commit();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Notification dan email setelah commit
+        |--------------------------------------------------------------------------
+        |
+        | Tidak lagi mengirim manual dari controller agar tidak duplikat.
+        |--------------------------------------------------------------------------
+        */
+            $this->vendorApprovalNotificationService
+                ->notifyCurrentApprovers($vendor);
+
+            $vendor->refresh();
 
             return response()->json([
                 'success' => true,
-                'message' => 'Vendor berhasil disubmit.',
+                'message'
+                => 'Vendor berhasil disubmit untuk proses approval.',
                 'data' => [
                     'id' => $vendor->id,
                     'public_id' => $vendor->encrypted_id,
                     'nama_vendor' => $vendor->nama_vendor,
                     'status_approval' => $vendor->status_approval,
+                    'submitted_at' => $vendor->submitted_at,
+                    'submitted_by' => $vendor->submitted_by,
                 ],
             ], 200);
-        } catch (\Throwable $e) {
-            DB::rollBack();
+        } catch (ValidationException $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
 
-            Log::error('[Vendor] Submit error', [
+            $errors = $e->errors();
+
+            return response()->json([
+                'success' => false,
+                'message' => collect($errors)
+                    ->flatten()
+                    ->first()
+                    ?? 'Data Master Vendor tidak valid.',
+                'errors' => $errors,
+            ], 422);
+        } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+
+            return response()->json([
+                'success' => false,
+                'message' => 'ID Master Vendor tidak valid.',
+            ], 422);
+        } catch (\Throwable $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+
+            Log::error('[Master Vendor] Submit error', [
                 'public_id' => $publicId,
+                'user_id' => $request->user()?->id,
                 'message' => $e->getMessage(),
                 'file' => $e->getFile(),
                 'line' => $e->getLine(),
@@ -1346,305 +2485,599 @@ class MasterVendorController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal submit Vendor.',
-                'debug' => app()->environment('local') ? $e->getMessage() : null,
+                'message' => 'Gagal submit Master Vendor.',
+                'debug' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
     }
 
-    public function approve($publicId)
-    {
+    public function approve(
+        Request $request,
+        string $publicId,
+    ): JsonResponse {
         DB::beginTransaction();
 
         try {
-            $id = Crypt::decryptString($publicId);
+            $validated = $request->validate([
+                'notes' => [
+                    'nullable',
+                    'string',
+                    'max:2000',
+                ],
+                'kode_vendor' => [
+                    'nullable',
+                    'string',
+                    'max:30',
+                ],
+            ], [
+                'notes.string'
+                => 'Catatan approval harus berupa teks.',
 
-            $vendor = MasterVendor::with(['approvals'])->findOrFail($id);
-
-            if (strtoupper((string) $vendor->status_approval) !== 'PENDING REVIEW') {
-                DB::rollBack();
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Vendor hanya dapat diapprove jika status masih PENDING REVIEW.',
-                ], 422);
-            }
-
-            $user = request()->user();
-
-            $currentApproval = MasterVendorApproval::where('vendor_id', $vendor->id)
-                ->where('status', 'PENDING')
-                ->orderBy('step_order')
-                ->lockForUpdate()
-                ->first();
-
-            if (!$currentApproval) {
-                DB::rollBack();
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Tidak ada approval pending untuk vendor ini.',
-                ], 422);
-            }
-
-            $currentApproval->update([
-                'status' => 'APPROVED',
-                'approver_name_snapshot' => $user->name,
-                'approved_at' => now(),
+                'notes.max'
+                => 'Catatan approval maksimal 2000 karakter.',
             ]);
 
-            $hasPendingApproval = MasterVendorApproval::where('vendor_id', $vendor->id)
-                ->where('status', 'PENDING')
-                ->exists();
+            $user = $request->user();
 
-            if (!$hasPendingApproval) {
-                $vendor->status_approval = 'APPROVED';
-                $vendor->save();
+            if (!$user) {
+                DB::rollBack();
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'User login tidak ditemukan.',
+                ], 401);
             }
 
-            $vendor->refresh();
+            $kodeVendor = isset($validated['kode_vendor'])
+                ? strtoupper(
+                    trim(
+                        strip_tags(
+                            (string) $validated['kode_vendor'],
+                        ),
+                    ),
+                )
+                : null;
 
-            $submitter = User::find($vendor->submitted_by);
+            if ($kodeVendor === '') {
+                $kodeVendor = null;
+            }
 
-            if ($submitter) {
-                Notification::create([
-                    'user_id' => $submitter->id,
-                    'type' => $hasPendingApproval
-                        ? 'master_vendor_approval_step_approved'
-                        : 'master_vendor_approved',
-                    'title' => $hasPendingApproval
-                        ? 'Tahap Approval Master Vendor Disetujui'
-                        : 'Master Vendor Approved',
-                    'message' => $hasPendingApproval
-                        ? 'Vendor ' . $vendor->nama_vendor . ' telah disetujui oleh ' . ($user->name ?? '-') . ' dan masih menunggu approval berikutnya.'
-                        : 'Vendor ' . $vendor->nama_vendor . ' telah disetujui.',
-                    'module' => 'master_vendor',
-                    'reference_type' => MasterVendor::class,
-                    'reference_id' => $vendor->id,
-                    'reference_public_id' => $vendor->encrypted_id,
-                    'url' => '/master/vendor',
-                ]);
+            /*
+        |--------------------------------------------------------------------------
+        | Decrypt dan lock Master Vendor
+        |--------------------------------------------------------------------------
+        */
+            $id = Crypt::decryptString($publicId);
 
-                try {
-                    Mail::to($submitter->email)->queue(
-                        new MasterVendorApprovalMail(
-                            $vendor,
-                            $submitter,
-                            $hasPendingApproval ? 'approved' : 'approved',
-                            $user
-                        )
-                    );
-                } catch (\Throwable $mailError) {
-                    Log::error('[Vendor] Email approved gagal dikirim', [
-                        'vendor_id' => $vendor->id,
-                        'submitter_id' => $submitter->id,
-                        'message' => $mailError->getMessage(),
-                    ]);
+            $vendor = MasterVendor::query()
+                ->lockForUpdate()
+                ->findOrFail($id);
+
+            /*
+        |--------------------------------------------------------------------------
+        | Status vendor harus PENDING REVIEW
+        |--------------------------------------------------------------------------
+        */
+            $vendorStatus = strtoupper(
+                trim((string) $vendor->status_approval),
+            );
+
+            if ($vendorStatus !== 'PENDING REVIEW') {
+                DB::rollBack();
+
+                return response()->json([
+                    'success' => false,
+                    'message'
+                    => 'Vendor hanya dapat diapprove jika status masih PENDING REVIEW.',
+                ], 422);
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Sanitasi catatan approval
+        |--------------------------------------------------------------------------
+        */
+            $notes = null;
+
+            if ($request->filled('notes')) {
+                $notes = htmlspecialchars(
+                    strip_tags(
+                        trim(
+                            (string) $request->input('notes'),
+                        ),
+                    ),
+                    ENT_QUOTES,
+                    'UTF-8',
+                );
+
+                if ($notes === '') {
+                    $notes = null;
                 }
             }
 
             /*
         |--------------------------------------------------------------------------
-        | Jika multi-level, kirim notif/email ke approver berikutnya
+        | Proses approval melalui service
+        |--------------------------------------------------------------------------
+        |
+        | Service menangani:
+        | - validasi approver USER/ROLE;
+        | - active step;
+        | - mode ANY/ALL;
+        | - SKIPPED untuk peer mode ANY;
+        | - aktivasi step berikutnya;
+        | - final status APPROVED.
         |--------------------------------------------------------------------------
         */
-            if ($hasPendingApproval) {
-                $nextApproval = MasterVendorApproval::where('vendor_id', $vendor->id)
-                    ->where('status', 'PENDING')
-                    ->orderBy('step_order')
-                    ->first();
+            $result = $this->vendorApprovalService->approve(
+                vendor: $vendor,
+                user: $user,
+                notes: $notes,
+                kodeVendor: $kodeVendor,
+            );
 
-                if ($nextApproval) {
-                    $approvers = $this->vendorApprovalService->resolveApprovers($nextApproval);
+            $vendor->refresh();
 
-                    foreach ($approvers as $approver) {
-                        Notification::create([
-                            'user_id' => $approver->id,
-                            'type' => 'master_vendor_approval',
-                            'title' => 'Approval Master Vendor',
-                            'message' => 'Vendor ' . $vendor->nama_vendor . ' menunggu approval Anda.',
-                            'module' => 'master_vendor',
-                            'reference_type' => MasterVendor::class,
-                            'reference_id' => $vendor->id,
-                            'reference_public_id' => $vendor->encrypted_id,
-                            'url' => '/master/vendor',
-                        ]);
+            $approval = $result['approval'] ?? null;
 
-                        try {
-                            Mail::to($approver->email)->queue(
-                                new MasterVendorApprovalMail(
-                                    $vendor,
-                                    $approver,
-                                    'approval_request'
-                                )
-                            );
-                        } catch (\Throwable $mailError) {
-                            Log::error('[Vendor] Email next approver gagal dikirim', [
-                                'vendor_id' => $vendor->id,
-                                'approver_id' => $approver->id,
-                                'message' => $mailError->getMessage(),
-                            ]);
-                        }
-                    }
-                }
-            }
+            $stepCompleted = (
+                $result['step_completed'] ?? false
+            ) === true;
+
+            $hasNextStep = (
+                $result['has_next_step'] ?? false
+            ) === true;
+
+            $isFinalApproved = (
+                $result['is_final_approved'] ?? false
+            ) === true;
 
             DB::commit();
 
+            /*
+        |--------------------------------------------------------------------------
+        | Notifikasi/email setelah transaksi berhasil
+        |--------------------------------------------------------------------------
+        |
+        | Error notifikasi tidak boleh membuat approval yang sudah commit
+        | dianggap gagal.
+        |--------------------------------------------------------------------------
+        */
+            try {
+                /*
+            | Jika step selesai dan terdapat step berikutnya,
+            | kirim notification/email kepada approver step berikut.
+            */
+                if ($stepCompleted && $hasNextStep) {
+                    $this->vendorApprovalNotificationService
+                        ->notifyCurrentApprovers($vendor);
+                }
+
+                /*
+            | Creator diberi tahu saat satu step selesai.
+            |
+            | Untuk mode ALL, creator tidak menerima notifikasi setiap satu
+            | kandidat approve; notifikasi dikirim setelah step selesai.
+            */
+                if ($stepCompleted) {
+                    $this->vendorApprovalNotificationService
+                        ->notifyCreatorApproved(
+                            vendor: $vendor,
+                            approvedBy: $user,
+                            isFinalApproved: $isFinalApproved,
+                        );
+                }
+            } catch (\Throwable $notificationError) {
+                Log::error(
+                    '[Master Vendor] Notifikasi setelah approve gagal',
+                    [
+                        'vendor_id' => $vendor->id,
+                        'approved_by' => $user->id,
+                        'step_completed' => $stepCompleted,
+                        'has_next_step' => $hasNextStep,
+                        'is_final_approved' => $isFinalApproved,
+                        'message' => $notificationError->getMessage(),
+                        'file' => $notificationError->getFile(),
+                        'line' => $notificationError->getLine(),
+                    ],
+                );
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Pesan response
+        |--------------------------------------------------------------------------
+        */
+            if ($isFinalApproved) {
+                $message = 'Master Vendor berhasil diapprove.';
+            } elseif ($stepCompleted && $hasNextStep) {
+                $message
+                    = 'Tahap approval Master Vendor berhasil diselesaikan dan diteruskan ke approver berikutnya.';
+            } elseif ($stepCompleted) {
+                $message
+                    = 'Tahap approval Master Vendor berhasil diselesaikan.';
+            } else {
+                $message
+                    = 'Approval Anda berhasil disimpan dan masih menunggu approver lainnya.';
+            }
+
             return response()->json([
                 'success' => true,
-                'message' => $hasPendingApproval
-                    ? 'Approval vendor berhasil diproses.'
-                    : 'Vendor berhasil diapprove.',
+                'message' => $message,
+
                 'data' => [
                     'id' => $vendor->id,
-                    'public_id' => $vendor->encrypted_id,
-                    'nama_vendor' => $vendor->nama_vendor,
-                    'status_approval' => $vendor->status_approval,
+
+                    'public_id'
+                    => $vendor->encrypted_id,
+
+                    'nama_vendor'
+                    => $vendor->nama_vendor,
+
+                    /*
+                | Tetap PENDING REVIEW selama belum final.
+                */
+                    'status_approval'
+                    => $vendor->status_approval,
+
+                    'approval_status'
+                    => $approval?->status,
+
+                    'step_completed'
+                    => $stepCompleted,
+
+                    'has_next_step'
+                    => $hasNextStep,
+
+                    'is_final_approved'
+                    => $isFinalApproved,
+
+                    'current_step_order'
+                    => $result['current_step_order'] ?? null,
+
+                    'next_step_order'
+                    => $result['next_step_order'] ?? null,
+
+                    'approved_at'
+                    => $approval?->approved_at,
+
+                    'approved_by'
+                    => $approval?->approver_name_snapshot,
+
+                    'notes'
+                    => $approval?->notes,
+
+                    'kode_vendor' => $vendor->kode_vendor,
                 ],
             ], 200);
-        } catch (\Throwable $e) {
-            DB::rollBack();
+        } catch (ValidationException $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
 
-            Log::error('[Vendor] Approve error', [
-                'public_id' => $publicId,
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-            ]);
+            $errors = $e->errors();
 
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal approve Vendor.',
-                'debug' => app()->environment('local') ? $e->getMessage() : null,
+
+                'message' => collect($errors)
+                    ->flatten()
+                    ->first()
+                    ?? 'Approval Master Vendor tidak valid.',
+
+                'errors' => $errors,
+            ], 422);
+        } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+
+            return response()->json([
+                'success' => false,
+                'message' => 'ID Master Vendor tidak valid.',
+            ], 422);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Data Master Vendor tidak ditemukan.',
+            ], 404);
+        } catch (\Throwable $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+
+            Log::error(
+                '[Master Vendor] Approve error',
+                [
+                    'public_id' => $publicId,
+                    'user_id' => $request->user()?->id,
+                    'message' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ],
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal approve Master Vendor.',
+
+                'debug' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
     }
 
-    public function reject(Request $request, $publicId)
-    {
+    public function reject(
+        Request $request,
+        string $publicId,
+    ): JsonResponse {
         DB::beginTransaction();
 
         try {
             $request->validate([
-                'notes' => ['nullable', 'string'],
+                'notes' => [
+                    'required',
+                    'string',
+                    'max:2000',
+                ],
+            ], [
+                'notes.required'
+                => 'Catatan penolakan wajib diisi.',
+
+                'notes.string'
+                => 'Catatan penolakan harus berupa teks.',
+
+                'notes.max'
+                => 'Catatan penolakan maksimal 2000 karakter.',
             ]);
-
-            $id = Crypt::decryptString($publicId);
-
-            $vendor = MasterVendor::with(['approvals'])->findOrFail($id);
-
-            if (strtoupper((string) $vendor->status_approval) !== 'PENDING REVIEW') {
-                DB::rollBack();
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Vendor hanya dapat direject jika status masih PENDING REVIEW.',
-                ], 422);
-            }
 
             $user = $request->user();
 
-            $currentApproval = MasterVendorApproval::where('vendor_id', $vendor->id)
-                ->where('status', 'PENDING')
-                ->orderBy('step_order')
-                ->lockForUpdate()
-                ->first();
-
-            if (!$currentApproval) {
+            if (!$user) {
                 DB::rollBack();
 
                 return response()->json([
                     'success' => false,
-                    'message' => 'Tidak ada approval pending untuk vendor ini.',
+                    'message' => 'User login tidak ditemukan.',
+                ], 401);
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Decrypt dan lock Master Vendor
+        |--------------------------------------------------------------------------
+        */
+            $id = Crypt::decryptString($publicId);
+
+            $vendor = MasterVendor::query()
+                ->lockForUpdate()
+                ->findOrFail($id);
+
+            /*
+        |--------------------------------------------------------------------------
+        | Status vendor harus PENDING REVIEW
+        |--------------------------------------------------------------------------
+        */
+            $vendorStatus = strtoupper(
+                trim((string) $vendor->status_approval),
+            );
+
+            if ($vendorStatus !== 'PENDING REVIEW') {
+                DB::rollBack();
+
+                return response()->json([
+                    'success' => false,
+                    'message'
+                    => 'Vendor hanya dapat direject jika status masih PENDING REVIEW.',
                 ], 422);
             }
 
-            $clean = fn($v) => htmlspecialchars(strip_tags(trim((string) $v)), ENT_QUOTES, 'UTF-8');
+            /*
+        |--------------------------------------------------------------------------
+        | Sanitasi catatan reject
+        |--------------------------------------------------------------------------
+        */
+            $notes = htmlspecialchars(
+                strip_tags(
+                    trim(
+                        (string) $request->input('notes'),
+                    ),
+                ),
+                ENT_QUOTES,
+                'UTF-8',
+            );
 
-            $currentApproval->update([
-                'status' => 'REJECTED',
-                'approver_name_snapshot' => $user->name,
-                'notes' => $clean($request->notes),
-                'rejected_at' => now(),
-            ]);
+            if ($notes === '') {
+                DB::rollBack();
 
-            MasterVendorApproval::where('vendor_id', $vendor->id)
-                ->where('status', 'PENDING')
-                ->update([
-                    'status' => 'CANCELLED',
-                    'cancelled_at' => now(),
-                    'notes' => 'Cancelled karena Master Vendor direject.',
-                ]);
+                return response()->json([
+                    'success' => false,
+                    'message'
+                    => 'Catatan penolakan wajib diisi.',
 
-            $vendor->status_approval = 'REJECTED';
-            $vendor->save();
+                    'errors' => [
+                        'notes' => [
+                            'Catatan penolakan wajib diisi.',
+                        ],
+                    ],
+                ], 422);
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Proses reject melalui service
+        |--------------------------------------------------------------------------
+        |
+        | Service menangani:
+        | - validasi user sebagai approver aktif;
+        | - row actor menjadi REJECTED;
+        | - approval lain PENDING/WAITING menjadi CANCELLED;
+        | - status vendor menjadi REJECTED.
+        |--------------------------------------------------------------------------
+        */
+            $result = $this->vendorApprovalService->reject(
+                vendor: $vendor,
+                user: $user,
+                notes: $notes,
+            );
+
             $vendor->refresh();
 
-            $submitter = User::find($vendor->submitted_by);
-
-            if ($submitter) {
-                Notification::create([
-                    'user_id' => $submitter->id,
-                    'type' => 'master_vendor_rejected',
-                    'title' => 'Master Vendor Rejected',
-                    'message' => 'Vendor ' . $vendor->nama_vendor . ' telah direject oleh ' . ($user->name ?? '-') . '.',
-                    'module' => 'master_vendor',
-                    'reference_type' => MasterVendor::class,
-                    'reference_id' => $vendor->id,
-                    'reference_public_id' => $vendor->encrypted_id,
-                    'url' => '/master/vendor',
-                ]);
-
-                try {
-                    Mail::to($submitter->email)->queue(
-                        new MasterVendorApprovalMail(
-                            $vendor,
-                            $submitter,
-                            'rejected',
-                            $user,
-                            $request->notes
-                        )
-                    );
-                } catch (\Throwable $mailError) {
-                    Log::error('[Vendor] Email rejected gagal dikirim', [
-                        'vendor_id' => $vendor->id,
-                        'submitter_id' => $submitter->id,
-                        'message' => $mailError->getMessage(),
-                    ]);
-                }
-            }
+            $approval = $result['approval'] ?? null;
 
             DB::commit();
 
+            /*
+        |--------------------------------------------------------------------------
+        | Notification/email creator setelah transaksi berhasil
+        |--------------------------------------------------------------------------
+        */
+            try {
+                $this->vendorApprovalNotificationService
+                    ->notifyCreatorRejected(
+                        vendor: $vendor,
+                        rejectedBy: $user,
+                        notes: $notes,
+                    );
+            } catch (\Throwable $notificationError) {
+                Log::error(
+                    '[Master Vendor] Notifikasi setelah reject gagal',
+                    [
+                        'vendor_id' => $vendor->id,
+                        'rejected_by' => $user->id,
+                        'message' => $notificationError->getMessage(),
+                        'file' => $notificationError->getFile(),
+                        'line' => $notificationError->getLine(),
+                    ],
+                );
+            }
+
             return response()->json([
                 'success' => true,
-                'message' => 'Vendor berhasil direject.',
+                'message' => 'Master Vendor berhasil direject.',
+
                 'data' => [
                     'id' => $vendor->id,
-                    'public_id' => $vendor->encrypted_id,
-                    'nama_vendor' => $vendor->nama_vendor,
-                    'status_approval' => $vendor->status_approval,
-                    'rejected_at' => $currentApproval->rejected_at,
-                    'rejected_by' => $currentApproval->approver_name_snapshot,
-                    'reject_notes' => $currentApproval->notes,
+
+                    'public_id'
+                    => $vendor->encrypted_id,
+
+                    'nama_vendor'
+                    => $vendor->nama_vendor,
+
+                    'status_approval'
+                    => $vendor->status_approval,
+
+                    'approval_status'
+                    => $approval?->status,
+
+                    'rejected_at'
+                    => $approval?->rejected_at,
+
+                    'rejected_by'
+                    => $approval?->approver_name_snapshot,
+
+                    'reject_notes'
+                    => $approval?->notes,
+
+                    'step_order'
+                    => $approval?->step_order,
+
+                    'current_step_order'
+                    => $result['current_step_order'] ?? null,
                 ],
             ], 200);
-        } catch (\Throwable $e) {
-            DB::rollBack();
+        } catch (ValidationException $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
 
-            Log::error('[Vendor] Reject error', [
-                'public_id' => $publicId,
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-            ]);
+            $errors = $e->errors();
 
             return response()->json([
                 'success' => false,
-                'message' => 'Gagal reject Vendor.',
-                'debug' => app()->environment('local') ? $e->getMessage() : null,
+
+                'message' => collect($errors)
+                    ->flatten()
+                    ->first()
+                    ?? 'Penolakan Master Vendor tidak valid.',
+
+                'errors' => $errors,
+            ], 422);
+        } catch (\Illuminate\Contracts\Encryption\DecryptException $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+
+            return response()->json([
+                'success' => false,
+                'message' => 'ID Master Vendor tidak valid.',
+            ], 422);
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Data Master Vendor tidak ditemukan.',
+            ], 404);
+        } catch (\Throwable $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+
+            Log::error(
+                '[Master Vendor] Reject error',
+                [
+                    'public_id' => $publicId,
+                    'user_id' => $request->user()?->id,
+                    'message' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ],
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal reject Master Vendor.',
+
+                'debug' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
+    }
+
+    private function userCanAccessVendorByScope(
+        User $user,
+        MasterVendor $vendor,
+        string $scope,
+    ): bool {
+        $scope = strtoupper(
+            trim($scope),
+        );
+
+        return match ($scope) {
+            'ALL' => true,
+
+            'OWN_DATA' => (int) $vendor->created_by
+                === (int) $user->id,
+
+            'OWN_DEPARTMENT' => (
+                !empty($user->department_id)
+                && (int) $vendor->id_department
+                === (int) $user->department_id
+            ),
+
+            default => false,
+        };
     }
 }

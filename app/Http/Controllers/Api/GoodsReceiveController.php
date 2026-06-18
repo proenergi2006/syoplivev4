@@ -531,6 +531,14 @@ class GoodsReceiveController extends Controller
 
     public function store(Request $request)
     {
+        $user = $request->user();
+        if (!$user || !$user->hasPermission('goods_receive.create')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Anda tidak memiliki akses untuk membuat Goods Receipt.',
+            ], 403);
+        }
+
         try {
             $validated = $request->validate([
                 'purchase_order_public_id' => ['required', 'string'],
@@ -636,13 +644,21 @@ class GoodsReceiveController extends Controller
         }
     }
 
-    public function edit($publicId)
+    public function edit($publicId, Request $request)
     {
-        return $this->show($publicId);
+        return $this->show($publicId, $request);
     }
 
     public function update(Request $request, $publicId)
     {
+        $user = $request->user();
+        if (!$user || !$user->hasPermission('goods_receive.update')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Anda tidak memiliki akses untuk mengubah Goods Receipt.',
+            ], 403);
+        }
+
         DB::beginTransaction();
 
         try {
@@ -1031,8 +1047,16 @@ class GoodsReceiveController extends Controller
         }
     }
 
-    public function destroy($publicId)
+    public function destroy($publicId, Request $request)
     {
+        $user = $request->user();
+        if (!$user || !$user->hasPermission('goods_receive.delete')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Anda tidak memiliki akses untuk menghapus Goods Receipt.',
+            ], 403);
+        }
+
         DB::beginTransaction();
 
         try {

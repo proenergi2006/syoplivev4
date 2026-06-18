@@ -14,9 +14,11 @@ import {
   showConfirmAlert
 } from '@/utils/alert'
 import { getApiErrorMessage } from '@/utils/apiHelper'
-import { formatStatusPKP, formatKategoriVendor, toTitleCase } from '@/utils/textFormatter'
+import { formatStatusPKP, formatKategoriVendor, toTitleCase, formatDate } from '@/utils/textFormatter'
 import { usePolling } from '@core/composable/usePolling'
 import { usePermissionStore } from '@/stores/permission'
+import ApprovalHistoryDialog from '@core/components/ApprovalHistoryVendorDialog.vue'
+import Swal from 'sweetalert2'
 
 interface Vendor {
   id: number
@@ -27,6 +29,30 @@ interface Vendor {
   kategori_vendor: string | null
   is_active: boolean
   status_approval: string | null
+  
+  is_creator?: boolean
+  is_same_department?: boolean
+  
+  can_approve?: boolean
+  requires_vendor_code?: boolean
+  is_waiting_my_approval?: boolean
+  can_update?: boolean
+  can_delete?: boolean
+  can_submit?: boolean
+
+  current_step_order?: number | null
+  current_approval_candidates_count?: number
+
+  current_approval?: {
+    id: number
+    step_order: number
+    approver_type: 'USER' | 'ROLE'
+    approver_id: number
+    approval_mode: 'ANY' | 'ALL'
+    label?: string | null
+    status: string
+  } | null
+
   created_time?: string | null
   created_ip?: string | null
   created_by?: number | null
@@ -39,6 +65,7 @@ interface VendorListResponse {
   last_page?: number
   current_page?: number
   per_page?: number
+  abilities?: VendorAbilities
 }
 
 interface VendorQueryParams {
@@ -57,6 +84,86 @@ interface AxiosErrorShape {
   response?: {
     status?: number
     data?: ApiErrorResponse
+  }
+}
+
+interface VendorAbilities {
+  can_view: boolean
+  view_scope:
+    | 'NONE'
+    | 'OWN_DATA'
+    | 'OWN_DEPARTMENT'
+    | 'OWN_CABANG'
+    | 'ALL'
+
+  can_create: boolean
+  can_update: boolean
+  can_submit: boolean
+  can_delete: boolean
+}
+
+const defaultVendorAbilities = (): VendorAbilities => ({
+  can_view: false,
+  view_scope: 'NONE',
+  can_create: false,
+  can_update: false,
+  can_submit: false,
+  can_delete: false,
+})
+
+const abilities = ref<VendorAbilities>(
+  defaultVendorAbilities(),
+)
+
+const isApprovalHistoryDialogOpen = ref(false)
+const selectedVendorLabel = ref('')
+const selectedApprovalHistory = ref<any[]>([])
+
+const openApprovalHistory = async (
+  item: any,
+): Promise<void> => {
+  try {
+    showLoadingAlert(
+      'Memuat history approval...',
+      'Mohon tunggu sebentar',
+    )
+
+    const res = await axios.get(
+      `/master/vendor/${encodeURIComponent(item.public_id)}/`,
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+    )
+
+    closeAlert()
+
+    const data = res.data?.data ?? {}
+
+    selectedVendorLabel.value = [
+      data.kode_vendor ?? item.kode_vendor,
+      data.nama_vendor ?? item.nama_vendor,
+    ]
+      .filter(Boolean)
+      .join(' - ') || '-'
+
+    selectedApprovalHistory.value
+      = Array.isArray(data.approvals)
+        ? data.approvals
+        : []
+
+    isApprovalHistoryDialogOpen.value = true
+  } catch (error: unknown) {
+    closeAlert()
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(
+        error,
+        'Gagal memuat history approval Master Vendor.',
+      ),
+    })
   }
 }
 
@@ -85,12 +192,13 @@ type SnackbarColor = 'success' | 'error' | 'warning' | 'info'
 const route = useRoute()
 const router = useRouter()
 
-const vendorApprovalLoading = ref(false)
+const approveVendorLoading = ref(false)
 
 const rejectVendorDialog = ref(false)
-const rejectVendorTarget = ref<any>(null)
-const rejectVendorNotes = ref('')
 const rejectVendorLoading = ref(false)
+const rejectVendorTarget = ref<any | null>(null)
+const rejectVendorNotes = ref('')
+const rejectVendorSubmitted = ref(false)
 
 // =========================
 // Navigation
@@ -163,34 +271,187 @@ const confirmUpdateStatus = async (): Promise<void> => {
 }
 
 const approveVendor = async (vendor: any): Promise<void> => {
-  if (!vendor?.public_id || vendorApprovalLoading.value) return
+  if (
+    !vendor?.public_id
+    || approveVendorLoading.value
+  ) {
+    return
+  }
+
+  if (vendor.can_approve !== true) {
+    showErrorToast({
+      title: 'Akses Ditolak',
+      text: 'Anda bukan approver aktif untuk Vendor ini.',
+    })
+
+    return
+  }
+
+  let kodeVendor: string | null = null
+
+  /*
+  |--------------------------------------------------------------------------
+  | Final approval wajib input Kode Vendor
+  |--------------------------------------------------------------------------
+  */
+  if (vendor.requires_vendor_code === true) {
+    const existingCode = String(
+      vendor.kode_vendor ?? '',
+    )
+      .trim()
+      .toUpperCase()
+
+    const inputResult = await Swal.fire({
+      icon: 'info',
+      title: 'Masukkan Kode Vendor',
+      text: `Vendor "${vendor.nama_vendor}" akan memasuki approval final.`,
+
+      input: 'text',
+      inputLabel: 'Kode Vendor Final',
+      inputPlaceholder: 'Contoh: VND-0001',
+
+      inputValue: existingCode.startsWith('TEMP-')
+        ? ''
+        : existingCode,
+
+      showCancelButton: true,
+      confirmButtonText: 'Simpan Kode',
+      cancelButtonText: 'Batal',
+      reverseButtons: true,
+
+      customClass: {
+        confirmButton: 'swal-confirm-button-white',
+        cancelButton: 'swal-confirm-button-white',
+        input: 'swal-input-uppercase',
+      },
+
+      inputAttributes: {
+        maxlength: '100',
+        autocapitalize: 'characters',
+        autocomplete: 'off',
+        spellcheck: 'false',
+      },
+
+      /*
+      |--------------------------------------------------------------------------
+      | Auto uppercase ketika user mengetik
+      |--------------------------------------------------------------------------
+      */
+      didOpen: () => {
+        const input = Swal.getInput()
+
+        if (!input)
+          return
+
+        input.addEventListener('input', () => {
+          const cursorPosition = input.selectionStart
+
+          input.value = input.value.toUpperCase()
+
+          if (cursorPosition !== null) {
+            input.setSelectionRange(
+              cursorPosition,
+              cursorPosition,
+            )
+          }
+        })
+
+        input.focus()
+      },
+
+      inputValidator: value => {
+        const normalizedCode = String(value ?? '')
+          .trim()
+          .toUpperCase()
+
+        if (!normalizedCode)
+          return 'Kode Vendor wajib diisi.'
+
+        if (normalizedCode.startsWith('TEMP-'))
+          return 'Kode Vendor final tidak boleh menggunakan kode TEMP.'
+
+        if (normalizedCode.length > 100)
+          return 'Kode Vendor maksimal 100 karakter.'
+
+        return undefined
+      },
+    })
+
+    if (!inputResult.isConfirmed)
+      return
+
+    kodeVendor = String(inputResult.value ?? '')
+      .trim()
+      .toUpperCase()
+
+    /*
+    |--------------------------------------------------------------------------
+    | Safety check sebelum request API
+    |--------------------------------------------------------------------------
+    */
+    if (!kodeVendor) {
+      showErrorToast({
+        title: 'Kode Vendor Belum Diisi',
+        text: 'Kode Vendor wajib diisi pada approval final.',
+      })
+
+      return
+    }
+  }
 
   const confirm = await showConfirmAlert({
     title: 'Approve Vendor?',
-    text: `Vendor "${vendor.nama_vendor}" akan disetujui.`,
+    text: kodeVendor
+      ? `Vendor "${vendor.nama_vendor}" akan disetujui dengan kode "${kodeVendor}".`
+      : `Vendor "${vendor.nama_vendor}" akan disetujui.`,
     confirmButtonText: 'Ya, approve',
     cancelButtonText: 'Batal',
   })
 
-  if (!confirm.isConfirmed) return
+  if (!confirm.isConfirmed)
+    return
 
-  vendorApprovalLoading.value = true
+  approveVendorLoading.value = true
 
   try {
-    showLoadingAlert('Approve Vendor...', 'Mohon tunggu sebentar')
+    showLoadingAlert(
+      'Approve Vendor...',
+      'Mohon tunggu sebentar',
+    )
 
-    const response = await axios.patch(`/master/vendor/${vendor.public_id}/approve`, {}, {
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
+    /*
+    |--------------------------------------------------------------------------
+    | kode_vendor wajib berada di body request
+    |--------------------------------------------------------------------------
+    */
+    const payload: {
+      notes: string | null
+      kode_vendor: string | null
+    } = {
+      notes: null,
+      kode_vendor: kodeVendor,
+    }
+
+    console.log('[APPROVE VENDOR PAYLOAD]', payload)
+
+    const response = await axios.patch(
+      `/master/vendor/${encodeURIComponent(vendor.public_id)}/approve`,
+      payload,
+      {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
       },
-    })
+    )
 
     closeAlert()
 
     showSuccessToast({
       title: 'Berhasil',
-      text: response.data?.message || `Vendor "${vendor.nama_vendor}" berhasil diapprove.`,
+      text:
+        response.data?.message
+        || `Vendor "${vendor.nama_vendor}" berhasil diapprove.`,
     })
 
     await fetchRows()
@@ -199,25 +460,144 @@ const approveVendor = async (vendor: any): Promise<void> => {
 
     showErrorToast({
       title: 'Error',
-      text: getApiErrorMessage(error, 'Gagal approve Vendor'),
+      text: getApiErrorMessage(
+        error,
+        'Gagal approve Vendor.',
+      ),
     })
   } finally {
-    vendorApprovalLoading.value = false
+    approveVendorLoading.value = false
   }
 }
 
 const openRejectVendor = (vendor: any): void => {
+  if (!vendor?.public_id || rejectVendorLoading.value)
+    return
+
+  if (vendor.can_approve !== true) {
+    showErrorToast({
+      title: 'Akses Ditolak',
+      text: 'Anda bukan approver aktif untuk Vendor ini.',
+    })
+
+    return
+  }
+
   rejectVendorTarget.value = vendor
   rejectVendorNotes.value = ''
+  rejectVendorSubmitted.value = false
   rejectVendorDialog.value = true
 }
 
+const confirmRejectVendor = async (): Promise<void> => {
+  if (
+    !rejectVendorTarget.value?.public_id
+    || rejectVendorLoading.value
+  ) {
+    return
+  }
+
+  rejectVendorSubmitted.value = true
+
+  const notes = rejectVendorNotes.value.trim()
+
+  if (!notes) {
+    return
+  }
+
+  const target = {
+    ...rejectVendorTarget.value,
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Tutup dialog notes terlebih dahulu
+  |--------------------------------------------------------------------------
+  */
+  rejectVendorDialog.value = false
+
+  await nextTick()
+
+  /*
+  |--------------------------------------------------------------------------
+  | Tunggu animasi VDialog selesai
+  |--------------------------------------------------------------------------
+  */
+  await new Promise<void>(resolve => {
+    window.setTimeout(resolve, 250)
+  })
+
+  /*
+  |--------------------------------------------------------------------------
+  | Baru tampilkan SweetAlert
+  |--------------------------------------------------------------------------
+  */
+  const confirm = await showConfirmAlert({
+    title: 'Reject Vendor?',
+    text: `Vendor "${target.nama_vendor}" akan ditolak.`,
+    confirmButtonText: 'Ya, reject',
+    cancelButtonText: 'Batal',
+  })
+
+  if (!confirm.isConfirmed) {
+    /*
+    |--------------------------------------------------------------------------
+    | Jika batal, buka kembali dialog dan notes tidak hilang
+    |--------------------------------------------------------------------------
+    */
+    rejectVendorDialog.value = true
+
+    return
+  }
+
+  await submitRejectVendor(target, notes)
+}
+
+const closeRejectVendorDialog = (): void => {
+  if (rejectVendorLoading.value)
+    return
+
+  rejectVendorDialog.value = false
+  rejectVendorTarget.value = null
+  rejectVendorNotes.value = ''
+  rejectVendorSubmitted.value = false
+}
+
 const rejectVendor = async (): Promise<void> => {
-  if (!rejectVendorTarget.value || rejectVendorLoading.value) return
+  if (
+    !rejectVendorTarget.value?.public_id
+    || rejectVendorLoading.value
+  ) {
+    return
+  }
 
-  const target = { ...rejectVendorTarget.value }
-  const notes = rejectVendorNotes.value || null
+  rejectVendorSubmitted.value = true
 
+  const notes = rejectVendorNotes.value.trim()
+
+  /*
+  |--------------------------------------------------------------------------
+  | Notes wajib karena backend reject Master Vendor juga required
+  |--------------------------------------------------------------------------
+  */
+  if (!notes) {
+    showErrorToast({
+      title: 'Catatan Wajib Diisi',
+      text: 'Silakan isi alasan penolakan Vendor.',
+    })
+
+    return
+  }
+
+  const target = {
+    ...rejectVendorTarget.value,
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Tutup dialog notes agar SweetAlert tidak tertutup overlay dialog
+  |--------------------------------------------------------------------------
+  */
   rejectVendorDialog.value = false
 
   await nextTick()
@@ -230,43 +610,137 @@ const rejectVendor = async (): Promise<void> => {
   })
 
   if (!confirm.isConfirmed) {
+    /*
+    |--------------------------------------------------------------------------
+    | Jika batal, buka kembali dialog dengan notes tetap tersimpan
+    |--------------------------------------------------------------------------
+    */
     rejectVendorDialog.value = true
+
     return
   }
 
   rejectVendorLoading.value = true
 
   try {
-    showLoadingAlert('Reject Vendor...', 'Mohon tunggu sebentar')
+    showLoadingAlert(
+      'Reject Vendor...',
+      'Mohon tunggu sebentar',
+    )
 
-    const response = await axios.patch(`/master/vendor/${target.public_id}/reject`, {
-      notes,
-    }, {
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
+    const response = await axios.patch(
+      `/master/vendor/${target.public_id}/reject`,
+      {
+        notes,
       },
-    })
+      {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+      },
+    )
 
     closeAlert()
 
-    rejectVendorNotes.value = ''
-    rejectVendorTarget.value = null
-
     showSuccessToast({
       title: 'Berhasil',
-      text: response.data?.message || `Vendor "${target.nama_vendor}" berhasil direject.`,
+      text:
+        response.data?.message
+        || `Vendor "${target.nama_vendor}" berhasil direject.`,
     })
+
+    rejectVendorNotes.value = ''
+    rejectVendorTarget.value = null
+    rejectVendorSubmitted.value = false
+    rejectVendorDialog.value = false
 
     await fetchRows()
   } catch (error: unknown) {
     closeAlert()
 
+    /*
+    |--------------------------------------------------------------------------
+    | Jika gagal, tampilkan kembali dialog agar notes tidak perlu diketik ulang
+    |--------------------------------------------------------------------------
+    */
     rejectVendorDialog.value = true
 
     showErrorToast({
       title: 'Error',
-      text: getApiErrorMessage(error, 'Gagal reject Vendor'),
+      text: getApiErrorMessage(
+        error,
+        'Gagal reject Vendor.',
+      ),
+    })
+  } finally {
+    rejectVendorLoading.value = false
+  }
+}
+
+const submitRejectVendor = async (
+  target: any,
+  notes: string,
+): Promise<void> => {
+  if (
+    !target?.public_id
+    || rejectVendorLoading.value
+  ) {
+    return
+  }
+
+  rejectVendorLoading.value = true
+
+  try {
+    showLoadingAlert(
+      'Reject Vendor...',
+      'Mohon tunggu sebentar',
+    )
+
+    const response = await axios.patch(
+      `/master/vendor/${target.public_id}/reject`,
+      {
+        notes,
+      },
+      {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+      },
+    )
+
+    closeAlert()
+
+    showSuccessToast({
+      title: 'Berhasil',
+      text:
+        response.data?.message
+        || `Vendor "${target.nama_vendor}" berhasil direject.`,
+    })
+
+    rejectVendorDialog.value = false
+    rejectVendorTarget.value = null
+    rejectVendorNotes.value = ''
+    rejectVendorSubmitted.value = false
+
+    await fetchRows()
+  } catch (error: unknown) {
+    closeAlert()
+
+    /*
+    |--------------------------------------------------------------------------
+    | Buka kembali dialog agar notes dapat dikoreksi
+    |--------------------------------------------------------------------------
+    */
+    rejectVendorDialog.value = true
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(
+        error,
+        'Gagal reject Vendor.',
+      ),
     })
   } finally {
     rejectVendorLoading.value = false
@@ -483,34 +957,45 @@ const selectedTransaksiList = computed(() => {
 const submitVendorLoading = ref(false)
 
 const submitVendor = async (vendor: any): Promise<void> => {
-  if (!vendor?.public_id || submitVendorLoading.value) return
+  if (!vendor?.public_id || submitVendorLoading.value)
+    return
 
   const confirm = await showConfirmAlert({
     title: 'Submit Vendor?',
-    text: `Vendor "${vendor.nama_vendor}" akan masuk proses review Finance.`,
+    text: `Vendor "${vendor.nama_vendor}" akan masuk proses approval.`,
     confirmButtonText: 'Ya, submit',
     cancelButtonText: 'Batal',
   })
 
-  if (!confirm.isConfirmed) return
+  if (!confirm.isConfirmed)
+    return
 
   submitVendorLoading.value = true
 
   try {
-    showLoadingAlert('Submit Vendor...', 'Mohon tunggu sebentar')
+    showLoadingAlert(
+      'Submit Vendor...',
+      'Mohon tunggu sebentar',
+    )
 
-    const response = await axios.patch(`/master/vendor/${vendor.public_id}/submit`, {}, {
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
+    const response = await axios.patch(
+      `/master/vendor/${vendor.public_id}/submit`,
+      {},
+      {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
       },
-    })
+    )
 
     closeAlert()
 
     showSuccessToast({
       title: 'Berhasil',
-      text: response.data?.message || `Vendor "${vendor.nama_vendor}" berhasil disubmit.`,
+      text:
+        response.data?.message
+        || `Vendor "${vendor.nama_vendor}" berhasil disubmit.`,
     })
 
     await fetchRows()
@@ -519,7 +1004,10 @@ const submitVendor = async (vendor: any): Promise<void> => {
 
     showErrorToast({
       title: 'Error',
-      text: getApiErrorMessage(error, 'Gagal submit Vendor'),
+      text: getApiErrorMessage(
+        error,
+        'Gagal submit Vendor',
+      ),
     })
   } finally {
     submitVendorLoading.value = false
@@ -683,6 +1171,24 @@ const fetchRows = async (): Promise<void> => {
 
     if (currentPage.value > totalPage.value) {
       currentPage.value = totalPage.value
+    }
+
+    const responseAbilities = data.abilities ?? {
+      can_view: false,
+      view_scope: 'NONE',
+      can_create: false,
+      can_update: false,
+      can_submit: false,
+      can_delete: false,
+    }
+
+    abilities.value = {
+      can_view: responseAbilities.can_view === true,
+      view_scope: responseAbilities.view_scope ?? 'NONE',
+      can_create: responseAbilities.can_create === true,
+      can_update: responseAbilities.can_update === true,
+      can_submit: responseAbilities.can_submit === true,
+      can_delete: responseAbilities.can_delete === true,
     }
   } catch (error: unknown) {
     const err = error as AxiosErrorShape
@@ -849,8 +1355,8 @@ onMounted(async () => {
     <!-- Table -->
     <VCard>
       <VCardText class="d-flex flex-wrap gap-4 align-center">
-        <VBtn color="primary" @click="goToCreate" class="text-none" v-if="canCreate">
-          + Tambah Vendor
+        <VBtn color="primary" @click="goToCreate" class="text-none" v-if="abilities.can_create" prepend-icon="tabler-plus">
+        Tambah Vendor
         </VBtn>
 
         <VSpacer />
@@ -895,9 +1401,31 @@ onMounted(async () => {
         </thead>
 
         <tbody>
-          <tr v-for="(v, index) in rows" :key="v.id">
+          <tr v-for="(v, index) in rows" :key="v.id" :class="{
+            'vendor-row-need-approval': v.is_waiting_my_approval,
+          }">
             <td class="text-medium-emphasis">{{ index + 1 }}</td>
-            <td class="text-medium-emphasis">{{ v.kode_vendor }}</td>
+            <td>
+              <div class="d-flex flex-column gap-1">
+                <div class="font-weight-medium">
+                  {{ v.kode_vendor || '-' }}
+                </div>
+
+                <VChip
+                  v-if="v.is_waiting_my_approval === true"
+                  size="x-small"
+                  color="warning"
+                  variant="tonal"
+                >
+                  <VIcon
+                    icon="tabler-alert-circle"
+                    size="14"
+                    start
+                  />
+                  Menunggu Approval Anda
+                </VChip>
+              </div>
+            </td>
             <td class="text-medium-emphasis">{{ v.nama_vendor }}</td>
             <td class="text-medium-emphasis">{{ v.inisial_vendor ?? '-' }}</td>
             <td>
@@ -945,10 +1473,26 @@ onMounted(async () => {
                       <VListItemTitle>Lihat Detail</VListItemTitle>
                     </VListItem>
 
+                    <VListItem
+                      @click="openApprovalHistory(v)"
+                    >
+                      <template #prepend>
+                        <VIcon
+                          icon="tabler-history"
+                          size="20"
+                          class="me-3"
+                        />
+                      </template>
+
+                      <VListItemTitle>
+                        History Approval
+                      </VListItemTitle>
+                    </VListItem>
+
                     <!-- Hanya muncul jika DRAFT -->
                     <template v-if="isVendorDraft(v)">
                       <VListItem
-                        v-if="canUpdate"
+                        v-if="v.can_update === true"
                         href="javascript:void(0)"
                         @click="goToEdit(v.public_id)"
                       >
@@ -963,7 +1507,7 @@ onMounted(async () => {
                         <VListItemTitle>Edit</VListItemTitle>
                       </VListItem>
 
-                      <VListItem @click="submitVendor(v)">
+                      <VListItem v-if="v.can_submit === true" :disabled="submitVendorLoading" @click="submitVendor(v)">
                         <template #prepend>
                           <VIcon
                             :size="20"
@@ -976,8 +1520,9 @@ onMounted(async () => {
                       </VListItem>
 
                       <VListItem
-                        v-if="canDelete"
+                        v-if="v.can_delete === true"
                         href="javascript:void(0)"
+                        class="text-error"
                         @click="openDelete(v)"
                       >
                         <template #prepend>
@@ -988,7 +1533,7 @@ onMounted(async () => {
                           />
                         </template>
 
-                        <VListItemTitle>Delete</VListItemTitle>
+                        <VListItemTitle class="text-error">Delete</VListItemTitle>
                       </VListItem>
 
                       <VListItem
@@ -1013,7 +1558,7 @@ onMounted(async () => {
                     <!-- ACTION PENDING REVIEW -->
                     <!-- ========================= -->
                     <template v-if="String(v.status_approval).toUpperCase() === 'PENDING REVIEW'">
-                      <VListItem @click="approveVendor(v)">
+                      <VListItem v-if="v.can_approve === true" @click="approveVendor(v)">
                         <template #prepend>
                           <VIcon
                             icon="mdi-check-circle-outline"
@@ -1028,7 +1573,7 @@ onMounted(async () => {
                         </VListItemTitle>
                       </VListItem>
 
-                      <VListItem @click="openRejectVendor(v)">
+                      <VListItem v-if="v.can_approve === true" :disabled="rejectVendorLoading" @click="openRejectVendor(v)">
                         <template #prepend>
                           <VIcon
                             icon="mdi-close-circle-outline"
@@ -1131,7 +1676,7 @@ onMounted(async () => {
         max-width="1100"
         scrollable
       >
-        <VCard rounded="xl">
+        <VCard rounded="lg">
           <!-- Header -->
           <VCardItem class="px-6 py-5">
             <template #prepend>
@@ -1593,6 +2138,94 @@ onMounted(async () => {
         </VCard>
       </VDialog>
 
+      <VDialog
+        v-model="rejectVendorDialog"
+        max-width="560"
+        persistent
+      >
+        <VCard>
+          <VCardTitle class="d-flex align-center gap-2">
+            <VIcon
+              icon="mdi-close-circle-outline"
+              color="error"
+            />
+
+            Reject Master Vendor
+          </VCardTitle>
+
+          <VDivider />
+
+          <VCardText>
+            <p class="text-body-2 mb-4">
+              Anda akan menolak Vendor:
+              <strong>
+                {{ rejectVendorTarget?.nama_vendor || '-' }}
+              </strong>
+            </p>
+
+            <VTextarea
+              v-model="rejectVendorNotes"
+              label="Catatan reject *"
+              placeholder="Masukkan alasan penolakan Vendor"
+              rows="4"
+              auto-grow
+              clearable
+              counter="2000"
+              maxlength="2000"
+              :disabled="rejectVendorLoading"
+              :error="
+                rejectVendorSubmitted
+                  && !rejectVendorNotes.trim()
+              "
+              :error-messages="
+                rejectVendorSubmitted
+                  && !rejectVendorNotes.trim()
+                    ? ['Catatan penolakan wajib diisi']
+                    : []
+              "
+            />
+
+            <div class="text-caption text-medium-emphasis mt-2">
+              Catatan wajib diisi agar pembuat Vendor mengetahui alasan
+              penolakan.
+            </div>
+          </VCardText>
+
+          <VDivider />
+
+          <VCardActions>
+            <VSpacer />
+
+            <VBtn
+              variant="tonal"
+              color="secondary"
+              :disabled="rejectVendorLoading"
+              @click="closeRejectVendorDialog"
+            >
+              Batal
+            </VBtn>
+
+            <VBtn
+              color="error"
+              :loading="rejectVendorLoading"
+              :disabled="
+                rejectVendorLoading
+                  || !rejectVendorNotes.trim()
+              "
+              @click="confirmRejectVendor"
+            >
+              Simpan Catatan
+            </VBtn>
+          </VCardActions>
+        </VCard>
+      </VDialog>
+
+      <ApprovalHistoryDialog
+        v-model="isApprovalHistoryDialogOpen"
+        :vendor-label="selectedVendorLabel"
+        :approvals="selectedApprovalHistory"
+      />
+
     <!-- Snackbar -->
     <VSnackbar
       v-model="snackbar"
@@ -1669,6 +2302,14 @@ onMounted(async () => {
     border-top: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
     margin-top: 16px;
     padding-top: 20px;
+  }
+}
+
+.vendor-row-need-approval {
+  background: rgba(var(--v-theme-warning), 0.055);
+
+  &:hover {
+    background: rgba(var(--v-theme-warning), 0.09);
   }
 }
 </style>

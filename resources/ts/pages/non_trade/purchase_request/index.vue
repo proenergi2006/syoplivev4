@@ -1449,7 +1449,7 @@ onBeforeUnmount(() => {
                     >
                       <template #prepend>
                         <VIcon
-                          icon="tabler-git-merge"
+                          icon="tabler-history"
                           :size="20"
                           class="me-3"
                         />

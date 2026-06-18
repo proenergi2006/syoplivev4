@@ -1018,8 +1018,7 @@ onBeforeUnmount(() => {
     <!-- Table -->
     <VCard>
       <VCardText class="d-flex flex-wrap gap-4 align-center">
-        <VBtn color="primary" @click="goToCreate" class="text-none" v-if="canCreate">
-          + Tambah Purchase Order
+        <VBtn color="primary" @click="goToCreate" class="text-none" v-if="canCreate" prepend-icon="tabler-plus"> Tambah Purchase Order
         </VBtn>
 
         <VSpacer />
@@ -1154,7 +1153,7 @@ onBeforeUnmount(() => {
 
                     <VListItem @click="openApprovalHistory(v)">
                       <template #prepend>
-                        <VIcon icon="tabler-git-merge" :size="20" class="me-3" />
+                        <VIcon icon="tabler-history" :size="20" class="me-3" />
                       </template>
 
                       <VListItemTitle>History Approval</VListItemTitle>
@@ -1701,7 +1700,7 @@ onBeforeUnmount(() => {
                     class="summary-total-box"
                   >
                     <VCardText class="py-3 px-4">
-                      <template v-if="String(detailPurchaseOrder.status_pkp).toUpperCase() === 'PKP'">
+                      <template v-if="String(detailPurchaseOrder.vendor_data?.status_pkp).toUpperCase() === 'PKP'">
                         <div class="summary-row">
                           <span>Subtotal</span>
                           <strong>Rp {{ formatNumberWithoutRp(calcPOTotal(detailPurchaseOrder.items)) }}</strong>
@@ -2000,7 +1999,7 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 50px;
   margin-block: 6px;
-  font-size: large;
+  font-size: medium;
   color: rgba(var(--v-theme-on-surface), 0.72);
 }
 

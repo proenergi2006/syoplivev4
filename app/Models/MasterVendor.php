@@ -44,6 +44,9 @@ class MasterVendor extends Model
         'top',
         'id_department',
 
+        'created_by',
+        'updated_by',
+
         'submitted_at',
         'submitted_by'
     ];

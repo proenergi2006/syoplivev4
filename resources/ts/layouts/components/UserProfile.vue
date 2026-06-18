@@ -5,11 +5,15 @@ import axios from '@axios'
 import { initialAbility } from '@/plugins/casl/ability'
 import { useAppAbility } from '@/plugins/casl/useAppAbility'
 import { showConfirmAlert, showErrorToast, showLoadingAlert, closeAlert } from '@/utils/alert'
+import { usePermissionStore } from '@/stores/permission'
+import { useNavigationStore } from '@/stores/navigation'
 
 const router = useRouter()
 const ability = useAppAbility()
 
 const logoutLoading = ref(false)
+const permissionStore = usePermissionStore()
+const navigationStore = useNavigationStore()
 
 const userData = computed(() => {
   try {
@@ -39,16 +43,46 @@ const avatarUrl = computed(() => {
 })
 
 const clearAuthStorageAndRedirect = async (): Promise<void> => {
-  localStorage.removeItem('userData')
-  localStorage.removeItem('accessToken')
-  localStorage.removeItem('userAbilities')
-  localStorage.removeItem('navItems')
+  /*
+  |--------------------------------------------------------------------------
+  | Kosongkan menu dari memory dan localStorage
+  |--------------------------------------------------------------------------
+  */
+  navigationStore.clearNavigation()
+
+  /*
+  |--------------------------------------------------------------------------
+  | Bersihkan state permission jika ada
+  |--------------------------------------------------------------------------
+  */
+  try {
+    permissionStore.$reset()
+  }
+  catch (error) {
+    console.warn('Gagal reset permission store:', error)
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Hapus data sesi akun lama
+  |--------------------------------------------------------------------------
+  */
+  const keysToRemove = [
+    'accessToken',
+    'token',
+    'userData',
+    'userAbilities',
+    'navItems',
+  ]
+
+  keysToRemove.forEach(key => {
+    localStorage.removeItem(key)
+    sessionStorage.removeItem(key)
+  })
 
   delete axios.defaults.headers.common.Authorization
 
-  ability.update(initialAbility)
-
-  await router.push('/login')
+  await router.replace('/login')
 }
 
 const logout = async (): Promise<void> => {

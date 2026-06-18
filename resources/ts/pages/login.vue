@@ -206,10 +206,10 @@ const onSubmit = () => {
                   />
 
                   <div class="d-flex align-center justify-space-between mt-1 mb-4">
-                    <VCheckbox
+                    <!-- <VCheckbox
                       v-model="rememberMe"
                       label="Remember me"
-                    />
+                    /> -->
                   </div>
 
                   <VBtn
