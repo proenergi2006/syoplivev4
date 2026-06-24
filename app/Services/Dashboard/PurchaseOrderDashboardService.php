@@ -5,10 +5,13 @@ namespace App\Services\Dashboard;
 use App\Models\GoodsReceive;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseRequest;
+use App\Models\User;
 use Carbon\CarbonImmutable;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use InvalidArgumentException;
 
 class PurchaseOrderDashboardService
@@ -49,6 +52,18 @@ class PurchaseOrderDashboardService
             );
 
         $trend = $this->getTrend(
+            filters: $filters,
+            startDate: $startDate,
+            endDate: $endDate,
+        );
+
+        $breakdownByCabang = $this->getBreakdownByCabang(
+            filters: $filters,
+            startDate: $startDate,
+            endDate: $endDate,
+        );
+
+        $breakdownByDepartment = $this->getBreakdownByDepartment(
             filters: $filters,
             startDate: $startDate,
             endDate: $endDate,
@@ -163,6 +178,158 @@ class PurchaseOrderDashboardService
             ],
 
             'attention_items' => [],
+
+            'breakdown' => [
+                'by_cabang' => $breakdownByCabang,
+                'by_department' => $breakdownByDepartment,
+            ],
+        ];
+    }
+
+    /**
+     * Menentukan akses dan filter efektif berdasarkan scope permission.
+     *
+     * Filter dari frontend tidak langsung dipercaya.
+     * Untuk scope terbatas, backend akan menimpa filter menggunakan
+     * cabang dan departemen user login.
+     *
+     * @throws AuthorizationException
+     * @throws ValidationException
+     */
+    public function resolveAccessAndFilters(
+        User $user,
+        array $filters,
+    ): array {
+        $scope = $user->getPermissionScope(
+            'dashboard.po.view',
+        );
+
+        $user->loadMissing([
+            'cabang:id,nama_cabang',
+            'departemen:id,nama',
+        ]);
+
+        $userCabangId = $user->cabang_id !== null
+            ? (int) $user->cabang_id
+            : null;
+
+        $userDepartmentId = $user->departemen_id !== null
+            ? (int) $user->departemen_id
+            : null;
+
+        $effectiveFilters = $filters;
+
+        $canFilterCabang = false;
+        $canFilterDepartment = false;
+
+        switch ($scope) {
+            case 'ALL':
+                /*
+             * User boleh memilih semua cabang
+             * dan semua departemen.
+             */
+                $canFilterCabang = true;
+                $canFilterDepartment = true;
+
+                break;
+
+            case 'OWN_DEPARTMENT':
+                /*
+             * Departemen selalu mengikuti user login.
+             * Cabang masih dapat dipilih.
+             */
+                if ($userDepartmentId === null) {
+                    throw ValidationException::withMessages([
+                        'department_id' => [
+                            'Departemen user belum ditentukan.',
+                        ],
+                    ]);
+                }
+
+                $effectiveFilters['department_id']
+                    = $userDepartmentId;
+
+                $canFilterCabang = true;
+                $canFilterDepartment = false;
+
+                break;
+
+            case 'OWN_CABANG':
+                /*
+             * Sesuai konsep dashboard:
+             * cabang dan departemen sama-sama mengikuti user login.
+             */
+                if ($userCabangId === null) {
+                    throw ValidationException::withMessages([
+                        'cabang_id' => [
+                            'Cabang user belum ditentukan.',
+                        ],
+                    ]);
+                }
+
+                if ($userDepartmentId === null) {
+                    throw ValidationException::withMessages([
+                        'department_id' => [
+                            'Departemen user belum ditentukan.',
+                        ],
+                    ]);
+                }
+
+                $effectiveFilters['cabang_id']
+                    = $userCabangId;
+
+                $effectiveFilters['department_id']
+                    = $userDepartmentId;
+
+                $canFilterCabang = false;
+                $canFilterDepartment = false;
+
+                break;
+
+            default:
+                throw new AuthorizationException(
+                    'Scope permission tidak mengizinkan akses ke dashboard management.',
+                );
+        }
+
+        return [
+            'filters' => $effectiveFilters,
+
+            'access' => [
+                'scope_view' => $scope,
+
+                'cabang_id' => isset(
+                    $effectiveFilters['cabang_id'],
+                )
+                    ? (int) $effectiveFilters['cabang_id']
+                    : null,
+
+                'cabang_name' => $scope === 'OWN_CABANG'
+                    ? $user->cabang?->nama_cabang
+                    : null,
+
+                'department_id' => isset(
+                    $effectiveFilters['department_id'],
+                )
+                    ? (int) $effectiveFilters['department_id']
+                    : null,
+
+                'department_name' => in_array(
+                    $scope,
+                    [
+                        'OWN_CABANG',
+                        'OWN_DEPARTMENT',
+                    ],
+                    true,
+                )
+                    ? $user->departemen?->nama
+                    : null,
+
+                'can_filter_cabang' => $canFilterCabang,
+
+                'can_filter_department'
+                => $canFilterDepartment,
+            ],
         ];
     }
 
@@ -782,6 +949,358 @@ class PurchaseOrderDashboardService
                 $month,
             ),
         };
+    }
+
+    /**
+     * Breakdown jumlah dan nilai PR/PO per cabang.
+     *
+     * Hanya menjalankan satu query database:
+     * - agregasi PR per cabang
+     * - UNION ALL
+     * - agregasi PO per cabang
+     * - digabung kembali berdasarkan cabang
+     */
+    private function getBreakdownByCabang(
+        array $filters,
+        CarbonImmutable $startDate,
+        CarbonImmutable $endDate,
+    ): array {
+        $purchaseRequestQuery = PurchaseRequest::query();
+
+        $this->applyPurchaseRequestFilters(
+            query: $purchaseRequestQuery,
+            filters: $filters,
+            startDate: $startDate,
+            endDate: $endDate,
+        );
+
+        $purchaseRequestQuery
+            ->selectRaw(
+                "
+        CASE
+            WHEN TRIM(
+                purchase_requests.cabang::text
+            ) ~ '^[0-9]+$'
+            THEN TRIM(
+                purchase_requests.cabang::text
+            )::bigint
+            ELSE NULL
+        END AS dimension_id,
+
+        COUNT(purchase_requests.id)
+            AS pr_count,
+
+        COALESCE(
+            SUM(purchase_requests.total_amount),
+            0
+        ) AS pr_amount,
+
+        0 AS po_count,
+        0 AS po_amount
+        ",
+            )
+            ->groupBy('purchase_requests.cabang');
+
+        $purchaseOrderQuery = PurchaseOrder::query();
+
+        $this->applyPurchaseOrderFilters(
+            query: $purchaseOrderQuery,
+            filters: $filters,
+            startDate: $startDate,
+            endDate: $endDate,
+        );
+
+        $purchaseOrderQuery
+            ->selectRaw(
+                "
+        CASE
+            WHEN TRIM(
+                purchase_orders.cabang::text
+            ) ~ '^[0-9]+$'
+            THEN TRIM(
+                purchase_orders.cabang::text
+            )::bigint
+            ELSE NULL
+        END AS dimension_id,
+
+        0 AS pr_count,
+        0 AS pr_amount,
+
+        COUNT(purchase_orders.id)
+            AS po_count,
+
+        COALESCE(
+            SUM(purchase_orders.total_nilai),
+            0
+        ) AS po_amount
+        ",
+            )
+            ->groupBy('purchase_orders.cabang');
+
+        $unionQuery = $purchaseRequestQuery
+            ->toBase()
+            ->unionAll(
+                $purchaseOrderQuery->toBase(),
+            );
+
+        $rows = DB::query()
+            ->fromSub(
+                $unionQuery,
+                'cabang_breakdown_rows',
+            )
+            ->leftJoin(
+                'cabang',
+                'cabang.id',
+                '=',
+                'cabang_breakdown_rows.dimension_id',
+            )
+            ->selectRaw(
+                "
+            cabang_breakdown_rows.dimension_id AS id,
+
+            COALESCE(
+                cabang.nama_cabang,
+                'Belum Ditentukan'
+            ) AS name,
+
+            COALESCE(
+                SUM(cabang_breakdown_rows.pr_count),
+                0
+            ) AS pr_count,
+
+            COALESCE(
+                SUM(cabang_breakdown_rows.pr_amount),
+                0
+            ) AS pr_amount,
+
+            COALESCE(
+                SUM(cabang_breakdown_rows.po_count),
+                0
+            ) AS po_count,
+
+            COALESCE(
+                SUM(cabang_breakdown_rows.po_amount),
+                0
+            ) AS po_amount
+            ",
+            )
+            ->groupBy(
+                'cabang_breakdown_rows.dimension_id',
+                'cabang.nama_cabang',
+            )
+            ->orderByRaw(
+                '
+            (
+                COALESCE(
+                    SUM(cabang_breakdown_rows.pr_amount),
+                    0
+                )
+                +
+                COALESCE(
+                    SUM(cabang_breakdown_rows.po_amount),
+                    0
+                )
+            ) DESC
+            ',
+            )
+            ->get();
+
+        return $rows
+            ->map(function ($row): array {
+                return [
+                    'id' => $row->id !== null
+                        ? (int) $row->id
+                        : null,
+
+                    'name' => (string) $row->name,
+
+                    'pr_count' => (int) (
+                        $row->pr_count ?? 0
+                    ),
+
+                    'pr_amount' => (float) (
+                        $row->pr_amount ?? 0
+                    ),
+
+                    'po_count' => (int) (
+                        $row->po_count ?? 0
+                    ),
+
+                    'po_amount' => (float) (
+                        $row->po_amount ?? 0
+                    ),
+                ];
+            })
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Breakdown jumlah dan nilai PR/PO per departemen.
+     */
+    private function getBreakdownByDepartment(
+        array $filters,
+        CarbonImmutable $startDate,
+        CarbonImmutable $endDate,
+    ): array {
+        $purchaseRequestQuery = PurchaseRequest::query();
+
+        $this->applyPurchaseRequestFilters(
+            query: $purchaseRequestQuery,
+            filters: $filters,
+            startDate: $startDate,
+            endDate: $endDate,
+        );
+
+        $purchaseRequestQuery
+            ->selectRaw(
+                '
+            purchase_requests.id_department
+                AS dimension_id,
+
+            COUNT(purchase_requests.id)
+                AS pr_count,
+
+            COALESCE(
+                SUM(purchase_requests.total_amount),
+                0
+            ) AS pr_amount,
+
+            0 AS po_count,
+            0 AS po_amount
+            ',
+            )
+            ->groupBy(
+                'purchase_requests.id_department',
+            );
+
+        $purchaseOrderQuery = PurchaseOrder::query();
+
+        $this->applyPurchaseOrderFilters(
+            query: $purchaseOrderQuery,
+            filters: $filters,
+            startDate: $startDate,
+            endDate: $endDate,
+        );
+
+        $purchaseOrderQuery
+            ->selectRaw(
+                '
+            purchase_orders.id_department
+                AS dimension_id,
+
+            0 AS pr_count,
+            0 AS pr_amount,
+
+            COUNT(purchase_orders.id)
+                AS po_count,
+
+            COALESCE(
+                SUM(purchase_orders.total_nilai),
+                0
+            ) AS po_amount
+            ',
+            )
+            ->groupBy(
+                'purchase_orders.id_department',
+            );
+
+        $unionQuery = $purchaseRequestQuery
+            ->toBase()
+            ->unionAll(
+                $purchaseOrderQuery->toBase(),
+            );
+
+        $rows = DB::query()
+            ->fromSub(
+                $unionQuery,
+                'department_breakdown_rows',
+            )
+            ->leftJoin(
+                'departments',
+                'departments.id',
+                '=',
+                'department_breakdown_rows.dimension_id',
+            )
+            ->selectRaw(
+                "
+            department_breakdown_rows.dimension_id AS id,
+
+            COALESCE(
+                departments.nama,
+                'Belum Ditentukan'
+            ) AS name,
+
+            COALESCE(
+                SUM(department_breakdown_rows.pr_count),
+                0
+            ) AS pr_count,
+
+            COALESCE(
+                SUM(department_breakdown_rows.pr_amount),
+                0
+            ) AS pr_amount,
+
+            COALESCE(
+                SUM(department_breakdown_rows.po_count),
+                0
+            ) AS po_count,
+
+            COALESCE(
+                SUM(department_breakdown_rows.po_amount),
+                0
+            ) AS po_amount
+            ",
+            )
+            ->groupBy(
+                'department_breakdown_rows.dimension_id',
+                'departments.nama',
+            )
+            ->orderByRaw(
+                '
+            (
+                COALESCE(
+                    SUM(department_breakdown_rows.pr_amount),
+                    0
+                )
+                +
+                COALESCE(
+                    SUM(department_breakdown_rows.po_amount),
+                    0
+                )
+            ) DESC
+            ',
+            )
+            ->get();
+
+        return $rows
+            ->map(function ($row): array {
+                return [
+                    'id' => $row->id !== null
+                        ? (int) $row->id
+                        : null,
+
+                    'name' => (string) $row->name,
+
+                    'pr_count' => (int) (
+                        $row->pr_count ?? 0
+                    ),
+
+                    'pr_amount' => (float) (
+                        $row->pr_amount ?? 0
+                    ),
+
+                    'po_count' => (int) (
+                        $row->po_count ?? 0
+                    ),
+
+                    'po_amount' => (float) (
+                        $row->po_amount ?? 0
+                    ),
+                ];
+            })
+            ->values()
+            ->all();
     }
 
     /**

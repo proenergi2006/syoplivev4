@@ -18,29 +18,14 @@ class PurchaseOrderDashboardController extends Controller
     {
         $user = $request->user();
 
-        /*
-         * Project menggunakan permission custom, bukan Spatie.
-         */
-        if (!$user->hasPermission('dashboard.po.view')) {
+        if (
+            !$user->hasPermission(
+                'dashboard.po.view',
+            )
+        ) {
             abort(
                 403,
                 'Anda tidak memiliki akses ke dashboard Purchase Order.',
-            );
-        }
-
-        $scope = $user->getPermissionScope(
-            'dashboard.po.view',
-        );
-
-        /*
-         * Dashboard management saat ini ditujukan untuk scope ALL.
-         * Scope lain dapat kita implementasikan setelah struktur User
-         * dan field cabang/departemen user dikonfirmasi.
-         */
-        if ($scope !== 'ALL') {
-            abort(
-                403,
-                'Dashboard Purchase Order management memerlukan scope ALL.',
             );
         }
 
@@ -95,48 +80,68 @@ class PurchaseOrderDashboardController extends Controller
                 'after_or_equal:start_date',
             ],
 
-            /*
-             * Untuk sementara divalidasi sebagai integer.
-             * Validasi exists dapat ditambahkan setelah nama tabel
-             * Cabang dan Department dipastikan.
-             */
             'cabang_id' => [
                 'nullable',
                 'integer',
-                'min:1',
+                'exists:cabang,id',
             ],
 
             'department_id' => [
                 'nullable',
                 'integer',
-                'min:1',
+                'exists:departments,id',
             ],
         ]);
 
-        $dashboard = $this->dashboardService->getDashboard(
-            $validated,
-        );
+        /*
+         * Menentukan filter efektif berdasarkan scope.
+         *
+         * OWN_CABANG dan OWN_DEPARTMENT akan menimpa
+         * filter tertentu dengan data user login.
+         */
+        $resolvedAccess
+            = $this->dashboardService
+            ->resolveAccessAndFilters(
+                user: $user,
+                filters: $validated,
+            );
+
+        $dashboard
+            = $this->dashboardService
+            ->getDashboard(
+                $resolvedAccess['filters'],
+            );
 
         return response()->json([
-            'message' => 'Purchase Order dashboard retrieved successfully.',
+            'message'
+            => 'Purchase Order dashboard retrieved successfully.',
 
             'data' => [
-                'access' => [
-                    'scope_view' => $scope,
-                    'can_filter_cabang' => true,
-                    'can_filter_department' => true,
-                ],
+                'access'
+                => $resolvedAccess['access'],
 
-                'filters' => $dashboard['filters'],
+                'filters'
+                => $dashboard['filters'],
 
-                'summary' => $dashboard['summary'],
+                'summary'
+                => $dashboard['summary'],
 
-                'trend' => $dashboard['trend'] ?? [],
+                'trend'
+                => $dashboard['trend'] ?? [],
 
-                'statuses' => $dashboard['statuses'] ?? [],
+                'statuses'
+                => $dashboard['statuses'] ?? [],
 
                 'attention_items'
                 => $dashboard['attention_items'] ?? [],
+
+                /*
+                 * Akan diisi pada tahap chart berikutnya.
+                 */
+                'breakdown' => $dashboard['breakdown'] ?? [
+                    'by_cabang' => [],
+                    'by_department' => [],
+                ],
             ],
         ]);
     }

@@ -21,6 +21,19 @@ type AlertType =
   | 'info'
   | 'error'
 
+type BreakdownMetric = 'count' | 'amount'
+
+interface DashboardBreakdownItem {
+  id: number | null
+  name: string
+
+  pr_count: number
+  pr_amount: number
+
+  po_count: number
+  po_amount: number
+}
+
 interface SelectOption {
   title: string
   value: number | string
@@ -44,6 +57,13 @@ interface OptionRecord {
 
 interface DashboardAccess {
   scope_view: string
+
+  cabang_id: number | null
+  cabang_name: string | null
+
+  department_id: number | null
+  department_name: string | null
+
   can_filter_cabang: boolean
   can_filter_department: boolean
 }
@@ -97,6 +117,10 @@ interface DashboardResponse {
     trend: DashboardTrend[]
     statuses: DashboardStatus[]
     attention_items: AttentionItem[]
+    breakdown: {
+      by_cabang: DashboardBreakdownItem[]
+      by_department: DashboardBreakdownItem[]
+    }
   }
 }
 
@@ -194,11 +218,85 @@ const errorMessage = ref('')
 const lastUpdatedAt = ref<Date | null>(null)
 const appliedPeriodLabel = ref('')
 
+const breakdownByCabang = ref<
+  DashboardBreakdownItem[]
+>([])
+
+const breakdownByDepartment = ref<
+  DashboardBreakdownItem[]
+>([])
+
+const cabangBreakdownMetric
+  = ref<BreakdownMetric>('amount')
+
+const departmentBreakdownMetric
+  = ref<BreakdownMetric>('amount')
+
+const breakdownMetricOptions = [
+  {
+    title: 'Nilai Transaksi',
+    value: 'amount',
+  },
+  {
+    title: 'Jumlah Dokumen',
+    value: 'count',
+  },
+]
+
 const access = ref<DashboardAccess>({
-  scope_view: 'ALL',
-  can_filter_cabang: true,
-  can_filter_department: true,
+  scope_view: 'NONE',
+
+  cabang_id: null,
+  cabang_name: null,
+
+  department_id: null,
+  department_name: null,
+
+  can_filter_cabang: false,
+  can_filter_department: false,
 })
+
+function synchronizeFiltersWithAccess(): void {
+  /*
+   * Cabang terkunci.
+   */
+  if (!access.value.can_filter_cabang) {
+    selectedCabangId.value
+      = access.value.cabang_id
+
+    if (
+      access.value.cabang_id
+      && access.value.cabang_name
+    ) {
+      cabangOptions.value = [
+        {
+          value: access.value.cabang_id,
+          title: access.value.cabang_name,
+        },
+      ]
+    }
+  }
+
+  /*
+   * Departemen terkunci.
+   */
+  if (!access.value.can_filter_department) {
+    selectedDepartmentId.value
+      = access.value.department_id
+
+    if (
+      access.value.department_id
+      && access.value.department_name
+    ) {
+      departmentOptions.value = [
+        {
+          value: access.value.department_id,
+          title: access.value.department_name,
+        },
+      ]
+    }
+  }
+}
 
 const summary = ref<DashboardSummary>({
   total_pr: 0,
@@ -431,6 +529,217 @@ const managementInsight = computed<ManagementInsight>(() => {
 | PR vs PO Comparison Chart
 |--------------------------------------------------------------------------
 */
+
+const cabangBreakdownSeries = computed(() => {
+  const useAmount
+    = cabangBreakdownMetric.value === 'amount'
+
+  return [
+    {
+      name: 'Purchase Requisition',
+      data: breakdownByCabang.value.map(item => {
+        return useAmount
+          ? Number(item.pr_amount ?? 0)
+          : Number(item.pr_count ?? 0)
+      }),
+    },
+    {
+      name: 'Purchase Order',
+      data: breakdownByCabang.value.map(item => {
+        return useAmount
+          ? Number(item.po_amount ?? 0)
+          : Number(item.po_count ?? 0)
+      }),
+    },
+  ]
+})
+
+const cabangBreakdownOptions = computed(() => {
+  const useAmount
+    = cabangBreakdownMetric.value === 'amount'
+
+  return {
+    chart: {
+      type: 'bar',
+      toolbar: {
+        show: false,
+      },
+      animations: {
+        enabled: true,
+        easing: 'easeinout',
+        speed: 650,
+        animateGradually: {
+          enabled: true,
+          delay: 80,
+        },
+      },
+    },
+
+    plotOptions: {
+      bar: {
+        horizontal: true,
+        barHeight: '58%',
+        borderRadius: 5,
+        borderRadiusApplication: 'end',
+      },
+    },
+
+    dataLabels: {
+      enabled: false,
+    },
+
+    xaxis: {
+      categories: breakdownByCabang.value.map(
+        item => item.name,
+      ),
+
+      labels: {
+        formatter: (value: number) => {
+          return useAmount
+            ? formatCompactCurrency(value)
+            : formatNumber(value)
+        },
+      },
+    },
+
+    tooltip: {
+      shared: true,
+      intersect: false,
+
+      y: {
+        formatter: (value: number) => {
+          return useAmount
+            ? formatCurrency(value)
+            : `${formatNumber(value)} dokumen`
+        },
+      },
+    },
+
+    legend: {
+      position: 'top',
+      horizontalAlign: 'right',
+    },
+
+    grid: {
+      borderColor:
+        'rgba(var(--v-border-color), 0.22)',
+      strokeDashArray: 4,
+    },
+  }
+})
+
+const cabangBreakdownChartHeight = computed(() => {
+  return Math.max(
+    320,
+    breakdownByCabang.value.length * 56,
+  )
+})
+
+const departmentBreakdownSeries = computed(() => {
+  const useAmount
+    = departmentBreakdownMetric.value === 'amount'
+
+  return [
+    {
+      name: 'Purchase Requisition',
+      data: breakdownByDepartment.value.map(item => {
+        return useAmount
+          ? Number(item.pr_amount ?? 0)
+          : Number(item.pr_count ?? 0)
+      }),
+    },
+    {
+      name: 'Purchase Order',
+      data: breakdownByDepartment.value.map(item => {
+        return useAmount
+          ? Number(item.po_amount ?? 0)
+          : Number(item.po_count ?? 0)
+      }),
+    },
+  ]
+})
+
+const departmentBreakdownOptions = computed(() => {
+  const useAmount
+    = departmentBreakdownMetric.value === 'amount'
+
+  return {
+    chart: {
+      type: 'bar',
+      toolbar: {
+        show: false,
+      },
+      animations: {
+        enabled: true,
+        easing: 'easeinout',
+        speed: 650,
+        animateGradually: {
+          enabled: true,
+          delay: 80,
+        },
+      },
+    },
+
+    plotOptions: {
+      bar: {
+        horizontal: true,
+        barHeight: '58%',
+        borderRadius: 5,
+        borderRadiusApplication: 'end',
+      },
+    },
+
+    dataLabels: {
+      enabled: false,
+    },
+
+    xaxis: {
+      categories:
+        breakdownByDepartment.value.map(
+          item => item.name,
+        ),
+
+      labels: {
+        formatter: (value: number) => {
+          return useAmount
+            ? formatCompactCurrency(value)
+            : formatNumber(value)
+        },
+      },
+    },
+
+    tooltip: {
+      shared: true,
+      intersect: false,
+
+      y: {
+        formatter: (value: number) => {
+          return useAmount
+            ? formatCurrency(value)
+            : `${formatNumber(value)} dokumen`
+        },
+      },
+    },
+
+    legend: {
+      position: 'top',
+      horizontalAlign: 'right',
+    },
+
+    grid: {
+      borderColor:
+        'rgba(var(--v-border-color), 0.22)',
+      strokeDashArray: 4,
+    },
+  }
+})
+
+const departmentBreakdownChartHeight = computed(() => {
+  return Math.max(
+    320,
+    breakdownByDepartment.value.length * 56,
+  )
+})
 
 const comparisonChartSeries = computed(() => [
   {
@@ -1026,6 +1335,10 @@ async function fetchFilterOptions(): Promise<void> {
   isLoadingOptions.value = true
 
   try {
+    /*
+     * Scope ALL atau OWN_DEPARTMENT:
+     * cabang dapat dipilih.
+     */
     if (access.value.can_filter_cabang) {
       const cabangResponse = await axios.get(
         '/master/cabang/options',
@@ -1036,16 +1349,45 @@ async function fetchFilterOptions(): Promise<void> {
         'cabang',
       )
     }
+    else if (
+      access.value.cabang_id
+      && access.value.cabang_name
+    ) {
+      cabangOptions.value = [
+        {
+          value: access.value.cabang_id,
+          title: access.value.cabang_name,
+        },
+      ]
+    }
 
-    if (access.value.can_filter_department) {
+    /*
+     * Hanya scope ALL yang dapat memilih departemen.
+     */
+    if (
+      access.value.can_filter_department
+    ) {
       const departmentResponse = await axios.get(
         '/master/department/dropdown-select',
       )
 
       departmentOptions.value = normalizeOptions(
-        extractArray(departmentResponse.data),
+        extractArray(
+          departmentResponse.data,
+        ),
         'department',
       )
+    }
+    else if (
+      access.value.department_id
+      && access.value.department_name
+    ) {
+      departmentOptions.value = [
+        {
+          value: access.value.department_id,
+          title: access.value.department_name,
+        },
+      ]
     }
   }
   catch (error) {
@@ -1053,9 +1395,6 @@ async function fetchFilterOptions(): Promise<void> {
       'Failed to load dashboard filter options:',
       error,
     )
-
-    cabangOptions.value = []
-    departmentOptions.value = []
   }
   finally {
     isLoadingOptions.value = false
@@ -1139,6 +1478,8 @@ async function fetchDashboard(): Promise<void> {
 
     access.value = data.access
 
+    synchronizeFiltersWithAccess()
+
     summary.value = {
       total_pr: Number(
         data.summary.total_pr ?? 0,
@@ -1186,6 +1527,12 @@ async function fetchDashboard(): Promise<void> {
 
     attentionItems.value =
       data.attention_items ?? []
+
+    breakdownByCabang.value =
+        data.breakdown?.by_cabang ?? []
+
+    breakdownByDepartment.value =
+      data.breakdown?.by_department ?? []
 
     appliedPeriodLabel.value =
       selectedPeriodDescription.value
@@ -1441,32 +1788,44 @@ onMounted(async () => {
           </template>
 
           <VSelect
-            v-if="showCabangFilter"
             v-model="selectedCabangId"
             :items="cabangOptions"
             item-title="title"
             item-value="value"
-            label="Semua Cabang"
+            :label="
+              access.can_filter_cabang
+                ? 'Semua Cabang'
+                : 'Cabang'
+            "
             prepend-inner-icon="mdi-office-building-outline"
             variant="outlined"
             density="comfortable"
-            clearable
             hide-details
+            :readonly="!access.can_filter_cabang"
+            :clearable="access.can_filter_cabang"
             :loading="isLoadingOptions"
           />
 
           <VSelect
-            v-if="showDepartmentFilter"
             v-model="selectedDepartmentId"
             :items="departmentOptions"
             item-title="title"
             item-value="value"
-            label="Semua Departemen"
+            :label="
+              access.can_filter_department
+                ? 'Semua Departemen'
+                : 'Departemen'
+            "
             prepend-inner-icon="mdi-account-group-outline"
             variant="outlined"
             density="comfortable"
-            clearable
             hide-details
+            :readonly="
+              !access.can_filter_department
+            "
+            :clearable="
+              access.can_filter_department
+            "
             :loading="isLoadingOptions"
           />
         </div>
@@ -1761,6 +2120,141 @@ onMounted(async () => {
 
               <div class="font-weight-medium">
                 Belum ada data tren
+              </div>
+            </div>
+          </VCardText>
+        </VCard>
+      </VCol>
+    </VRow>
+
+    <!-- Breakdown Cabang dan Departemen -->
+    <VRow class="match-height mb-2">
+      <VCol
+        cols="12"
+        lg="6"
+      >
+        <VCard class="dashboard-card h-100">
+          <VCardItem>
+            <VCardTitle>
+              Analisis PR dan PO per Cabang
+            </VCardTitle>
+
+            <VCardSubtitle>
+              Perbandingan kebutuhan dan realisasi
+              berdasarkan cabang
+            </VCardSubtitle>
+
+            <template #append>
+              <VSelect
+                v-model="cabangBreakdownMetric"
+                :items="breakdownMetricOptions"
+                item-title="title"
+                item-value="value"
+                density="compact"
+                variant="outlined"
+                hide-details
+                style="min-inline-size: 170px;"
+              />
+            </template>
+          </VCardItem>
+
+          <VCardText>
+            <div
+              v-if="breakdownByCabang.length"
+              class="breakdown-chart-scroll"
+            >
+              <VueApexCharts
+                type="bar"
+                :height="cabangBreakdownChartHeight"
+                :options="cabangBreakdownOptions"
+                :series="cabangBreakdownSeries"
+              />
+            </div>
+
+            <div
+              v-else
+              class="empty-state"
+            >
+              <VAvatar
+                color="secondary"
+                variant="tonal"
+                size="60"
+                class="mb-3"
+              >
+                <VIcon
+                  icon="mdi-office-building-outline"
+                  size="31"
+                />
+              </VAvatar>
+
+              <div class="font-weight-medium">
+                Belum ada data per cabang
+              </div>
+            </div>
+          </VCardText>
+        </VCard>
+      </VCol>
+
+      <VCol
+        cols="12"
+        lg="6"
+      >
+        <VCard class="dashboard-card h-100">
+          <VCardItem>
+            <VCardTitle>
+              Analisis PR dan PO per Departemen
+            </VCardTitle>
+
+            <VCardSubtitle>
+              Perbandingan kebutuhan dan realisasi
+              berdasarkan departemen
+            </VCardSubtitle>
+
+            <template #append>
+              <VSelect
+                v-model="departmentBreakdownMetric"
+                :items="breakdownMetricOptions"
+                item-title="title"
+                item-value="value"
+                density="compact"
+                variant="outlined"
+                hide-details
+                style="min-inline-size: 170px;"
+              />
+            </template>
+          </VCardItem>
+
+          <VCardText>
+            <div
+              v-if="breakdownByDepartment.length"
+              class="breakdown-chart-scroll"
+            >
+              <VueApexCharts
+                type="bar"
+                :height="departmentBreakdownChartHeight"
+                :options="departmentBreakdownOptions"
+                :series="departmentBreakdownSeries"
+              />
+            </div>
+
+            <div
+              v-else
+              class="empty-state"
+            >
+              <VAvatar
+                color="secondary"
+                variant="tonal"
+                size="60"
+                class="mb-3"
+              >
+                <VIcon
+                  icon="mdi-account-group-outline"
+                  size="31"
+                />
+              </VAvatar>
+
+              <div class="font-weight-medium">
+                Belum ada data per departemen
               </div>
             </div>
           </VCardText>
@@ -2121,5 +2615,23 @@ onMounted(async () => {
   .statistic-card {
     transition: none;
   }
+}
+
+.breakdown-chart-scroll {
+  overflow-y: auto;
+  max-block-size: 620px;
+  padding-inline-end: 4px;
+}
+
+.breakdown-chart-scroll::-webkit-scrollbar {
+  inline-size: 6px;
+}
+
+.breakdown-chart-scroll::-webkit-scrollbar-thumb {
+  border-radius: 10px;
+  background-color: rgba(
+    var(--v-theme-on-surface),
+    0.16
+  );
 }
 </style>
