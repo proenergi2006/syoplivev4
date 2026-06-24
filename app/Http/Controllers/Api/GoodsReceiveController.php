@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Http\JsonResponse;
 
 class GoodsReceiveController extends Controller
 {
@@ -65,6 +66,10 @@ class GoodsReceiveController extends Controller
                 'goods_receive.delete',
             );
 
+            $canViewReturnHistory = $user->hasPermission(
+                'goods_return.view',
+            );
+
             /*
         |--------------------------------------------------------------------------
         | Normalisasi scope
@@ -105,10 +110,10 @@ class GoodsReceiveController extends Controller
             $query = GoodsReceive::query()
                 ->with([
                     /*
-                |--------------------------------------------------------------------------
-                | Department dan cabang berasal dari Purchase Order
-                |--------------------------------------------------------------------------
-                */
+                    |--------------------------------------------------------------------------
+                    | Department dan cabang berasal dari Purchase Order
+                    |--------------------------------------------------------------------------
+                    */
                     'purchaseOrder:id,nomor_po,cabang,id_department',
 
                     'purchaseOrder.cabangData:id,nama_cabang,inisial_cabang',
@@ -120,6 +125,51 @@ class GoodsReceiveController extends Controller
                     'vendor:id,nama_vendor',
 
                     'creator:id,name',
+                ])->withCount([
+                    /*
+                |--------------------------------------------------------------------------
+                | Seluruh Goods Return
+                |--------------------------------------------------------------------------
+                | Soft-deleted Return otomatis tidak dihitung.
+                | DRAFT, POSTED, dan CANCELLED tetap menjadi history.
+                |--------------------------------------------------------------------------
+                */
+                    'goodsReturns as goods_return_count',
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Count berdasarkan status
+                |--------------------------------------------------------------------------
+                */
+                    'goodsReturns as goods_return_draft_count'
+                    => function ($returnQuery) {
+                        $returnQuery->whereRaw(
+                            'UPPER(TRIM(goods_returns.status)) = ?',
+                            [
+                                GoodsReturn::STATUS_DRAFT,
+                            ],
+                        );
+                    },
+
+                    'goodsReturns as goods_return_posted_count'
+                    => function ($returnQuery) {
+                        $returnQuery->whereRaw(
+                            'UPPER(TRIM(goods_returns.status)) = ?',
+                            [
+                                GoodsReturn::STATUS_POSTED,
+                            ],
+                        );
+                    },
+
+                    'goodsReturns as goods_return_cancelled_count'
+                    => function ($returnQuery) {
+                        $returnQuery->whereRaw(
+                            'UPPER(TRIM(goods_returns.status)) = ?',
+                            [
+                                GoodsReturn::STATUS_CANCELLED,
+                            ],
+                        );
+                    },
                 ]);
 
             /*
@@ -357,6 +407,7 @@ class GoodsReceiveController extends Controller
                     $user,
                     $canUpdate,
                     $canDelete,
+                    $canViewReturnHistory,
                 ) {
                     /*
                 |--------------------------------------------------------------------------
@@ -443,6 +494,48 @@ class GoodsReceiveController extends Controller
 
                         'status' => $gr->status,
 
+                        /*
+                    |--------------------------------------------------------------------------
+                    | History Goods Return
+                    |--------------------------------------------------------------------------
+                    */
+                        'goods_return_count'
+                        => (int) (
+                            $gr->goods_return_count
+                            ?? 0
+                        ),
+
+                        'goods_return_draft_count'
+                        => (int) (
+                            $gr->goods_return_draft_count
+                            ?? 0
+                        ),
+
+                        'goods_return_posted_count'
+                        => (int) (
+                            $gr->goods_return_posted_count
+                            ?? 0
+                        ),
+
+                        'goods_return_cancelled_count'
+                        => (int) (
+                            $gr->goods_return_cancelled_count
+                            ?? 0
+                        ),
+
+                        'has_goods_return'
+                        => (int) (
+                            $gr->goods_return_count
+                            ?? 0
+                        ) > 0,
+
+                        'can_view_return_history'
+                        => $canViewReturnHistory
+                            && (int) (
+                                $gr->goods_return_count
+                                ?? 0
+                            ) > 0,
+
                         'is_replacement'
                         => $gr->source_goods_return_id !== null,
 
@@ -483,8 +576,7 @@ class GoodsReceiveController extends Controller
                             ?? $gr->created_by,
 
                         'created_at'
-                        => $gr->created_at
-                            ?->format('Y-m-d H:i:s'),
+                        => $gr->created_at,
 
                         /*
                     |--------------------------------------------------------------------------
@@ -567,6 +659,9 @@ class GoodsReceiveController extends Controller
                     'can_update' => $canUpdate,
 
                     'can_delete' => $canDelete,
+
+                    'can_view_return_history'
+                    => $canViewReturnHistory,
                 ],
             ], 200);
         } catch (\Throwable $e) {
@@ -1098,19 +1193,48 @@ class GoodsReceiveController extends Controller
                             }
                         } else {
                             /*
+                    |--------------------------------------------------------------------------
+                    | Outstanding PO berdasarkan snapshot terbaru
+                    |--------------------------------------------------------------------------
+                    | Jangan menghitung ulang dari histori GR POSTED karena GR lama tetap menjadi
+                    | histori walaupun barangnya sudah diretur.
+                    |
+                    | qty_outstanding_receive sudah diperbarui oleh:
+                    | - posting Goods Receipt;
+                    | - posting Goods Return;
+                    | - pembatalan Goods Return.
+                    |--------------------------------------------------------------------------
+                    */
+                            $qtyOrdered = (float) (
+                                $poItem->qty
+                                ?? 0
+                            );
+
+                            $qtyReceived = (float) (
+                                $poItem->qty_received
+                                ?? 0
+                            );
+
+                            $baseOutstanding = max(
+                                $qtyOrdered - $qtyReceived,
+                                0,
+                            );
+
+                            /*
                         |--------------------------------------------------------------------------
-                        | Alur GR normal
+                        | Reservation dari GR lain yang masih DRAFT
                         |--------------------------------------------------------------------------
-                        | Hitung hanya GR normal. GR replacement tidak boleh
-                        | menambah/mengurangi outstanding penerimaan normal.
+                        | Semua draft existing harus mengurangi qty yang dapat dipilih.
+                        | Request GR yang sedang dibuat belum masuk database, sehingga tidak perlu
+                        | dikecualikan berdasarkan ID.
                         |--------------------------------------------------------------------------
                         */
-                            $qtyNormalUsed = (float) DB::table(
+                            $qtyDraftReserved = (float) DB::table(
                                 'goods_receive_items as gri',
                             )
                                 ->join(
-                                    'goods_receives as gr',
-                                    'gr.id',
+                                    'goods_receives as draft_gr',
+                                    'draft_gr.id',
                                     '=',
                                     'gri.goods_receive_id',
                                 )
@@ -1118,38 +1242,26 @@ class GoodsReceiveController extends Controller
                                     'gri.purchase_order_item_id',
                                     $poItem->id,
                                 )
-                                ->whereNull(
-                                    'gr.source_goods_return_id',
-                                )
                                 ->whereRaw(
-                                    'UPPER(TRIM(gr.status)) IN (?, ?)',
-                                    [
-                                        'DRAFT',
-                                        'POSTED',
-                                    ],
+                                    'UPPER(TRIM(draft_gr.status)) = ?',
+                                    ['DRAFT'],
                                 )
                                 ->whereNull(
-                                    'gr.deleted_at',
+                                    'draft_gr.deleted_at',
                                 )
                                 ->sum(
                                     'gri.qty_receive',
                                 );
 
-                            $qtyOrdered = (float) (
-                                $poItem->qty
-                                ?? 0
-                            );
-
-                            $qtyNormalOutstanding = max(
-                                $qtyOrdered
-                                    - $qtyNormalUsed,
+                            $qtyAvailableOutstanding = max(
+                                $baseOutstanding - $qtyDraftReserved,
                                 0,
                             );
 
                             if (
                                 $qtyReceive
                                 > (
-                                    $qtyNormalOutstanding
+                                    $qtyAvailableOutstanding
                                     + 0.0001
                                 )
                             ) {
@@ -1157,9 +1269,9 @@ class GoodsReceiveController extends Controller
                                     "items.{$index}.qty_receive" => [
                                         'Qty receive item '
                                             . ($poItem->nama_item ?? '-')
-                                            . ' melebihi outstanding penerimaan normal. '
+                                            . ' melebihi outstanding Purchase Order. '
                                             . 'Maksimal '
-                                            . $qtyNormalOutstanding
+                                            . $qtyAvailableOutstanding
                                             . '.',
                                     ],
                                 ]);
@@ -1182,9 +1294,215 @@ class GoodsReceiveController extends Controller
 
                 /*
             |--------------------------------------------------------------------------
-            | Payload create draft
+            | Resolve Goods Return sumber replacement
+            |--------------------------------------------------------------------------
+            | Jika item PO mempunyai Goods Return POSTED dengan qty replacement yang
+            | masih tersisa, GR baru otomatis dihubungkan ke Goods Return tersebut.
             |--------------------------------------------------------------------------
             */
+                $selectedItems = collect($items);
+
+                $selectedPurchaseOrderItemIds = $selectedItems
+                    ->pluck('purchase_order_item_id')
+                    ->map(function ($id) {
+                        return (int) $id;
+                    })
+                    ->values();
+
+                /*
+            |--------------------------------------------------------------------------
+            | Cari Return POSTED pada PO yang sama
+            |--------------------------------------------------------------------------
+            */
+                $returnCandidates = GoodsReturn::query()
+                    ->with([
+                        'items' => function ($itemQuery) use (
+                            $selectedPurchaseOrderItemIds,
+                        ) {
+                            $itemQuery->whereIn(
+                                'purchase_order_item_id',
+                                $selectedPurchaseOrderItemIds,
+                            );
+                        },
+                    ])
+                    ->where(
+                        'purchase_order_id',
+                        $po->id,
+                    )
+                    ->whereRaw(
+                        'UPPER(TRIM(status)) = ?',
+                        [
+                            GoodsReturn::STATUS_POSTED,
+                        ],
+                    )
+                    ->whereNull('deleted_at')
+                    ->whereHas(
+                        'items',
+                        function ($itemQuery) use (
+                            $selectedPurchaseOrderItemIds,
+                        ) {
+                            $itemQuery->whereIn(
+                                'purchase_order_item_id',
+                                $selectedPurchaseOrderItemIds,
+                            );
+                        },
+                    )
+                    ->lockForUpdate()
+                    ->get();
+
+                /*
+            |--------------------------------------------------------------------------
+            | Filter Return yang seluruh itemnya masih memiliki outstanding replacement
+            |--------------------------------------------------------------------------
+            */
+                $validReturnCandidates = $returnCandidates
+                    ->filter(
+                        function (
+                            GoodsReturn $goodsReturn,
+                        ) use ($selectedItems) {
+                            foreach ($selectedItems as $selectedItem) {
+                                $purchaseOrderItemId = (int) (
+                                    $selectedItem['purchase_order_item_id']
+                                    ?? 0
+                                );
+
+                                $qtyReceive = (float) (
+                                    $selectedItem['qty_receive']
+                                    ?? 0
+                                );
+
+                                $returnItem = $goodsReturn
+                                    ->items
+                                    ->first(function ($item) use (
+                                        $purchaseOrderItemId,
+                                    ) {
+                                        return (
+                                            (int) $item
+                                                ->purchase_order_item_id
+                                            === $purchaseOrderItemId
+                                        );
+                                    });
+
+                                /*
+                        |--------------------------------------------------------------------------
+                        | Semua item GR harus berasal dari Return sumber yang sama
+                        |--------------------------------------------------------------------------
+                        */
+                                if (!$returnItem) {
+                                    return false;
+                                }
+
+                                /*
+                        |--------------------------------------------------------------------------
+                        | Qty replacement yang sudah digunakan
+                        |--------------------------------------------------------------------------
+                        | DRAFT dihitung sebagai reservation.
+                        | POSTED dihitung sebagai replacement yang sudah diterima.
+                        |--------------------------------------------------------------------------
+                        */
+                                $qtyReplacementUsed = (float) DB::table(
+                                    'goods_receive_items as gri',
+                                )
+                                    ->join(
+                                        'goods_receives as replacement_gr',
+                                        'replacement_gr.id',
+                                        '=',
+                                        'gri.goods_receive_id',
+                                    )
+                                    ->where(
+                                        'replacement_gr.source_goods_return_id',
+                                        $goodsReturn->id,
+                                    )
+                                    ->where(
+                                        'gri.purchase_order_item_id',
+                                        $purchaseOrderItemId,
+                                    )
+                                    ->whereRaw(
+                                        'UPPER(TRIM(replacement_gr.status)) IN (?, ?)',
+                                        [
+                                            'DRAFT',
+                                            'POSTED',
+                                        ],
+                                    )
+                                    ->whereNull(
+                                        'replacement_gr.deleted_at',
+                                    )
+                                    ->sum(
+                                        'gri.qty_receive',
+                                    );
+
+                                $qtyReplacementOutstanding = max(
+                                    (float) $returnItem->qty_return
+                                        - $qtyReplacementUsed,
+                                    0,
+                                );
+
+                                if (
+                                    $qtyReceive
+                                    > (
+                                        $qtyReplacementOutstanding
+                                        + 0.0001
+                                    )
+                                ) {
+                                    return false;
+                                }
+                            }
+
+                            return true;
+                        },
+                    )
+                    ->values();
+
+                $sourceGoodsReturnId = null;
+
+                /*
+            |--------------------------------------------------------------------------
+            | Tepat satu Return ditemukan
+            |--------------------------------------------------------------------------
+            */
+                if ($validReturnCandidates->count() === 1) {
+                    $sourceGoodsReturnId = (int) $validReturnCandidates
+                        ->first()
+                        ->id;
+                }
+
+                /*
+            |--------------------------------------------------------------------------
+            | Lebih dari satu Return valid
+            |--------------------------------------------------------------------------
+            | Header GR hanya dapat mengacu ke satu source_goods_return_id.
+            |--------------------------------------------------------------------------
+            */
+                if ($validReturnCandidates->count() > 1) {
+                    throw ValidationException::withMessages([
+                        'purchase_order_public_id' => [
+                            'Terdapat lebih dari satu Goods Return yang masih membutuhkan replacement. '
+                                . 'Goods Return sumber harus dipilih secara spesifik.',
+                        ],
+                    ]);
+                }
+
+                /*
+            |--------------------------------------------------------------------------
+            | Ada Return tetapi tidak ada kandidat yang cocok
+            |--------------------------------------------------------------------------
+            */
+                if (
+                    $returnCandidates->isNotEmpty()
+                    && $validReturnCandidates->isEmpty()
+                ) {
+                    throw ValidationException::withMessages([
+                        'items' => [
+                            'Item atau qty penerimaan tidak sesuai dengan outstanding replacement Goods Return.',
+                        ],
+                    ]);
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Payload create draft
+                |--------------------------------------------------------------------------
+                */
                 $nomorGr = $this->generateDraftGRNumber();
 
                 $payload = [
@@ -1200,9 +1518,7 @@ class GoodsReceiveController extends Controller
                 |--------------------------------------------------------------------------
                 */
                     'source_goods_return_id'
-                    => $isReplacement
-                        ? $goodsReturn->id
-                        : null,
+                    => $sourceGoodsReturnId,
 
                     'nomor_gr'
                     => $nomorGr,
@@ -1383,6 +1699,7 @@ class GoodsReceiveController extends Controller
                 ],
             ], 201);
         } catch (ValidationException $e) {
+
             foreach ($storedFilePaths as $filePath) {
                 Storage::disk('public')->delete(
                     $filePath,
@@ -2349,184 +2666,108 @@ class GoodsReceiveController extends Controller
                             ];
                         })->values(),
 
-                        'items' => $items->map(function ($item) use ($gr) {
-                            $qtyReceive = (float) (
-                                $item->qty_receive
-                                ?? 0
-                            );
-
-                            $isReplacement = (
-                                $gr->source_goods_return_id !== null
-                            );
-
-                            if ($isReplacement) {
-                                /*
-                    |--------------------------------------------------------------------------
-                    | GR Replacement
-                    |--------------------------------------------------------------------------
-                    | Batas qty berasal dari Goods Return, bukan dari qty PO normal.
-                    |--------------------------------------------------------------------------
-                    */
-                                $qtyReturn = (float) DB::table(
-                                    'goods_return_items',
-                                )
-                                    ->where(
-                                        'goods_return_id',
-                                        $gr->source_goods_return_id,
-                                    )
-                                    ->where(
-                                        'purchase_order_item_id',
-                                        $item->purchase_order_item_id,
-                                    )
-                                    ->sum('qty_return');
-
-                                /*
-                    |--------------------------------------------------------------------------
-                    | Replacement lain, tidak termasuk GR yang sedang dibuka
-                    |--------------------------------------------------------------------------
-                    */
-                                $qtyReplacementOther = (float) DB::table(
-                                    'goods_receive_items as gri',
-                                )
-                                    ->join(
-                                        'goods_receives as replacement_gr',
-                                        'replacement_gr.id',
-                                        '=',
-                                        'gri.goods_receive_id',
-                                    )
-                                    ->where(
-                                        'replacement_gr.source_goods_return_id',
-                                        $gr->source_goods_return_id,
-                                    )
-                                    ->where(
-                                        'gri.purchase_order_item_id',
-                                        $item->purchase_order_item_id,
-                                    )
-                                    ->where(
-                                        'replacement_gr.id',
-                                        '<>',
-                                        $gr->id,
-                                    )
-                                    ->whereRaw(
-                                        'UPPER(TRIM(replacement_gr.status)) IN (?, ?)',
-                                        [
-                                            'DRAFT',
-                                            'POSTED',
-                                        ],
-                                    )
-                                    ->whereNull(
-                                        'replacement_gr.deleted_at',
-                                    )
-                                    ->sum('gri.qty_receive');
-
-                                /*
-                    |--------------------------------------------------------------------------
-                    | Untuk form edit replacement:
-                    | qty_ordered menjadi batas qty yang diretur
-                    |--------------------------------------------------------------------------
-                    */
-                                $qtyOrdered = $qtyReturn;
-
-                                $qtyReceivedBefore = $qtyReplacementOther;
-
-                                $qtyReceivedAfter = (
-                                    $qtyReceivedBefore
-                                    + $qtyReceive
-                                );
-
-                                $qtyOutstanding = max(
-                                    $qtyReturn
-                                        - $qtyReceivedAfter,
-                                    0,
-                                );
-
-                                $qtyMaximumReceive = max(
-                                    $qtyReturn
-                                        - $qtyReplacementOther,
-                                    0,
-                                );
-                            } else {
-                                /*
-                    |--------------------------------------------------------------------------
-                    | GR normal
-                    |--------------------------------------------------------------------------
-                    | Kode existing dipertahankan.
-                    |--------------------------------------------------------------------------
-                    */
+                        'items' => $items
+                            ->map(function ($item) {
                                 $qtyOrdered = (float) (
                                     $item->qty_ordered
                                     ?? 0
                                 );
 
-                                $qtyReceivedBefore = (float) DB::table(
-                                    'goods_receive_items as gri',
+                                $qtyReceive = (float) (
+                                    $item->qty_receive
+                                    ?? 0
+                                );
+
+                                /*
+        |--------------------------------------------------------------------------
+        | Gunakan snapshot item GR
+        |--------------------------------------------------------------------------
+        | Jangan menghitung ulang dari histori GR karena histori lama tidak
+        | mencerminkan pengurangan qty akibat Goods Return.
+        |--------------------------------------------------------------------------
+        */
+                                $qtyReceivedBefore = (
+                                    $item->qty_received_before
+                                    !== null
                                 )
-                                    ->join(
-                                        'goods_receives as gr',
-                                        'gr.id',
-                                        '=',
-                                        'gri.goods_receive_id',
-                                    )
-                                    ->where(
-                                        'gri.purchase_order_item_id',
-                                        $item->purchase_order_item_id,
-                                    )
-                                    ->whereIn(
-                                        'gr.status',
-                                        [
-                                            'DRAFT',
-                                            'POSTED',
-                                        ],
-                                    )
-                                    ->whereNull(
-                                        'gr.deleted_at',
-                                    )
-                                    ->where(
-                                        'gr.id',
-                                        '<',
-                                        $gr->id,
-                                    )
-                                    ->sum('gri.qty_receive');
+                                    ? (float) $item->qty_received_before
+                                    : 0;
 
                                 $qtyReceivedAfter = (
-                                    $qtyReceivedBefore
-                                    + $qtyReceive
-                                );
+                                    $item->qty_received_after
+                                    !== null
+                                )
+                                    ? (float) $item->qty_received_after
+                                    : (
+                                        $qtyReceivedBefore
+                                        + $qtyReceive
+                                    );
 
-                                $qtyOutstanding = max(
-                                    $qtyOrdered
-                                        - $qtyReceivedAfter,
-                                    0,
-                                );
+                                $qtyOutstanding = (
+                                    $item->qty_outstanding
+                                    !== null
+                                )
+                                    ? (float) $item->qty_outstanding
+                                    : max(
+                                        $qtyOrdered
+                                            - $qtyReceivedAfter,
+                                        0,
+                                    );
 
-                                $qtyMaximumReceive = max(
-                                    $qtyOrdered
-                                        - $qtyReceivedBefore,
-                                    0,
-                                );
-                            }
+                                return [
+                                    'id'
+                                    => $item->id,
 
-                            return [
-                                'id' => $item->id,
-                                'public_id' => Crypt::encryptString((string) $item->id),
+                                    'public_id'
+                                    => Crypt::encryptString(
+                                        (string) $item->id,
+                                    ),
 
-                                'purchase_order_item_id' => $item->purchase_order_item_id,
-                                'purchase_order_item_public_id' => Crypt::encryptString((string) $item->purchase_order_item_id),
-                                'purchase_request_item_id' => $item->purchase_request_item_id,
+                                    'purchase_order_item_id'
+                                    => $item->purchase_order_item_id,
 
-                                'nama_item' => $item->nama_item,
-                                'unit_id' => $item->unit,
-                                'unit' => $item->unitData->nama ?? $item->unitData->kode ?? '-',
+                                    'purchase_order_item_public_id'
+                                    => Crypt::encryptString(
+                                        (string) $item
+                                            ->purchase_order_item_id,
+                                    ),
 
-                                'qty_ordered' => $qtyOrdered,
-                                'qty_received_before' => $qtyReceivedBefore,
-                                'qty_receive' => $qtyReceive,
-                                'qty_received_after' => $qtyReceivedAfter,
-                                'qty_outstanding' => $qtyOutstanding,
+                                    'purchase_request_item_id'
+                                    => $item
+                                        ->purchase_request_item_id,
 
-                                'notes' => $item->notes,
-                            ];
-                        })->values(),
+                                    'nama_item'
+                                    => $item->nama_item,
+
+                                    'unit_id'
+                                    => $item->unit,
+
+                                    'unit'
+                                    => $item->unitData?->nama
+                                        ?? $item->unitData?->kode
+                                        ?? '-',
+
+                                    'qty_ordered'
+                                    => $qtyOrdered,
+
+                                    'qty_received_before'
+                                    => $qtyReceivedBefore,
+
+                                    'qty_receive'
+                                    => $qtyReceive,
+
+                                    'qty_received_after'
+                                    => $qtyReceivedAfter,
+
+                                    'qty_outstanding'
+                                    => $qtyOutstanding,
+
+                                    'notes'
+                                    => $item->notes,
+                                ];
+                            })
+                            ->values(),
+
                     ],
                 ], 200);
             } catch (\Throwable $e) {
@@ -2560,41 +2801,615 @@ class GoodsReceiveController extends Controller
         }
     }
 
-    public function post(Request $request, $publicId)
-    {
+    public function post(
+        Request $request,
+        $publicId,
+    ) {
         try {
-            $id = Crypt::decryptString($publicId);
+            $user = $request->user();
 
-            $gr = GoodsReceive::with(['items', 'purchaseOrder.items', 'purchaseOrder.departmentData'])
+            if (
+                !$user
+                || !$user->hasPermission('goods_receive.post')
+            ) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Anda tidak memiliki akses untuk posting Goods Receipt.',
+                ], 403);
+            }
+
+            $id = Crypt::decryptString(
+                urldecode(
+                    (string) $publicId,
+                ),
+            );
+
+            $gr = GoodsReceive::query()
+                ->with([
+                    'items',
+
+                    'purchaseOrder:id,nomor_po,cabang,id_department,status,status_receive',
+
+                    'purchaseOrder.items',
+
+                    'purchaseOrder.departmentData:id,kode,nama',
+
+                    'purchaseOrder.cabangData:id,nama_cabang,inisial_cabang',
+                ])
                 ->findOrFail($id);
 
-            $this->goodsReceivePostingService->post($gr, $request->user());
+            $this->goodsReceivePostingService->post(
+                $gr,
+                $user,
+            );
 
             $gr->refresh();
 
             return response()->json([
                 'success' => true,
                 'message' => 'Goods Receipt berhasil diposting.',
+
                 'data' => [
-                    'id' => $gr->id,
-                    'public_id' => $gr->encrypted_id,
-                    'nomor_gr' => $gr->nomor_gr,
-                    'status' => $gr->status,
-                    'posted_at' => $gr->posted_at,
+                    'id'
+                    => $gr->id,
+
+                    'public_id'
+                    => $gr->encrypted_id,
+
+                    'nomor_gr'
+                    => $gr->nomor_gr,
+
+                    'status'
+                    => $gr->status,
+
+                    'posted_at'
+                    => $gr->posted_at,
                 ],
             ], 200);
+        } catch (DecryptException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'ID Goods Receipt tidak valid.',
+            ], 422);
+        } catch (ModelNotFoundException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Goods Receipt tidak ditemukan.',
+            ], 404);
         } catch (\Throwable $e) {
-            Log::error('[Goods Receipt] Post error', [
-                'public_id' => $publicId,
-                'message' => $e->getMessage(),
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-            ]);
+            Log::error(
+                '[Goods Receipt] Post error',
+                [
+                    'public_id'
+                    => $publicId,
+
+                    'user_id'
+                    => $request->user()?->id,
+
+                    'message'
+                    => $e->getMessage(),
+
+                    'file'
+                    => $e->getFile(),
+
+                    'line'
+                    => $e->getLine(),
+                ],
+            );
 
             return response()->json([
                 'success' => false,
                 'message' => 'Gagal posting Goods Receipt.',
-                'debug' => app()->environment('local') ? $e->getMessage() : null,
+
+                'debug'
+                => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
+            ], 500);
+        }
+    }
+
+    public function returnHistory(
+        string $publicId,
+        Request $request,
+    ): JsonResponse {
+        try {
+            $user = $request->user();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Permission
+        |--------------------------------------------------------------------------
+        | Detail Return tetap memakai permission Goods Return.
+        |--------------------------------------------------------------------------
+        */
+            if (
+                !$user
+                || !$user->hasPermission(
+                    'goods_return.view',
+                )
+            ) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Anda tidak memiliki akses untuk melihat history Goods Return.',
+                ], 403);
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Decrypt Goods Receipt
+        |--------------------------------------------------------------------------
+        */
+            $goodsReceiveId = Crypt::decryptString(
+                urldecode($publicId),
+            );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Ambil Goods Receipt sumber
+        |--------------------------------------------------------------------------
+        */
+            /** @var GoodsReceive $goodsReceive */
+            $goodsReceive = GoodsReceive::query()
+                ->with([
+                    'purchaseOrder:id,nomor_po,tanggal_po,vendor_id,cabang,id_department,status_receive',
+
+                    'purchaseOrder.vendor:id,nama_vendor',
+
+                    'purchaseOrder.cabangData:id,nama_cabang,inisial_cabang',
+
+                    'purchaseOrder.departmentData:id,kode,nama',
+                ])
+                ->findOrFail($goodsReceiveId);
+
+            /*
+        |--------------------------------------------------------------------------
+        | Ambil seluruh Return aktif
+        |--------------------------------------------------------------------------
+        | DRAFT, POSTED, dan CANCELLED tetap ditampilkan sebagai history.
+        | Record yang sudah soft-delete tidak ikut karena query model normal.
+        |--------------------------------------------------------------------------
+        */
+            $goodsReturns = GoodsReturn::query()
+                ->with([
+                    'items' => function ($itemQuery) {
+                        $itemQuery->orderBy('id');
+                    },
+
+                    'items.reason:id,code,name,description',
+
+                    'items.unit:id,kode,nama',
+
+                    'attachments:id,goods_return_id,document_type,file_name,file_original_name,file_path,file_mime_type,file_size,uploaded_by,created_at',
+
+                    'creator:id,name',
+
+                    'poster:id,name',
+
+                    'canceller:id,name',
+                ])
+                ->where(
+                    'goods_receive_id',
+                    $goodsReceive->id,
+                )
+                ->orderByDesc('id')
+                ->get();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Transform history
+        |--------------------------------------------------------------------------
+        */
+            $history = $goodsReturns
+                ->map(function (GoodsReturn $goodsReturn) {
+                    $items = $goodsReturn->items
+                        ->map(function ($item) {
+                            $unitName = $item->unit?->nama
+                                ?? $item->unit?->kode
+                                ?? '-';
+
+                            return [
+                                'id'
+                                => $item->id,
+
+                                'public_id'
+                                => Crypt::encryptString(
+                                    (string) $item->id,
+                                ),
+
+                                'nama_item'
+                                => $item->nama_item,
+
+                                'unit_id'
+                                => $item->unit_id,
+
+                                'unit_name'
+                                => $unitName,
+
+                                'unit'
+                                => $unitName,
+
+                                'qty_received'
+                                => (float) (
+                                    $item->qty_received
+                                    ?? 0
+                                ),
+
+                                'qty_returned_before'
+                                => (float) (
+                                    $item->qty_returned_before
+                                    ?? 0
+                                ),
+
+                                'qty_return'
+                                => (float) (
+                                    $item->qty_return
+                                    ?? 0
+                                ),
+
+                                'qty_returned_after'
+                                => (float) (
+                                    $item->qty_returned_after
+                                    ?? 0
+                                ),
+
+                                'qty_returnable_after'
+                                => (float) (
+                                    $item->qty_returnable_after
+                                    ?? 0
+                                ),
+
+                                'reason_id'
+                                => $item->reason_id,
+
+                                'reason_code'
+                                => $item->reason?->code,
+
+                                'reason_name'
+                                => $item->reason?->name,
+
+                                'reason_description'
+                                => $item->reason?->description,
+
+                                'reason_notes'
+                                => $item->reason_notes,
+                            ];
+                        })
+                        ->values();
+
+                    $totalQtyReturn = (float) $items->sum(
+                        'qty_return',
+                    );
+
+                    $status = strtoupper(
+                        trim(
+                            (string) $goodsReturn->status,
+                        ),
+                    );
+
+                    return [
+                        'id'
+                        => $goodsReturn->id,
+
+                        'public_id'
+                        => $goodsReturn->encrypted_id,
+
+                        'nomor_return'
+                        => $goodsReturn->nomor_return,
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Backend mengirim tanggal apa adanya
+                    |--------------------------------------------------------------------------
+                    */
+                        'tanggal_return'
+                        => $goodsReturn->tanggal_return,
+
+                        'status'
+                        => $goodsReturn->status,
+
+                        'notes'
+                        => $goodsReturn->notes,
+
+                        'total_item'
+                        => $items->count(),
+
+                        'total_qty_return'
+                        => $totalQtyReturn,
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Hanya POSTED yang masih berdampak ke qty PO
+                    |--------------------------------------------------------------------------
+                    */
+                        'is_effective'
+                        => $status
+                            === GoodsReturn::STATUS_POSTED,
+
+                        'items'
+                        => $items,
+
+                        'attachments'
+                        => $goodsReturn->attachments
+                            ->map(function ($attachment) {
+                                return [
+                                    'id'
+                                    => $attachment->id,
+
+                                    'public_id'
+                                    => Crypt::encryptString(
+                                        (string) $attachment->id,
+                                    ),
+
+                                    'document_type'
+                                    => $attachment->document_type,
+
+                                    'file_name'
+                                    => $attachment->file_name,
+
+                                    'file_original_name'
+                                    => $attachment->file_original_name,
+
+                                    'file_path'
+                                    => $attachment->file_path,
+
+                                    /*
+                                    |--------------------------------------------------------------------------
+                                    | Pattern attachment SYOP
+                                    |--------------------------------------------------------------------------
+                                    */
+                                    'file_url'
+                                    => asset(
+                                        'storage/'
+                                            . $attachment->file_path,
+                                    ),
+
+                                    'file_mime_type'
+                                    => $attachment->file_mime_type,
+
+                                    'file_size'
+                                    => (int) (
+                                        $attachment->file_size
+                                        ?? 0
+                                    ),
+
+                                    'created_at'
+                                    => $attachment->created_at,
+                                ];
+                            })
+                            ->values(),
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Audit
+                    |--------------------------------------------------------------------------
+                    */
+                        'created_by_id'
+                        => $goodsReturn->created_by,
+
+                        'created_by'
+                        => $goodsReturn->creator?->name
+                            ?? '-',
+
+                        'created_at'
+                        => $goodsReturn->created_at,
+
+                        'posted_by_id'
+                        => $goodsReturn->posted_by,
+
+                        'posted_by'
+                        => $goodsReturn->poster?->name
+                            ?? '-',
+
+                        'posted_at'
+                        => $goodsReturn->posted_at,
+
+                        'cancelled_by_id'
+                        => $goodsReturn->cancelled_by,
+
+                        'cancelled_by'
+                        => $goodsReturn->canceller?->name
+                            ?? '-',
+
+                        'cancelled_at'
+                        => $goodsReturn->cancelled_at,
+
+                        'cancel_notes'
+                        => $goodsReturn->cancel_notes,
+                    ];
+                })
+                ->values();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Summary
+        |--------------------------------------------------------------------------
+        */
+            $draftCount = $goodsReturns
+                ->filter(function (GoodsReturn $goodsReturn) {
+                    return strtoupper(
+                        trim(
+                            (string) $goodsReturn->status,
+                        ),
+                    ) === GoodsReturn::STATUS_DRAFT;
+                })
+                ->count();
+
+            $postedCount = $goodsReturns
+                ->filter(function (GoodsReturn $goodsReturn) {
+                    return strtoupper(
+                        trim(
+                            (string) $goodsReturn->status,
+                        ),
+                    ) === GoodsReturn::STATUS_POSTED;
+                })
+                ->count();
+
+            $cancelledCount = $goodsReturns
+                ->filter(function (GoodsReturn $goodsReturn) {
+                    return strtoupper(
+                        trim(
+                            (string) $goodsReturn->status,
+                        ),
+                    ) === GoodsReturn::STATUS_CANCELLED;
+                })
+                ->count();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Total qty yang masih efektif
+        |--------------------------------------------------------------------------
+        | CANCELLED tidak dihitung karena qty sudah dikembalikan ke PO.
+        |--------------------------------------------------------------------------
+        */
+            $totalEffectiveQtyReturn = (float) $history
+                ->filter(function ($goodsReturn) {
+                    return $goodsReturn['is_effective']
+                        === true;
+                })
+                ->sum(
+                    'total_qty_return',
+                );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'History Goods Return berhasil dimuat.',
+
+                'data' => [
+                    /*
+                |--------------------------------------------------------------------------
+                | Goods Receipt
+                |--------------------------------------------------------------------------
+                */
+                    'goods_receive' => [
+                        'id'
+                        => $goodsReceive->id,
+
+                        'public_id'
+                        => $goodsReceive->encrypted_id,
+
+                        'nomor_gr'
+                        => $goodsReceive->nomor_gr,
+
+                        'tanggal_gr'
+                        => $goodsReceive->tanggal_gr,
+
+                        'status'
+                        => $goodsReceive->status,
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Purchase Order
+                    |--------------------------------------------------------------------------
+                    */
+                        'purchase_order_id'
+                        => $goodsReceive->purchase_order_id,
+
+                        'nomor_po'
+                        => $goodsReceive
+                            ->purchaseOrder
+                            ?->nomor_po
+                            ?? '-',
+
+                        'status_receive'
+                        => $goodsReceive
+                            ->purchaseOrder
+                            ?->status_receive,
+
+                        'vendor'
+                        => $goodsReceive
+                            ->purchaseOrder
+                            ?->vendor
+                            ?->nama_vendor
+                            ?? '-',
+
+                        'cabang'
+                        => $goodsReceive
+                            ->purchaseOrder
+                            ?->cabangData
+                            ?->inisial_cabang
+                            ?? '-',
+
+                        'department'
+                        => $goodsReceive
+                            ->purchaseOrder
+                            ?->departmentData
+                            ?->kode
+                            ?? '-',
+                    ],
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Summary Return
+                |--------------------------------------------------------------------------
+                */
+                    'summary' => [
+                        'total_return'
+                        => $history->count(),
+
+                        'draft_count'
+                        => $draftCount,
+
+                        'posted_count'
+                        => $postedCount,
+
+                        'cancelled_count'
+                        => $cancelledCount,
+
+                        'total_effective_qty_return'
+                        => $totalEffectiveQtyReturn,
+                    ],
+
+                    /*
+                |--------------------------------------------------------------------------
+                | History Return
+                |--------------------------------------------------------------------------
+                */
+                    'history' => $history,
+                ],
+            ], 200);
+        } catch (DecryptException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'ID Goods Receipt tidak valid.',
+                'data' => null,
+            ], 422);
+        } catch (ModelNotFoundException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Goods Receipt tidak ditemukan.',
+                'data' => null,
+            ], 404);
+        } catch (\Throwable $e) {
+            Log::error(
+                '[Goods Receipt] Return history error',
+                [
+                    'public_id'
+                    => $publicId,
+
+                    'user_id'
+                    => $request->user()?->id,
+
+                    'message'
+                    => $e->getMessage(),
+
+                    'file'
+                    => $e->getFile(),
+
+                    'line'
+                    => $e->getLine(),
+                ],
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Gagal memuat history Goods Return.',
+                'data' => null,
+
+                'debug'
+                => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
     }

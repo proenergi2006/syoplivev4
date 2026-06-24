@@ -27,6 +27,7 @@ class DatabaseSeeder extends Seeder
             PermissionSeeder::class,
             PermissionModuleSeeder::class,
             GoodsReturnReasonSeeder::class,
+            DashboardModuleSeeder::class,
         ]);
     }
 }

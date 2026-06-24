@@ -10,7 +10,7 @@ import {
   closeAlert,
   showConfirmAlert,
 } from '@/utils/alert'
-import { formatDate, formatStatusPKP, formatNumberWithoutRp, toTitleCase, formatDecimalQty } from '@/utils/textFormatter'
+import { formatDate, formatStatusPKP, formatAuditDateTime, toTitleCase, formatDecimalQty } from '@/utils/textFormatter'
 import { getApiErrorMessage } from '@/utils/apiHelper'
 import { useDeleteConfirm } from '@core/composable/useDeleteConfirm'
 import { nextTick } from 'vue'
@@ -31,16 +31,99 @@ interface AxiosErrorShape {
   }
 }
 
-interface GoodsReceiveDetailItem {
+interface GoodsReturnHistoryItemDetail {
   id: number | string
-  nama_item: string
-  unit: string
-  qty_ordered: number
-  qty_received_before: number
-  qty_receive: number
-  qty_received_after: number
-  qty_outstanding: number
-  notes: string | null
+  public_id?: string
+
+  nama_item?: string | null
+  unit_id?: number | null
+  unit_name?: string | null
+  unit?: string | null
+
+  qty_received?: number
+  qty_returned_before?: number
+  qty_return?: number
+  qty_returned_after?: number
+  qty_returnable_after?: number
+
+  reason_id?: number | null
+  reason_code?: string | null
+  reason_name?: string | null
+  reason_description?: string | null
+  reason_notes?: string | null
+}
+
+interface GoodsReturnHistoryAttachment {
+  id: number | string
+  public_id?: string
+
+  file_name?: string | null
+  file_original_name?: string | null
+  file_url?: string | null
+  file_mime_type?: string | null
+  file_size?: number | string | null
+  created_at?: string | null
+}
+
+interface GoodsReturnHistoryRow {
+  id: number | string
+  public_id: string
+
+  nomor_return?: string | null
+  tanggal_return?: string | null
+  status?: string | null
+  notes?: string | null
+
+  total_item?: number
+  total_qty_return?: number
+  is_effective?: boolean
+
+  items?: GoodsReturnHistoryItemDetail[]
+  attachments?: GoodsReturnHistoryAttachment[]
+
+  created_by_id?: number | null
+  created_by?: string | null
+  created_at?: string | null
+
+  posted_by_id?: number | null
+  posted_by?: string | null
+  posted_at?: string | null
+
+  cancelled_by_id?: number | null
+  cancelled_by?: string | null
+  cancelled_at?: string | null
+  cancel_notes?: string | null
+}
+
+interface GoodsReturnHistorySummary {
+  total_return: number
+  draft_count: number
+  posted_count: number
+  cancelled_count: number
+  total_effective_qty_return: number
+}
+
+interface GoodsReturnHistoryGoodsReceive {
+  id?: number | string
+  public_id?: string
+
+  nomor_gr?: string | null
+  tanggal_gr?: string | null
+  status?: string | null
+
+  purchase_order_id?: number | string | null
+  nomor_po?: string | null
+  status_receive?: string | null
+
+  vendor?: string | null
+  cabang?: string | null
+  department?: string | null
+}
+
+interface GoodsReturnHistoryData {
+  goods_receive: GoodsReturnHistoryGoodsReceive | null
+  summary: GoodsReturnHistorySummary
+  history: GoodsReturnHistoryRow[]
 }
 
 const permissionStore = usePermissionStore()
@@ -59,6 +142,12 @@ const canUpdate = computed(() => {
 
 const canDelete = computed(() => {
   return permissionStore.can('goods_receive.delete')
+})
+
+const canViewReturnHistory = computed(() => {
+  return permissionStore.can(
+    'goods_return.view',
+  )
 })
 
 const isCheckingPermission = ref(true)
@@ -96,6 +185,67 @@ const detailGrItemPerPageItems = [
 { title: '50', value: 50 },
 { title: 'All', value: 'ALL' },
 ]
+
+/*
+|--------------------------------------------------------------------------
+| History Goods Return
+|--------------------------------------------------------------------------
+*/
+const returnHistoryDialog = ref(false)
+const returnHistoryLoading = ref(false)
+const returnHistoryError = ref('')
+
+const openedReturnPanels = ref<number[]>([])
+
+const returnHistoryData = ref<GoodsReturnHistoryData>({
+  goods_receive: null,
+
+  summary: {
+    total_return: 0,
+    draft_count: 0,
+    posted_count: 0,
+    cancelled_count: 0,
+    total_effective_qty_return: 0,
+  },
+
+  history: [],
+})
+
+/*
+|--------------------------------------------------------------------------
+| History Goods Return computed
+|--------------------------------------------------------------------------
+| Harus berada di level utama script setup, bukan di dalam function.
+|--------------------------------------------------------------------------
+*/
+const returnHistories = computed<GoodsReturnHistoryRow[]>(() => {
+  return returnHistoryData.value.history ?? []
+})
+
+const returnHistorySummary = computed<GoodsReturnHistorySummary>(() => {
+  return returnHistoryData.value.summary
+})
+
+const getReturnStatusColor = (
+  status?: string | null,
+): string => {
+  const normalizedStatus = String(
+    status || '',
+  )
+    .trim()
+    .toUpperCase()
+
+  if (normalizedStatus === 'POSTED')
+    return 'success'
+
+  if (normalizedStatus === 'DRAFT')
+    return 'warning'
+
+  if (normalizedStatus === 'CANCELLED')
+    return 'error'
+
+  return 'secondary'
+}
 
 const statusItems = [
   { title: 'Semua', value: '' },
@@ -314,6 +464,159 @@ const openDetail = async (publicId: string): Promise<void> => {
 const closeDetail = (): void => {
   detailDialog.value = false
   selectedGr.value = null
+}
+
+const openReturnHistory = async (
+  goodsReceive: any,
+): Promise<void> => {
+  if (!goodsReceive?.public_id) {
+    showErrorToast({
+      title: 'Error',
+      text: 'Public ID Goods Receipt tidak ditemukan.',
+    })
+
+    return
+  }
+
+  if (!canViewReturnHistory.value) {
+    await router.push('/forbidden')
+
+    return
+  }
+
+  returnHistoryLoading.value = true
+  returnHistoryError.value = ''
+  openedReturnPanels.value = []
+
+  returnHistoryData.value = {
+    goods_receive: null,
+
+    summary: {
+      total_return: 0,
+      draft_count: 0,
+      posted_count: 0,
+      cancelled_count: 0,
+      total_effective_qty_return: 0,
+    },
+
+    history: [],
+  }
+
+  try {
+    showLoadingAlert(
+      'Memuat History Goods Return',
+      'Mohon tunggu sebentar',
+    )
+
+    const response = await axios.get(
+      `/transaction/goods-receive/${encodeURIComponent(goodsReceive.public_id)}/return-history`,
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+    )
+
+    const responseData = response.data?.data
+
+    if (!responseData) {
+      throw new Error(
+        'History Goods Return tidak ditemukan.',
+      )
+    }
+
+    returnHistoryData.value = {
+      goods_receive:
+        responseData.goods_receive
+        ?? null,
+
+      summary: {
+        total_return:
+          Number(
+            responseData.summary?.total_return
+            ?? 0,
+          ),
+
+        draft_count:
+          Number(
+            responseData.summary?.draft_count
+            ?? 0,
+          ),
+
+        posted_count:
+          Number(
+            responseData.summary?.posted_count
+            ?? 0,
+          ),
+
+        cancelled_count:
+          Number(
+            responseData.summary?.cancelled_count
+            ?? 0,
+          ),
+
+        total_effective_qty_return:
+          Number(
+            responseData.summary
+              ?.total_effective_qty_return
+            ?? 0,
+          ),
+      },
+
+      history:
+        Array.isArray(responseData.history)
+          ? responseData.history
+          : [],
+    }
+
+    if (returnHistoryData.value.history.length) {
+      openedReturnPanels.value = [0]
+    }
+
+    closeAlert()
+
+    await nextTick()
+
+    returnHistoryDialog.value = true
+  }
+  catch (error: unknown) {
+    closeAlert()
+
+    const err = error as AxiosErrorShape
+
+    returnHistoryError.value = getApiErrorMessage(
+      err,
+      'Gagal memuat History Goods Return.',
+    )
+
+    showErrorToast({
+      title: 'Error',
+      text: returnHistoryError.value,
+    })
+  }
+  finally {
+    returnHistoryLoading.value = false
+  }
+}
+
+const closeReturnHistory = (): void => {
+  returnHistoryDialog.value = false
+  returnHistoryError.value = ''
+  openedReturnPanels.value = []
+
+  returnHistoryData.value = {
+    goods_receive: null,
+
+    summary: {
+      total_return: 0,
+      draft_count: 0,
+      posted_count: 0,
+      cancelled_count: 0,
+      total_effective_qty_return: 0,
+    },
+
+    history: [],
+  }
 }
 
 const statusGRColor = (status?: string): string => {
@@ -679,6 +982,12 @@ onMounted(async () => {
             <th
               scope="col"
               class="text-center"
+            >
+              Return
+            </th>
+            <th
+              scope="col"
+              class="text-center"
               style="width: 5rem;"
             >
               Actions
@@ -721,6 +1030,61 @@ onMounted(async () => {
               </VChip>
             </td>
 
+            <td class="text-center">
+              <template v-if="Number(v.goods_return_count || 0) > 0">
+                <VChip
+                  color="primary"
+                  variant="tonal"
+                  size="small"
+                  prepend-icon="tabler-history"
+                  class="cursor-pointer"
+                  @click="openReturnHistory(v)"
+                >
+                  {{ Number(v.goods_return_count || 0) }}
+                  Return
+                </VChip>
+
+                <div class="d-flex justify-center flex-wrap gap-1 mt-1">
+                  <VChip
+                    v-if="Number(v.goods_return_posted_count || 0) > 0"
+                    color="success"
+                    variant="tonal"
+                    size="x-small"
+                  >
+                    Posted:
+                    {{ Number(v.goods_return_posted_count || 0) }}
+                  </VChip>
+
+                  <VChip
+                    v-if="Number(v.goods_return_cancelled_count || 0) > 0"
+                    color="error"
+                    variant="tonal"
+                    size="x-small"
+                  >
+                    Cancelled:
+                    {{ Number(v.goods_return_cancelled_count || 0) }}
+                  </VChip>
+
+                  <VChip
+                    v-if="Number(v.goods_return_draft_count || 0) > 0"
+                    color="warning"
+                    variant="tonal"
+                    size="x-small"
+                  >
+                    Draft:
+                    {{ Number(v.goods_return_draft_count || 0) }}
+                  </VChip>
+                </div>
+              </template>
+
+              <span
+                v-else
+                class="text-medium-emphasis"
+              >
+                -
+              </span>
+            </td>
+
             <td
               class="text-center"
               style="width: 5rem;"
@@ -753,6 +1117,32 @@ onMounted(async () => {
                       <VListItemTitle>
                         Lihat Detail
                       </VListItemTitle>
+                    </VListItem>
+
+                    <VListItem
+                      v-if="
+                        canViewReturnHistory
+                        && Number(v.goods_return_count || 0) > 0
+                      "
+                      href="javascript:void(0)"
+                      @click="openReturnHistory(v)"
+                    >
+                      <template #prepend>
+                        <VIcon
+                          icon="tabler-history"
+                          :size="20"
+                          class="me-3"
+                        />
+                      </template>
+
+                      <VListItemTitle>
+                        History Return
+                      </VListItemTitle>
+
+                      <VListItemSubtitle>
+                        {{ Number(v.goods_return_count || 0) }}
+                        dokumen return
+                      </VListItemSubtitle>
                     </VListItem>
 
                     <VListItem
@@ -1248,6 +1638,872 @@ onMounted(async () => {
             variant="tonal"
             color="secondary"
             @click="closeDetail"
+          >
+            Tutup
+          </VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <!--
+    |--------------------------------------------------------------------------
+    | History Goods Return
+    |--------------------------------------------------------------------------
+    -->
+    <VDialog
+      v-model="returnHistoryDialog"
+      max-width="1200"
+      persistent
+      scrollable
+    >
+      <VCard class="rounded-lg overflow-hidden">
+        <VCardText class="pa-0">
+          <!-- Header -->
+          <div class="pa-6 bg-primary text-white">
+            <div class="d-flex flex-wrap align-start justify-space-between gap-4">
+              <div>
+                <div class="text-caption text-uppercase mb-1 opacity-80">
+                  History Goods Return
+                </div>
+
+                <h2 class="text-h5 font-weight-bold mb-2">
+                  {{
+                    returnHistoryData.goods_receive
+                      ?.nomor_gr
+                    || '-'
+                  }}
+                </h2>
+
+                <div class="d-flex flex-wrap gap-2">
+                  <VChip
+                    color="white"
+                    variant="tonal"
+                    size="small"
+                  >
+                    {{
+                      returnHistorySummary.total_return
+                    }}
+                    Dokumen Return
+                  </VChip>
+
+                  <VChip
+                    color="white"
+                    variant="tonal"
+                    size="small"
+                  >
+                    PO:
+                    {{
+                      returnHistoryData.goods_receive
+                        ?.nomor_po
+                      || '-'
+                    }}
+                  </VChip>
+                </div>
+              </div>
+
+              <VBtn
+                icon
+                variant="text"
+                color="white"
+                @click="closeReturnHistory"
+              >
+                <VIcon icon="tabler-x" />
+              </VBtn>
+            </div>
+          </div>
+
+          <div class="pa-6">
+            <VAlert
+              v-if="returnHistoryError"
+              type="error"
+              variant="tonal"
+              class="mb-6"
+            >
+              {{ returnHistoryError }}
+            </VAlert>
+
+            <!-- Summary -->
+            <VRow>
+              <VCol
+                cols="12"
+                sm="6"
+                md="3"
+              >
+                <VCard
+                  color="primary"
+                  variant="tonal"
+                  class="h-100"
+                >
+                  <VCardText>
+                    <div class="text-caption text-medium-emphasis mb-1">
+                      Total Return
+                    </div>
+
+                    <div class="text-h5 font-weight-bold">
+                      {{
+                        returnHistorySummary.total_return
+                      }}
+                    </div>
+
+                    <div class="text-body-2 mt-1">
+                      Seluruh dokumen history
+                    </div>
+                  </VCardText>
+                </VCard>
+              </VCol>
+
+              <VCol
+                cols="12"
+                sm="6"
+                md="3"
+              >
+                <VCard
+                  color="success"
+                  variant="tonal"
+                  class="h-100"
+                >
+                  <VCardText>
+                    <div class="text-caption text-medium-emphasis mb-1">
+                      Posted
+                    </div>
+
+                    <div class="text-h5 font-weight-bold">
+                      {{
+                        returnHistorySummary.posted_count
+                      }}
+                    </div>
+
+                    <div class="text-body-2 mt-1">
+                      Return yang masih efektif
+                    </div>
+                  </VCardText>
+                </VCard>
+              </VCol>
+
+              <VCol
+                cols="12"
+                sm="6"
+                md="3"
+              >
+                <VCard
+                  color="error"
+                  variant="tonal"
+                  class="h-100"
+                >
+                  <VCardText>
+                    <div class="text-caption text-medium-emphasis mb-1">
+                      Cancelled
+                    </div>
+
+                    <div class="text-h5 font-weight-bold">
+                      {{
+                        returnHistorySummary.cancelled_count
+                      }}
+                    </div>
+
+                    <div class="text-body-2 mt-1">
+                      Return yang dibatalkan
+                    </div>
+                  </VCardText>
+                </VCard>
+              </VCol>
+
+              <VCol
+                cols="12"
+                sm="6"
+                md="3"
+              >
+                <VCard
+                  color="info"
+                  variant="tonal"
+                  class="h-100"
+                >
+                  <VCardText>
+                    <div class="text-caption text-medium-emphasis mb-1">
+                      Qty Return Efektif
+                    </div>
+
+                    <div class="text-h5 font-weight-bold">
+                      {{
+                        formatDecimalQty(
+                          returnHistorySummary
+                            .total_effective_qty_return,
+                        )
+                      }}
+                    </div>
+
+                    <div class="text-body-2 mt-1">
+                      Hanya status Posted
+                    </div>
+                  </VCardText>
+                </VCard>
+              </VCol>
+            </VRow>
+
+            <!-- Informasi GR -->
+            <VRow class="mt-3 mb-2">
+              <VCol
+                cols="12"
+                md="3"
+              >
+                <div class="text-caption text-medium-emphasis">
+                  Tanggal Goods Receipt
+                </div>
+
+                <div class="font-weight-medium">
+                  {{
+                    formatDate(
+                      returnHistoryData
+                        .goods_receive
+                        ?.tanggal_gr
+                      ?? null,
+                    )
+                  }}
+                </div>
+              </VCol>
+
+              <VCol
+                cols="12"
+                md="3"
+              >
+                <div class="text-caption text-medium-emphasis">
+                  Vendor
+                </div>
+
+                <div class="font-weight-medium">
+                  {{
+                    returnHistoryData.goods_receive
+                      ?.vendor
+                    || '-'
+                  }}
+                </div>
+              </VCol>
+
+              <VCol
+                cols="12"
+                md="3"
+              >
+                <div class="text-caption text-medium-emphasis">
+                  Cabang
+                </div>
+
+                <div class="font-weight-medium">
+                  {{
+                    returnHistoryData.goods_receive
+                      ?.cabang
+                    || '-'
+                  }}
+                </div>
+              </VCol>
+
+              <VCol
+                cols="12"
+                md="3"
+              >
+                <div class="text-caption text-medium-emphasis">
+                  Department
+                </div>
+
+                <div class="font-weight-medium">
+                  {{
+                    returnHistoryData.goods_receive
+                      ?.department
+                    || '-'
+                  }}
+                </div>
+              </VCol>
+            </VRow>
+
+            <VDivider class="my-6" />
+
+            <div class="d-flex align-center justify-space-between flex-wrap gap-3 mb-4">
+              <div>
+                <h3 class="text-h6 font-weight-bold mb-1">
+                  Daftar Goods Return
+                </h3>
+
+                <div class="text-body-2 text-medium-emphasis">
+                  Klik setiap dokumen untuk melihat detail item dan lampiran.
+                </div>
+              </div>
+
+              <VChip
+                color="primary"
+                variant="tonal"
+                prepend-icon="tabler-history"
+              >
+                {{ returnHistories.length }}
+                History
+              </VChip>
+            </div>
+
+            <VAlert
+              v-if="!returnHistories.length"
+              type="info"
+              variant="tonal"
+            >
+              Goods Receipt ini belum memiliki History Return.
+            </VAlert>
+
+            <VExpansionPanels
+              v-else
+              v-model="openedReturnPanels"
+              multiple
+              variant="accordion"
+            >
+              <VExpansionPanel
+                v-for="(
+                  goodsReturn,
+                  returnIndex
+                ) in returnHistories"
+                :key="
+                  goodsReturn.public_id
+                  || goodsReturn.id
+                "
+                elevation="0"
+                class="mb-3 border rounded"
+              >
+                <VExpansionPanelTitle>
+                  <div
+                    class="
+                      d-flex
+                      align-center
+                      justify-space-between
+                      flex-wrap
+                      gap-4
+                      w-100
+                      pe-4
+                    "
+                  >
+                    <div class="d-flex align-center gap-3">
+                      <VAvatar
+                        :color="
+                          getReturnStatusColor(
+                            goodsReturn.status,
+                          )
+                        "
+                        variant="tonal"
+                        size="42"
+                      >
+                        <VIcon icon="tabler-package-export" />
+                      </VAvatar>
+
+                      <div>
+                        <div class="font-weight-bold">
+                          {{
+                            goodsReturn.nomor_return
+                            || '-'
+                          }}
+                        </div>
+
+                        <div class="text-caption text-medium-emphasis">
+                          Return ke-{{ returnHistories.length - returnIndex }}
+                          ·
+                          {{
+                            formatDate(
+                              goodsReturn.tanggal_return
+                              ?? null,
+                            )
+                          }}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="d-flex align-center flex-wrap gap-2">
+                      <VChip
+                        :color="
+                          getReturnStatusColor(
+                            goodsReturn.status,
+                          )
+                        "
+                        size="small"
+                        variant="tonal"
+                      >
+                        {{
+                          toTitleCase(
+                            goodsReturn.status
+                            || '',
+                          )
+                        }}
+                      </VChip>
+
+                      <VChip
+                        color="primary"
+                        size="small"
+                        variant="tonal"
+                      >
+                        {{
+                          Number(
+                            goodsReturn.total_item
+                            || 0,
+                          )
+                        }}
+                        Item
+                      </VChip>
+
+                      <VChip
+                        color="info"
+                        size="small"
+                        variant="tonal"
+                      >
+                        Qty:
+                        {{
+                          formatDecimalQty(
+                            goodsReturn
+                              .total_qty_return
+                            || 0,
+                          )
+                        }}
+                      </VChip>
+                    </div>
+                  </div>
+                </VExpansionPanelTitle>
+
+                <VExpansionPanelText>
+                  <!-- Informasi header Return -->
+                  <VRow class="mb-2">
+                    <VCol
+                      cols="12"
+                      md="3"
+                    >
+                      <div class="text-caption text-medium-emphasis">
+                        Tanggal Return
+                      </div>
+
+                      <div class="font-weight-medium">
+                        {{
+                          formatDate(
+                            goodsReturn.tanggal_return
+                            ?? null,
+                          )
+                        }}
+                      </div>
+                    </VCol>
+
+                    <VCol
+                      cols="12"
+                      md="3"
+                    >
+                      <div class="text-caption text-medium-emphasis">
+                        Dibuat Oleh
+                      </div>
+
+                      <div class="font-weight-medium">
+                        {{
+                          goodsReturn.created_by
+                          || '-'
+                        }}
+                      </div>
+
+                      <div class="text-caption text-medium-emphasis">
+                        {{
+                          formatAuditDateTime(
+                            goodsReturn.created_at,
+                          )
+                        }}
+                      </div>
+                    </VCol>
+
+                    <VCol
+                      v-if="goodsReturn.posted_at"
+                      cols="12"
+                      md="3"
+                    >
+                      <div class="text-caption text-medium-emphasis">
+                        Diposting Oleh
+                      </div>
+
+                      <div class="font-weight-medium">
+                        {{
+                          goodsReturn.posted_by
+                          || '-'
+                        }}
+                      </div>
+
+                      <div class="text-caption text-medium-emphasis">
+                        {{
+                          formatAuditDateTime(
+                            goodsReturn.posted_at,
+                          )
+                        }}
+                      </div>
+                    </VCol>
+
+                    <VCol
+                      cols="12"
+                      md="3"
+                    >
+                      <div class="text-caption text-medium-emphasis">
+                        Dampak ke PO
+                      </div>
+
+                      <VChip
+                        :color="
+                          goodsReturn.is_effective
+                            ? 'success'
+                            : 'secondary'
+                        "
+                        size="small"
+                        variant="tonal"
+                        class="mt-1"
+                      >
+                        {{
+                          goodsReturn.is_effective
+                            ? 'Efektif'
+                            : 'Tidak Efektif'
+                        }}
+                      </VChip>
+                    </VCol>
+
+                    <VCol cols="12">
+                      <div class="text-caption text-medium-emphasis">
+                        Catatan Return
+                      </div>
+
+                      <div class="font-weight-medium">
+                        {{ goodsReturn.notes || '-' }}
+                      </div>
+                    </VCol>
+                  </VRow>
+
+                  <VAlert
+                    v-if="
+                      String(goodsReturn.status || '')
+                        .toUpperCase()
+                        === 'CANCELLED'
+                    "
+                    type="error"
+                    variant="tonal"
+                    class="mb-5"
+                  >
+                    <div class="font-weight-bold mb-1">
+                      Goods Return Dibatalkan
+                    </div>
+
+                    <div>
+                      Oleh:
+                      {{
+                        goodsReturn.cancelled_by
+                        || '-'
+                      }}
+                    </div>
+
+                    <div>
+                      Tanggal:
+                      {{
+                        formatAuditDateTime(
+                          goodsReturn.cancelled_at,
+                        )
+                      }}
+                    </div>
+
+                    <div class="mt-2">
+                      Alasan:
+                      {{
+                        goodsReturn.cancel_notes
+                        || '-'
+                      }}
+                    </div>
+                  </VAlert>
+
+                  <!-- Detail item Return -->
+                  <div class="text-subtitle-1 font-weight-bold mb-3">
+                    Detail Item Return
+                  </div>
+
+                  <div class="table-responsive">
+                    <VTable class="text-no-wrap rounded border">
+                      <thead>
+                        <tr>
+                          <th width="60">
+                            No
+                          </th>
+
+                          <th>
+                            Item
+                          </th>
+
+                          <th class="text-end">
+                            Qty Received
+                          </th>
+
+                          <th class="text-end">
+                            Sudah Return
+                          </th>
+
+                          <th class="text-end">
+                            Qty Return
+                          </th>
+
+                          <th class="text-end">
+                            Sisa Returnable
+                          </th>
+
+                          <th>
+                            Alasan
+                          </th>
+
+                          <th>
+                            Catatan
+                          </th>
+                        </tr>
+                      </thead>
+
+                      <tbody>
+                        <tr
+                          v-for="(
+                            returnItem,
+                            itemIndex
+                          ) in goodsReturn.items || []"
+                          :key="
+                            returnItem.public_id
+                            || returnItem.id
+                            || itemIndex
+                          "
+                        >
+                          <td>
+                            {{ itemIndex + 1 }}
+                          </td>
+
+                          <td>
+                            <div class="font-weight-medium">
+                              {{
+                                toTitleCase(
+                                  returnItem.nama_item
+                                  || '',
+                                )
+                              }}
+                            </div>
+
+                            <div class="text-caption text-medium-emphasis">
+                              {{
+                                returnItem.unit_name
+                                || returnItem.unit
+                                || '-'
+                              }}
+                            </div>
+                          </td>
+
+                          <td class="text-end">
+                            {{
+                              formatDecimalQty(
+                                returnItem.qty_received
+                                || 0,
+                              )
+                            }}
+                          </td>
+
+                          <td class="text-end">
+                            {{
+                              formatDecimalQty(
+                                returnItem
+                                  .qty_returned_before
+                                || 0,
+                              )
+                            }}
+                          </td>
+
+                          <td class="text-end">
+                            <VChip
+                              color="primary"
+                              variant="tonal"
+                              size="small"
+                            >
+                              {{
+                                formatDecimalQty(
+                                  returnItem.qty_return
+                                  || 0,
+                                )
+                              }}
+                            </VChip>
+                          </td>
+
+                          <td class="text-end">
+                            <VChip
+                              :color="
+                                Number(
+                                  returnItem
+                                    .qty_returnable_after
+                                  || 0,
+                                ) > 0
+                                  ? 'warning'
+                                  : 'success'
+                              "
+                              variant="tonal"
+                              size="small"
+                            >
+                              {{
+                                formatDecimalQty(
+                                  returnItem
+                                    .qty_returnable_after
+                                  || 0,
+                                )
+                              }}
+                            </VChip>
+                          </td>
+
+                          <td>
+                            {{
+                              returnItem.reason_name
+                              || '-'
+                            }}
+                          </td>
+
+                          <td>
+                            {{
+                              returnItem.reason_notes
+                              || '-'
+                            }}
+                          </td>
+                        </tr>
+
+                        <tr
+                          v-if="
+                            !(goodsReturn.items || []).length
+                          "
+                        >
+                          <td
+                            colspan="8"
+                            class="text-center py-6 text-medium-emphasis"
+                          >
+                            Detail item Return tidak tersedia.
+                          </td>
+                        </tr>
+                      </tbody>
+                    </VTable>
+                  </div>
+
+                  <!-- Lampiran Return -->
+                  <template
+                    v-if="
+                      (goodsReturn.attachments || []).length
+                    "
+                  >
+                    <VDivider class="my-5" />
+
+                    <div class="d-flex align-center justify-space-between mb-3">
+                      <div class="text-subtitle-1 font-weight-bold">
+                        Lampiran Return
+                      </div>
+
+                      <VChip
+                        color="primary"
+                        variant="tonal"
+                        size="small"
+                        prepend-icon="tabler-paperclip"
+                      >
+                        {{
+                          goodsReturn.attachments
+                            ?.length
+                          || 0
+                        }}
+                        File
+                      </VChip>
+                    </div>
+
+                    <VTable class="text-no-wrap rounded border">
+                      <thead>
+                        <tr>
+                          <th width="60">
+                            No
+                          </th>
+
+                          <th>
+                            Nama File
+                          </th>
+
+                          <th width="150">
+                            Ukuran
+                          </th>
+
+                          <th width="180">
+                            Tipe
+                          </th>
+
+                          <th
+                            width="100"
+                            class="text-center"
+                          >
+                            Aksi
+                          </th>
+                        </tr>
+                      </thead>
+
+                      <tbody>
+                        <tr
+                          v-for="(
+                            attachment,
+                            attachmentIndex
+                          ) in goodsReturn.attachments"
+                          :key="
+                            attachment.public_id
+                            || attachment.id
+                            || attachmentIndex
+                          "
+                        >
+                          <td>
+                            {{ attachmentIndex + 1 }}
+                          </td>
+
+                          <td>
+                            {{
+                              attachment
+                                .file_original_name
+                              || attachment.file_name
+                              || '-'
+                            }}
+                          </td>
+
+                          <td>
+                            {{
+                              formatFileSize(
+                                attachment.file_size,
+                              )
+                            }}
+                          </td>
+
+                          <td>
+                            {{
+                              attachment.file_mime_type
+                              || '-'
+                            }}
+                          </td>
+
+                          <td class="text-center">
+                            <VBtn
+                              v-if="attachment.file_url"
+                              icon
+                              size="small"
+                              variant="text"
+                              color="primary"
+                              :href="attachment.file_url"
+                              target="_blank"
+                            >
+                              <VIcon icon="tabler-eye" />
+
+                              <VTooltip
+                                activator="parent"
+                                location="top"
+                              >
+                                Lihat File
+                              </VTooltip>
+                            </VBtn>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </VTable>
+                  </template>
+                </VExpansionPanelText>
+              </VExpansionPanel>
+            </VExpansionPanels>
+          </div>
+        </VCardText>
+
+        <VCardActions class="justify-end pa-6 pt-0">
+          <VBtn
+            variant="tonal"
+            color="secondary"
+            @click="closeReturnHistory"
           >
             Tutup
           </VBtn>

@@ -513,7 +513,7 @@ class InitialSetupSeeder extends Seeder
             $permissionSettingId = $this->upsertMenu(
                 ['name' => 'Role Permissions', 'parent_id' => $authMenuId],
                 [
-                    'path' => '/master/role-permissions',
+                    'path' => '/master/permissions',
                     'route_name' => 'master-role-permissions',
                     'icon' => 'tabler-license',
                     'order_no' => 4,

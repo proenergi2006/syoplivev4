@@ -27,7 +27,7 @@ class GoodsReceivePostingService
         ) {
         /*
         |--------------------------------------------------------------------------
-        | Lock Goods Receive
+        | Lock Goods Receipt
         |--------------------------------------------------------------------------
         */
             /** @var GoodsReceive $gr */
@@ -40,9 +40,15 @@ class GoodsReceivePostingService
                 'items',
             ]);
 
+            /*
+        |--------------------------------------------------------------------------
+        | Validasi status Goods Receipt
+        |--------------------------------------------------------------------------
+        */
             if (
-                strtoupper(trim((string) $gr->status))
-                !== 'DRAFT'
+                strtoupper(
+                    trim((string) $gr->status),
+                ) !== 'DRAFT'
             ) {
                 throw new Exception(
                     'Goods Receipt hanya dapat diposting jika status masih DRAFT.',
@@ -57,7 +63,7 @@ class GoodsReceivePostingService
 
             /*
         |--------------------------------------------------------------------------
-        | Hindari item PO yang sama muncul dua kali dalam satu GR
+        | Hindari item PO yang sama muncul dua kali
         |--------------------------------------------------------------------------
         */
             $duplicatePurchaseOrderItemIds = $gr
@@ -71,6 +77,11 @@ class GoodsReceivePostingService
                 );
             }
 
+            /*
+        |--------------------------------------------------------------------------
+        | Tentukan apakah GR merupakan replacement
+        |--------------------------------------------------------------------------
+        */
             $isReplacement = (
                 $gr->source_goods_return_id !== null
             );
@@ -79,7 +90,7 @@ class GoodsReceivePostingService
 
             /*
         |--------------------------------------------------------------------------
-        | Lock Goods Return sumber untuk GR replacement
+        | Lock Goods Return sumber
         |--------------------------------------------------------------------------
         */
             if ($isReplacement) {
@@ -127,8 +138,9 @@ class GoodsReceivePostingService
                 ->firstOrFail();
 
             if (
-                strtoupper(trim((string) $po->status))
-                !== 'APPROVED'
+                strtoupper(
+                    trim((string) $po->status),
+                ) !== 'APPROVED'
             ) {
                 throw new Exception(
                     'Purchase Order harus berstatus APPROVED.',
@@ -137,7 +149,7 @@ class GoodsReceivePostingService
 
             /*
         |--------------------------------------------------------------------------
-        | Validasi dan posting item
+        | Validasi dan posting setiap item
         |--------------------------------------------------------------------------
         */
             foreach ($gr->items as $grItem) {
@@ -160,6 +172,11 @@ class GoodsReceivePostingService
                     );
                 }
 
+                /*
+            |--------------------------------------------------------------------------
+            | Qty item
+            |--------------------------------------------------------------------------
+            */
                 $qtyReceive = (float) (
                     $grItem->qty_receive
                     ?? 0
@@ -180,13 +197,16 @@ class GoodsReceivePostingService
 
                 /*
             |--------------------------------------------------------------------------
-            | Validasi GR replacement
+            | Validasi khusus GR replacement
+            |--------------------------------------------------------------------------
+            | Replacement tidak boleh melebihi qty Return sumber yang belum
+            | direalisasikan melalui GR replacement lain.
             |--------------------------------------------------------------------------
             */
                 if ($isReplacement) {
                     /*
                 |--------------------------------------------------------------------------
-                | Total qty yang diretur dari PO item tersebut
+                | Qty item pada Goods Return sumber
                 |--------------------------------------------------------------------------
                 */
                     $qtyReturn = (float) GoodsReturnItem::query()
@@ -210,10 +230,11 @@ class GoodsReceivePostingService
 
                     /*
                 |--------------------------------------------------------------------------
-                | Replacement lain yang sudah menggunakan qty retur
+                | Qty Return yang telah digunakan replacement lain
                 |--------------------------------------------------------------------------
-                | GR saat ini dikecualikan karena qty-nya diperiksa terpisah.
-                | GR DRAFT lain tetap dihitung sebagai reservation.
+                | DRAFT dihitung sebagai reservation.
+                | POSTED dihitung sebagai replacement yang sudah direalisasikan.
+                | GR saat ini dikecualikan.
                 |--------------------------------------------------------------------------
                 */
                     $qtyReplacementOther = (float) DB::table(
@@ -273,78 +294,17 @@ class GoodsReceivePostingService
                                 . '.',
                         );
                     }
-                } else {
-                    /*
-                |--------------------------------------------------------------------------
-                | Validasi GR normal
-                |--------------------------------------------------------------------------
-                | Hanya GR normal yang dihitung. GR replacement tidak termasuk
-                | dalam outstanding penerimaan pembelian normal.
-                |--------------------------------------------------------------------------
-                */
-                    $qtyNormalOther = (float) DB::table(
-                        'goods_receive_items as gri',
-                    )
-                        ->join(
-                            'goods_receives as normal_gr',
-                            'normal_gr.id',
-                            '=',
-                            'gri.goods_receive_id',
-                        )
-                        ->where(
-                            'gri.purchase_order_item_id',
-                            $poItem->id,
-                        )
-                        ->whereNull(
-                            'normal_gr.source_goods_return_id',
-                        )
-                        ->where(
-                            'normal_gr.id',
-                            '<>',
-                            $gr->id,
-                        )
-                        ->whereRaw(
-                            'UPPER(TRIM(normal_gr.status)) IN (?, ?)',
-                            [
-                                'DRAFT',
-                                'POSTED',
-                            ],
-                        )
-                        ->whereNull(
-                            'normal_gr.deleted_at',
-                        )
-                        ->sum(
-                            'gri.qty_receive',
-                        );
-
-                    $qtyNormalOutstanding = max(
-                        $qtyPo
-                            - $qtyNormalOther,
-                        0,
-                    );
-
-                    if (
-                        $qtyReceive
-                        > (
-                            $qtyNormalOutstanding
-                            + 0.0001
-                        )
-                    ) {
-                        throw new Exception(
-                            'Qty receive item '
-                                . ($poItem->nama_item ?? '-')
-                                . ' melebihi outstanding penerimaan normal. Maksimal '
-                                . $qtyNormalOutstanding
-                                . '.',
-                        );
-                    }
                 }
 
                 /*
             |--------------------------------------------------------------------------
-            | Validasi outstanding netto PO
+            | Snapshot qty PO terkini
             |--------------------------------------------------------------------------
-            | Berlaku untuk GR normal maupun replacement.
+            | Jangan menghitung ulang dari histori GR POSTED.
+            |
+            | Ketika Return diposting:
+            | - qty_received dikurangi;
+            | - qty_outstanding_receive ditambah kembali.
             |--------------------------------------------------------------------------
             */
                 $qtyReceivedBefore = (float) (
@@ -352,12 +312,58 @@ class GoodsReceivePostingService
                     ?? 0
                 );
 
-                $qtyOutstandingBefore = max(
-                    $qtyPo
-                        - $qtyReceivedBefore,
+                $baseOutstanding = max(
+                    $qtyPo - $qtyReceivedBefore,
                     0,
                 );
 
+                /*
+            |--------------------------------------------------------------------------
+            | Reservation dari GR DRAFT lain
+            |--------------------------------------------------------------------------
+            | Current GR dikecualikan karena qty-nya sedang divalidasi.
+            |--------------------------------------------------------------------------
+            */
+                $qtyDraftOther = (float) DB::table(
+                    'goods_receive_items as gri',
+                )
+                    ->join(
+                        'goods_receives as draft_gr',
+                        'draft_gr.id',
+                        '=',
+                        'gri.goods_receive_id',
+                    )
+                    ->where(
+                        'gri.purchase_order_item_id',
+                        $poItem->id,
+                    )
+                    ->where(
+                        'draft_gr.id',
+                        '<>',
+                        $gr->id,
+                    )
+                    ->whereRaw(
+                        'UPPER(TRIM(draft_gr.status)) = ?',
+                        ['DRAFT'],
+                    )
+                    ->whereNull(
+                        'draft_gr.deleted_at',
+                    )
+                    ->sum(
+                        'gri.qty_receive',
+                    );
+
+                $qtyOutstandingBefore = max(
+                    $baseOutstanding
+                        - $qtyDraftOther,
+                    0,
+                );
+
+                /*
+            |--------------------------------------------------------------------------
+            | Validasi outstanding PO
+            |--------------------------------------------------------------------------
+            */
                 if (
                     $qtyReceive
                     > (
@@ -376,7 +382,7 @@ class GoodsReceivePostingService
 
                 /*
             |--------------------------------------------------------------------------
-            | Update qty received PO
+            | Update snapshot qty item PO
             |--------------------------------------------------------------------------
             */
                 $qtyReceivedAfter = (
@@ -400,7 +406,7 @@ class GoodsReceivePostingService
 
                 /*
             |--------------------------------------------------------------------------
-            | Simpan snapshot pada item GR
+            | Simpan snapshot pada item Goods Receipt
             |--------------------------------------------------------------------------
             */
                 $grItem->qty_received_before

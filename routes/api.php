@@ -51,6 +51,8 @@ use App\Http\Controllers\Api\PurchaseRequestController;
 use App\Http\Controllers\MasterBankController;
 use App\Http\Controllers\UnitController;
 use App\Http\Controllers\Api\GoodsReturnController;
+use App\Http\Controllers\Api\Dashboard\DashboardModuleController;
+use App\Http\Controllers\Api\Dashboard\PurchaseOrderDashboardController;
 
 Route::post('/auth/login', [AuthController::class, 'login']);
 
@@ -60,7 +62,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::get('/auth/my-menus', [MenuController::class, 'myMenus']);
     Route::put('/account/change-password', [AccountController::class, 'changePassword']);
-    Route::get('master/cabang/options', [CabangController::class, 'options']);
+    Route::get(
+        'master/cabang/options',
+        [CabangController::class, 'dropdownSelect']
+    );
 
     Route::get('/notifications', [NotificationController::class, 'index']);
     Route::patch('/notifications/read-all', [NotificationController::class, 'readAll']);
@@ -118,6 +123,27 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('/units/dropdown-select', [UnitController::class, 'dropdownSelect']);
     Route::apiResource('/units', UnitController::class);
+
+
+    // ===================== DATA DASHBOARD =====================
+    Route::prefix('dashboard')
+        ->name('dashboard.')
+        ->group(function () {
+            Route::get(
+                '/module-groups',
+                [DashboardModuleController::class, 'groups'],
+            )->name('module-groups');
+
+            Route::get(
+                '/modules',
+                [DashboardModuleController::class, 'index'],
+            )->name('modules');
+
+            Route::get(
+                '/purchase-order',
+                [PurchaseOrderDashboardController::class, 'index'],
+            )->name('purchase-order');
+        });
 
     // ===================== DATA MASTER =====================
     Route::prefix('master')->group(function () {
@@ -295,6 +321,14 @@ Route::middleware('auth:sanctum')->group(function () {
             Route::get(
                 'goods-receive/{publicId}/edit',
                 [GoodsReceiveController::class, 'edit'],
+            );
+
+            Route::get(
+                'goods-receive/{publicId}/return-history',
+                [
+                    GoodsReceiveController::class,
+                    'returnHistory',
+                ],
             );
 
             Route::apiResource(

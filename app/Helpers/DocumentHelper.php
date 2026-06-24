@@ -187,18 +187,91 @@ if (!function_exists('generatePRNumber')) {
 if (!function_exists('generatePONumber')) {
     function generatePONumber($po): string
     {
-        if (!$po->tanggal_po || !$po->id_department) {
-            throw new Exception('Data PO tidak lengkap untuk generate nomor PO');
+        /*
+        |--------------------------------------------------------------------------
+        | Validasi data dokumen
+        |--------------------------------------------------------------------------
+        */
+        if (empty($po->tanggal_po)) {
+            throw new Exception(
+                'Tanggal Purchase Order tidak ditemukan untuk generate nomor dokumen.'
+            );
         }
 
+        if (empty($po->id_department)) {
+            throw new Exception(
+                'Department Purchase Order tidak ditemukan untuk generate nomor dokumen.'
+            );
+        }
+
+        if (empty($po->cabang)) {
+            throw new Exception(
+                'Cabang Purchase Order tidak ditemukan untuk generate nomor dokumen.'
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Kode dokumen Purchase Order
+        |--------------------------------------------------------------------------
+        */
         $docCode = '02';
 
-        $department = mapDepartmentCodeById((int) $po->id_department);
-        $branch     = null;
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve department dan cabang dari snapshot PO
+        |--------------------------------------------------------------------------
+        */
+        $department = mapDepartmentCodeById(
+            (int) $po->id_department
+        );
 
-        $month = (int) date('n', strtotime($po->tanggal_po));
-        $year  = (int) date('Y', strtotime($po->tanggal_po));
+        $branch = mapBranchCode(
+            (int) $po->cabang
+        );
 
+        if (empty($department)) {
+            throw new Exception(
+                'Kode department Purchase Order tidak ditemukan.'
+            );
+        }
+
+        if (empty($branch)) {
+            throw new Exception(
+                'Kode cabang Purchase Order tidak ditemukan.'
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve periode dokumen
+        |--------------------------------------------------------------------------
+        */
+        $timestamp = strtotime(
+            (string) $po->tanggal_po
+        );
+
+        if ($timestamp === false) {
+            throw new Exception(
+                'Tanggal Purchase Order tidak valid untuk generate nomor dokumen.'
+            );
+        }
+
+        $month = (int) date(
+            'n',
+            $timestamp
+        );
+
+        $year = (int) date(
+            'Y',
+            $timestamp
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Generate nomor final
+        |--------------------------------------------------------------------------
+        */
         return generateDocumentNumber(
             $docCode,
             $department,
@@ -212,35 +285,125 @@ if (!function_exists('generatePONumber')) {
 if (!function_exists('generateGRNumber')) {
     function generateGRNumber($gr): string
     {
-        $gr->loadMissing('purchaseOrder');
+        /*
+        |--------------------------------------------------------------------------
+        | Load Purchase Order sebagai fallback
+        |--------------------------------------------------------------------------
+        | Data utama tetap mengambil snapshot cabang dan department pada GR.
+        |--------------------------------------------------------------------------
+        */
+        $gr->loadMissing([
+            'purchaseOrder',
+        ]);
 
         $po = $gr->purchaseOrder;
 
         if (!$po) {
-            throw new Exception('Purchase Order tidak ditemukan untuk generate nomor GR');
+            throw new Exception(
+                'Purchase Order tidak ditemukan untuk generate nomor Goods Receipt.'
+            );
         }
 
-        if (!$po->id_department) {
-            throw new Exception('Department PO tidak ditemukan untuk generate nomor GR');
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve department
+        |--------------------------------------------------------------------------
+        | Prioritas:
+        | 1. Snapshot department pada Goods Receipt
+        | 2. Department dari Purchase Order
+        |--------------------------------------------------------------------------
+        */
+        $departmentId = $gr->id_department
+            ?? $po->id_department
+            ?? null;
+
+        if (!$departmentId) {
+            throw new Exception(
+                'Department Goods Receipt tidak ditemukan untuk generate nomor dokumen.'
+            );
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve cabang
+        |--------------------------------------------------------------------------
+        | Prioritas:
+        | 1. Snapshot cabang pada Goods Receipt
+        | 2. Cabang dari Purchase Order
+        |--------------------------------------------------------------------------
+        */
+        $branchId = $gr->cabang
+            ?? $po->cabang
+            ?? null;
+
+        if (!$branchId) {
+            throw new Exception(
+                'Cabang Goods Receipt tidak ditemukan untuk generate nomor dokumen.'
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Kode dokumen Goods Receipt
+        |--------------------------------------------------------------------------
+        */
         $docCode = '03';
 
-        $department = mapDepartmentCodeById((int) $po->id_department);
+        $department = mapDepartmentCodeById(
+            (int) $departmentId
+        );
 
-        $branch = null;
+        $branch = mapBranchCode(
+            (int) $branchId
+        );
 
-        $tanggalGr = $gr->tanggal_gr ?? $gr->posted_at ?? now();
+        if (!$department) {
+            throw new Exception(
+                'Kode department Goods Receipt tidak ditemukan.'
+            );
+        }
 
-        $month = (int) date('n', strtotime($tanggalGr));
-        $year = (int) date('Y', strtotime($tanggalGr));
+        if (!$branch) {
+            throw new Exception(
+                'Kode cabang Goods Receipt tidak ditemukan.'
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Tanggal dokumen
+        |--------------------------------------------------------------------------
+        */
+        $tanggalGr = $gr->tanggal_gr
+            ?? $gr->posted_at
+            ?? now();
+
+        $timestamp = strtotime(
+            (string) $tanggalGr
+        );
+
+        if ($timestamp === false) {
+            throw new Exception(
+                'Tanggal Goods Receipt tidak valid untuk generate nomor dokumen.'
+            );
+        }
+
+        $month = (int) date(
+            'n',
+            $timestamp,
+        );
+
+        $year = (int) date(
+            'Y',
+            $timestamp,
+        );
 
         return generateDocumentNumber(
             $docCode,
             $department,
             $branch,
             $month,
-            $year
+            $year,
         );
     }
 }

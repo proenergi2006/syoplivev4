@@ -168,6 +168,13 @@ class PermissionSeeder extends Seeder
                 'name' => 'Delete Goods Receipt',
                 'description' => 'Menghapus atau membatalkan Goods Receipt.',
             ],
+            [
+                'module' => 'goods_receive',
+                'action' => 'post',
+                'code' => 'goods_receive.post',
+                'name' => 'Posting Goods Receipt',
+                'description' => 'Memposting penerimaan barang.',
+            ],
         ];
 
         foreach ($permissions as $permission) {

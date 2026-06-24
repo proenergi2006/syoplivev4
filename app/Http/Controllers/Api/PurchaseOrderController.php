@@ -2480,48 +2480,42 @@ class PurchaseOrderController extends Controller
             |--------------------------------------------------------------------------
             */
             $remainingSql = "
-                (
+            (
+                GREATEST(
                     COALESCE(
-                        purchase_order_items.qty_outstanding_receive,
-
-                        GREATEST(
-                            COALESCE(
-                                purchase_order_items.qty,
-                                0
-                            )
-                            -
-                            COALESCE(
-                                purchase_order_items.qty_received,
-                                0
-                            ),
-                            0
-                        )
-                    )
-
-                    -
-
-                    COALESCE(
-                        (
-                            SELECT SUM(
-                                COALESCE(
-                                    gri.qty_receive,
-                                    0
-                                )
-                            )
-                            FROM goods_receive_items AS gri
-                            INNER JOIN goods_receives AS gr
-                                ON gr.id = gri.goods_receive_id
-                            WHERE gri.purchase_order_item_id
-                                = purchase_order_items.id
-                            AND UPPER(
-                                    TRIM(gr.status)
-                                ) = 'DRAFT'
-                            AND gr.deleted_at IS NULL
-                        ),
+                        purchase_order_items.qty,
                         0
                     )
+                    -
+                    COALESCE(
+                        purchase_order_items.qty_received,
+                        0
+                    ),
+                    0
                 )
-            ";
+
+                -
+
+                COALESCE(
+                    (
+                        SELECT SUM(
+                            COALESCE(
+                                gri.qty_receive,
+                                0
+                            )
+                        )
+                        FROM goods_receive_items AS gri
+                        INNER JOIN goods_receives AS gr
+                            ON gr.id = gri.goods_receive_id
+                        WHERE gri.purchase_order_item_id
+                            = purchase_order_items.id
+                        AND UPPER(TRIM(gr.status)) = 'DRAFT'
+                        AND gr.deleted_at IS NULL
+                    ),
+                    0
+                )
+            )
+        ";
 
             $purchaseOrders = PurchaseOrder::query()
                 ->with([

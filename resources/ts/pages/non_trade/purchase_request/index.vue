@@ -2286,6 +2286,7 @@ onBeforeUnmount(() => {
             color="secondary"
             :disabled="signatureLoading"
             @click="signatureDialog = false"
+            class="text-none"
           >
             Batal
           </VBtn>
@@ -2294,6 +2295,7 @@ onBeforeUnmount(() => {
             color="primary"
             :loading="signatureLoading"
             @click="saveSignatureAndContinue"
+            class="text-none"
           >
             Simpan & Lanjutkan
           </VBtn>
