@@ -4,11 +4,13 @@ namespace App\Http\Controllers\Api\Master;
 
 use App\Http\Controllers\Controller;
 use App\Models\ApprovalFlow;
+use App\Models\ApprovalFlowStep;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\Rule;
 
 class ApprovalFlowController extends Controller
 {
@@ -114,6 +116,8 @@ class ApprovalFlowController extends Controller
                         'label' => $step->label,
                         'approval_mode' => $step->approval_mode ?? 'ANY',
                         'is_required' => (bool) $step->is_required,
+                        'approver_scope' => $step->approver_scope
+                            ?? ApprovalFlowStep::APPROVER_SCOPE_GLOBAL,
                     ];
                 })->values();
 
@@ -270,6 +274,14 @@ class ApprovalFlowController extends Controller
                 'steps.*.approvers' => ['required', 'array', 'min:1'],
                 'steps.*.approvers.*.approver_type' => ['required', 'string', 'in:ROLE,USER'],
                 'steps.*.approvers.*.approver_id' => ['required', 'integer'],
+                'steps.*.approver_scope' => [
+                    'nullable',
+                    'string',
+                    Rule::in([
+                        ApprovalFlowStep::APPROVER_SCOPE_GLOBAL,
+                        ApprovalFlowStep::APPROVER_SCOPE_SAME_BRANCH,
+                    ]),
+                ],
             ]);
 
             $id = Crypt::decrypt($publicId);
@@ -491,6 +503,14 @@ class ApprovalFlowController extends Controller
                         'approver_id' => (int) $approver['approver_id'],
                         'label' => $label,
                         'approval_mode' => $approvalMode,
+                        'approver_scope' => strtoupper(
+                            trim(
+                                (string) (
+                                    $step['approver_scope']
+                                    ?? ApprovalFlowStep::APPROVER_SCOPE_GLOBAL
+                                )
+                            )
+                        ),
                         'is_required' => true,
                         'created_at' => now(),
                         'updated_at' => now(),
@@ -703,6 +723,14 @@ class ApprovalFlowController extends Controller
                 'steps.*.approvers' => ['required', 'array', 'min:1'],
                 'steps.*.approvers.*.approver_type' => ['required', 'string', 'in:ROLE,USER'],
                 'steps.*.approvers.*.approver_id' => ['required', 'integer'],
+                'steps.*.approver_scope' => [
+                    'nullable',
+                    'string',
+                    Rule::in([
+                        ApprovalFlowStep::APPROVER_SCOPE_GLOBAL,
+                        ApprovalFlowStep::APPROVER_SCOPE_SAME_BRANCH,
+                    ]),
+                ],
             ]);
 
             $documentType = trim((string) $request->input('document_type'));
@@ -901,6 +929,14 @@ class ApprovalFlowController extends Controller
                         'approver_id' => (int) $approver['approver_id'],
                         'label' => $label,
                         'approval_mode' => $approvalMode,
+                        'approver_scope' => strtoupper(
+                            trim(
+                                (string) (
+                                    $step['approver_scope']
+                                    ?? ApprovalFlowStep::APPROVER_SCOPE_GLOBAL
+                                )
+                            )
+                        ),
                         'is_required' => true,
                         'created_at' => now(),
                         'updated_at' => now(),
@@ -1057,6 +1093,8 @@ class ApprovalFlowController extends Controller
                         'label' => $step->label,
                         'approval_mode' => $step->approval_mode ?? 'ANY',
                         'is_required' => (bool) $step->is_required,
+                        'approver_scope' => $step->approver_scope
+                            ?? ApprovalFlowStep::APPROVER_SCOPE_GLOBAL,
                     ];
                 });
 

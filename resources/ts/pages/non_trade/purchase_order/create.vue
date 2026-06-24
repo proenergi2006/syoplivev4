@@ -20,6 +20,7 @@ import {
   toTitleCase,
 } from '@/utils/textFormatter'
 import { usePermissionStore } from '@/stores/permission'
+import { watch } from 'vue'
 
 interface PurchaseOrderForm {
   tanggal_po: string
@@ -302,12 +303,12 @@ const currentUser = computed(() => {
   }
 })
 
-const setUserDefaultDepartment = (): void => {
-  form.id_department
-    = currentUser.value?.department_id
-      ? Number(currentUser.value.department_id)
-      : null
-}
+// const setUserDefaultDepartment = (): void => {
+//   form.id_department
+//     = currentUser.value?.department_id
+//       ? Number(currentUser.value.department_id)
+//       : null
+// }
 
 const fetchDepartmentList = async (
   showAlert = true,
@@ -396,19 +397,29 @@ const handleSelectPRFilter = async (): Promise<void> => {
 }
 
 const loadPurchaseRequestsByFilter = async (): Promise<void> => {
-  if (!form.cabang || !form.id_department) return
+  if (!form.cabang || !form.id_department) {
+    purchaseRequestList.value = []
+    visibleAttachmentMap.value = {}
+
+    return
+  }
 
   visibleAttachmentMap.value = {}
   isLoadingPR.value = true
 
   try {
-    const response = await axios.get('/transaction/purchase-request/dropdown-approved', {
-      headers: { Accept: 'application/json' },
-      params: {
-        cabang: form.cabang,
-        id_department: form.id_department,
+    const response = await axios.get(
+      '/transaction/purchase-request/dropdown-approved',
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+        params: {
+          cabang: form.cabang,
+          id_department: form.id_department,
+        },
       },
-    })
+    )
 
     purchaseRequestList.value = Array.isArray(response.data?.data)
       ? response.data.data.map((item: any) => ({
@@ -419,22 +430,37 @@ const loadPurchaseRequestsByFilter = async (): Promise<void> => {
           cabang: item.cabang,
           department: item.department,
           total_amount: Number(item.total_amount || 0),
-          recommended_vendor_id: item.recommended_vendor_id
-            ? Number(item.recommended_vendor_id)
-            : null,
-          recommended_vendor: item.recommended_vendor || null,
-          items: Array.isArray(item.items) ? item.items : [],
-          attachments: Array.isArray(item.attachments) ? item.attachments : [],
+
+          recommended_vendor_id:
+            item.recommended_vendor_id
+              ? Number(item.recommended_vendor_id)
+              : null,
+
+          recommended_vendor:
+            item.recommended_vendor || null,
+
+          items: Array.isArray(item.items)
+            ? item.items
+            : [],
+
+          attachments: Array.isArray(item.attachments)
+            ? item.attachments
+            : [],
         }))
       : []
-  } catch (error: unknown) {
+  }
+  catch (error: unknown) {
     purchaseRequestList.value = []
 
     showErrorToast({
       title: 'Error',
-      text: getApiErrorMessage(error, 'Gagal memuat Purchase Request'),
+      text: getApiErrorMessage(
+        error,
+        'Gagal memuat Purchase Request',
+      ),
     })
-  } finally {
+  }
+  finally {
     isLoadingPR.value = false
   }
 }
@@ -742,6 +768,14 @@ const buildPayload = () => {
 }
 
 const savePurchaseOrder = async (): Promise<void> => {
+
+  const payload = buildPayload()
+
+  console.log(
+    '[Purchase Order] CREATE PAYLOAD:',
+    payload,
+  )
+
   if (isSaving.value) return
 
   isSubmitted.value = true
@@ -793,6 +827,54 @@ const goBack = async (): Promise<void> => {
   await router.replace('/non_trade/purchase_order')
 }
 
+watch(
+  [
+    () => form.cabang,
+    () => form.id_department,
+  ],
+  async (
+    [newCabang, newDepartment],
+    [oldCabang, oldDepartment],
+  ) => {
+    const isFilterChanged
+      = newCabang !== oldCabang
+        || newDepartment !== oldDepartment
+
+    if (!isFilterChanged)
+      return
+
+    /*
+     * Reset pilihan PR lama karena cabang
+     * atau department sudah berubah.
+     */
+    form.purchase_request_ids = []
+    purchaseRequestList.value = []
+    visibleAttachmentMap.value = {}
+    prPage.value = 1
+
+    if (!newCabang || !newDepartment)
+      return
+
+    await loadPurchaseRequestsByFilter()
+  },
+)
+
+watch(
+  () => form.id_department,
+  async newDepartmentId => {
+    form.vendor_id = null
+    vendorList.value = []
+
+    if (!newDepartmentId)
+      return
+
+    await loadVendors(false)
+  },
+  {
+    immediate: true,
+  },
+)
+
 onMounted(async () => {
   await permissionStore.loadPermissions()
 
@@ -809,7 +891,7 @@ onMounted(async () => {
     loadVendors(false),
     fetchCabangList(false),
     fetchDepartmentList(false),
-    setUserDefaultDepartment()
+    // setUserDefaultDepartment()
   ])
 })
 </script>
@@ -934,7 +1016,6 @@ onMounted(async () => {
               item-value="id"
               density="comfortable"
               :loading="isLoadingDepartment"
-              readonly
               persistent-hint
               :menu-props="{
                 location: 'bottom',
@@ -1301,7 +1382,7 @@ onMounted(async () => {
                   <VDivider class="my-3" />
                 </template>
 
-                <div class="d-flex justify-space-between text-h6">
+                <div class="d-flex justify-space-between">
                   <span>Grand Total</span>
                   <strong class="text-success">
                     Rp {{ formatNumberWithoutRp(grandTotal) }}
@@ -1576,7 +1657,7 @@ onMounted(async () => {
 }
 
 .po-item-table .col-money {
-  width: 150px;
+  width: 200px;
 }
 
 .item-name {
@@ -1603,7 +1684,7 @@ onMounted(async () => {
   }
 
   .po-item-table .col-money {
-    width: 135px;
+    width: 200px;
   }
 }
 

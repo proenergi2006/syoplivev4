@@ -244,3 +244,76 @@ if (!function_exists('generateGRNumber')) {
         );
     }
 }
+
+if (!function_exists('generateGoodsReturnNumber')) {
+    /**
+     * Generate nomor dokumen Goods Return.
+     */
+    function generateGoodsReturnNumber(
+        $goodsReturn,
+    ): string {
+        /*
+        |--------------------------------------------------------------------------
+        | Validasi data dokumen
+        |--------------------------------------------------------------------------
+        */
+        if (
+            empty($goodsReturn->tanggal_return)
+            || empty($goodsReturn->id_department)
+            || empty($goodsReturn->cabang)
+        ) {
+            throw new Exception(
+                'Data Goods Return tidak lengkap untuk generate nomor dokumen.',
+            );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Kode dokumen
+        |--------------------------------------------------------------------------
+        | 01 = Purchase Request
+        | 02 = Purchase Order
+        | 03 = Goods Receive
+        | 04 = Goods Return
+        |--------------------------------------------------------------------------
+        */
+        $docCode = '04';
+
+        /*
+        |--------------------------------------------------------------------------
+        | Mapping department dan cabang
+        |--------------------------------------------------------------------------
+        | Menggunakan helper mapping yang sama dengan Goods Receive.
+        |--------------------------------------------------------------------------
+        */
+        $department = mapDepartmentCodeById(
+            (int) $goodsReturn->id_department,
+        );
+
+        $branch = mapBranchCode(
+            (int) $goodsReturn->cabang,
+        );
+
+        $month = (int) date(
+            'n',
+            strtotime(
+                (string) $goodsReturn->tanggal_return,
+            ),
+        );
+
+        $year = (int) date(
+            'Y',
+            strtotime(
+                (string) $goodsReturn->tanggal_return,
+            ),
+        );
+
+        return generateDocumentNumber(
+            $docCode,
+            $department,
+            $branch,
+            $month,
+            $year,
+        );
+    }
+}

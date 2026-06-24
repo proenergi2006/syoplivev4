@@ -179,9 +179,9 @@ class PurchaseRequestMailService
 
     /*
     |--------------------------------------------------------------------------
-    | Email tahap approval disetujui
+    | Email PR final approved
     |--------------------------------------------------------------------------
-    | Dikirim kepada requester.
+    | Email kepada creator hanya dikirim ketika seluruh proses approval selesai.
     |--------------------------------------------------------------------------
     */
     public function sendApprovalStep(
@@ -189,37 +189,57 @@ class PurchaseRequestMailService
         User $approver,
         bool $hasPendingApproval,
     ): void {
-        $requester = $this->resolveRequester(
+        /*
+    |--------------------------------------------------------------------------
+    | Jangan kirim email jika masih ada approval berikutnya
+    |--------------------------------------------------------------------------
+    */
+        if ($hasPendingApproval) {
+            return;
+        }
+
+        $creator = $this->resolveCreator(
             $purchaseRequest,
         );
 
-        if (!$requester || !$requester->email) {
+        if (!$creator || !filled($creator->email)) {
             Log::warning(
-                '[Purchase Request Mail] Requester tidak memiliki email',
+                '[Purchase Request Mail] Creator tidak memiliki email',
                 [
                     'purchase_request_id' => $purchaseRequest->id,
                     'nomor_pr' => $purchaseRequest->nomor_pr,
-                    'requester_id' => $purchaseRequest->submitted_by
-                        ?? $purchaseRequest->created_by
-                        ?? null,
+                    'creator_id' => $purchaseRequest->created_by,
                 ],
             );
 
             return;
         }
 
-        Mail::to($requester->email)
-            ->queue(
-                new PurchaseRequestApprovalMail(
-                    pr: $purchaseRequest,
-                    recipient: $requester,
-                    mode: $hasPendingApproval
-                        ? 'step_approved'
-                        : 'final_approved',
-                    actor: $approver,
-                    isFinalApproved: !$hasPendingApproval,
-                ),
+        try {
+            Mail::to($creator->email)
+                ->queue(
+                    new PurchaseRequestApprovalMail(
+                        pr: $purchaseRequest,
+                        recipient: $creator,
+                        mode: 'final_approved',
+                        actor: $approver,
+                        isFinalApproved: true,
+                    ),
+                );
+        } catch (\Throwable $e) {
+            Log::error(
+                '[Purchase Request Mail] Gagal queue final approved email',
+                [
+                    'purchase_request_id' => $purchaseRequest->id,
+                    'nomor_pr' => $purchaseRequest->nomor_pr,
+                    'creator_id' => $creator->id,
+                    'to' => $creator->email,
+                    'message' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ],
             );
+        }
     }
 
     /*
@@ -232,19 +252,28 @@ class PurchaseRequestMailService
         User $rejecter,
         ?string $notes = null,
     ): void {
-        $requester = $this->resolveRequester(
+        $creator = $this->resolveCreator(
             $purchaseRequest,
         );
 
-        if (!$requester || !$requester->email) {
+        if (!$creator || !filled($creator->email)) {
+            Log::warning(
+                '[Purchase Request Mail] Creator tidak memiliki email untuk reject',
+                [
+                    'purchase_request_id' => $purchaseRequest->id,
+                    'nomor_pr' => $purchaseRequest->nomor_pr,
+                    'creator_id' => $purchaseRequest->created_by,
+                ],
+            );
+
             return;
         }
 
-        Mail::to($requester->email)
+        Mail::to($creator->email)
             ->queue(
                 new PurchaseRequestApprovalMail(
                     pr: $purchaseRequest,
-                    recipient: $requester,
+                    recipient: $creator,
                     mode: 'rejected',
                     actor: $rejecter,
                     notes: $notes,
@@ -372,19 +401,33 @@ class PurchaseRequestMailService
         return $query->get();
     }
 
-    private function resolveRequester(
+    // private function resolveRequester(
+    //     PurchaseRequest $purchaseRequest,
+    // ): ?User {
+    //     $requesterId = $purchaseRequest->submitted_by
+    //         ?? $purchaseRequest->created_by
+    //         ?? null;
+
+    //     if (!$requesterId) {
+    //         return null;
+    //     }
+
+    //     return User::query()
+    //         ->whereKey($requesterId)
+    //         ->first();
+    // }
+
+    private function resolveCreator(
         PurchaseRequest $purchaseRequest,
     ): ?User {
-        $requesterId = $purchaseRequest->submitted_by
-            ?? $purchaseRequest->created_by
-            ?? null;
+        $creatorId = (int) ($purchaseRequest->created_by ?? 0);
 
-        if (!$requesterId) {
+        if ($creatorId <= 0) {
             return null;
         }
 
         return User::query()
-            ->whereKey($requesterId)
+            ->whereKey($creatorId)
             ->first();
     }
 }

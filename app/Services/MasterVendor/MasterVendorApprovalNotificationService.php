@@ -125,6 +125,13 @@ class MasterVendorApprovalNotificationService
                 return;
             }
 
+            /*
+        |--------------------------------------------------------------------------
+        | Susun notifikasi aplikasi
+        |--------------------------------------------------------------------------
+        | Notifikasi aplikasi tetap dibuat setiap step approval selesai.
+        |--------------------------------------------------------------------------
+        */
             if ($isFinalApproved) {
                 $title = 'Master Vendor Disetujui';
 
@@ -132,8 +139,6 @@ class MasterVendorApprovalNotificationService
                     'Vendor '
                     . $vendor->nama_vendor
                     . ' telah disetujui dan proses approval telah selesai.';
-
-                $mailType = 'final_approved';
             } else {
                 $title = 'Approval Master Vendor';
 
@@ -143,8 +148,6 @@ class MasterVendorApprovalNotificationService
                     . ' telah disetujui oleh '
                     . $this->userDisplayName($approvedBy)
                     . '.';
-
-                $mailType = 'approved';
             }
 
             $this->createNotification(
@@ -157,12 +160,19 @@ class MasterVendorApprovalNotificationService
                 message: $message,
             );
 
-            $this->sendEmail(
-                vendor: $vendor,
-                recipient: $creator,
-                mailType: $mailType,
-                actor: $approvedBy,
-            );
+            /*
+        |--------------------------------------------------------------------------
+        | Email creator hanya saat final approval
+        |--------------------------------------------------------------------------
+        */
+            if ($isFinalApproved) {
+                $this->sendEmail(
+                    vendor: $vendor,
+                    recipient: $creator,
+                    mailType: 'final_approved',
+                    actor: $approvedBy,
+                );
+            }
         } catch (\Throwable $e) {
             Log::error(
                 '[Master Vendor Notification] Gagal notify creator approved',

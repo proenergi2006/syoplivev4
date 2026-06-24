@@ -60,6 +60,7 @@ interface PurchaseRequestItem {
   status_po: string | null
 
   can_approve?: boolean | number | string | null
+  can_submit?: boolean | number | string | null
   approval_id?: number | null
   approval_step_order?: number | null
   approval_label?: string | null
@@ -838,14 +839,35 @@ const fetchPurchaseRequests = async (): Promise<void> => {
     totalPage.value = Number(meta?.last_page ?? 1)
     currentPage.value = Number(meta?.current_page ?? 1)
   } catch (error: unknown) {
-    loadError.value = true
     const err = error as AxiosErrorShape
+    const status = err.response?.status
 
-    console.error('[Purchase Requisition] FETCH ERROR:', err)
+    /*
+    * 401 berarti token tidak ada atau sudah kedaluwarsa.
+    * Jangan tampilkan toast Unauthenticated karena user
+    * sudah diarahkan kembali ke halaman login.
+    */
+    if (status === 401) {
+      rows.value = []
+      totalData.value = 0
+      totalPage.value = 1
+
+      return
+    }
+
+    loadError.value = true
+
+    console.error(
+      '[Purchase Requisition] FETCH ERROR:',
+      err,
+    )
 
     showErrorToast({
       title: 'Error',
-      text: getApiErrorMessage(err, 'Gagal memuat data purchase requisition'),
+      text: getApiErrorMessage(
+        err,
+        'Gagal memuat data purchase requisition',
+      ),
     })
 
     rows.value = []
@@ -1461,11 +1483,7 @@ onBeforeUnmount(() => {
                     </VListItem>
 
                     <VListItem
-                      v-if="
-                        !['draft', 'rejected'].includes(
-                          String(v.status || '').toLowerCase()
-                        )
-                      "
+                      v-if="String(v.status).toLowerCase() == 'approved' && String(v.status).toLowerCase() !== 'rejected'"
                       href="javascript:void(0)"
                       :disabled="printLoadingId === v.public_id"
                       @click="printPurchaseRequisition(v.public_id)"
@@ -1536,7 +1554,7 @@ onBeforeUnmount(() => {
                     </VListItem>
 
                     <VListItem
-                      v-if="String(v.status).toLowerCase() === 'draft'"
+                      v-if="v.can_submit"
                       href="javascript:void(0)"
                       @click="openSubmitPurchaseRequest(v)"
                     >

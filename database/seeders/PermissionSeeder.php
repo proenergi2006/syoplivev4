@@ -81,6 +81,13 @@ class PermissionSeeder extends Seeder
             ],
             [
                 'module' => 'purchase_request',
+                'action' => 'submit',
+                'code' => 'purchase_request.submit',
+                'name' => 'Submit Purchase Requisition',
+                'description' => 'Submit Purchase Requisition ke proses approval',
+            ],
+            [
+                'module' => 'purchase_request',
                 'action' => 'delete',
                 'code' => 'purchase_request.delete',
                 'name' => 'Delete Purchase Requisition',
@@ -112,6 +119,13 @@ class PermissionSeeder extends Seeder
                 'code' => 'purchase_order.update',
                 'name' => 'Update Purchase Order',
                 'description' => 'Mengubah data Purchase Order.',
+            ],
+            [
+                'module' => 'purchase_order',
+                'action' => 'submit',
+                'code' => 'purchase_order.submit',
+                'name' => 'Submit Purchase Order',
+                'description' => 'Submit Purchase Order ke proses approval',
             ],
             [
                 'module' => 'purchase_order',

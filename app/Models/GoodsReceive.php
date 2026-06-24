@@ -4,6 +4,8 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class GoodsReceive extends Model
 {
@@ -25,13 +27,21 @@ class GoodsReceive extends Model
         'cancelled_by',
         'cancelled_at',
         'cancel_notes',
-        'nomor_surat_jalan'
+        'nomor_surat_jalan',
+
+        'cabang',
+        'id_department',
+
+        'source_goods_return_id',
     ];
 
     protected $casts = [
         'tanggal_gr' => 'date',
         'posted_at' => 'datetime',
         'cancelled_at' => 'datetime',
+        'cabang' => 'integer',
+        'id_department' => 'integer',
+        'source_goods_return_id' => 'integer',
     ];
 
     protected $appends = [
@@ -76,6 +86,22 @@ class GoodsReceive extends Model
     public function attachments()
     {
         return $this->hasMany(GoodsReceiveAttachment::class, 'goods_receive_id');
+    }
+
+    public function sourceGoodsReturn(): BelongsTo
+    {
+        return $this->belongsTo(
+            GoodsReturn::class,
+            'source_goods_return_id',
+        );
+    }
+
+    public function goodsReturns(): HasMany
+    {
+        return $this->hasMany(
+            GoodsReturn::class,
+            'goods_receive_id',
+        );
     }
 
     public const STATUS_DRAFT = 'DRAFT';

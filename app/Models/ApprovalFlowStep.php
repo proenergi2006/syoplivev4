@@ -18,6 +18,7 @@ class ApprovalFlowStep extends Model
         'approver_id',
         'approval_mode',
         'is_required',
+        'approver_scope',
     ];
 
     protected $casts = [
@@ -25,6 +26,9 @@ class ApprovalFlowStep extends Model
         'approver_id' => 'integer',
         'is_required' => 'boolean',
     ];
+
+    public const APPROVER_SCOPE_GLOBAL = 'GLOBAL';
+    public const APPROVER_SCOPE_SAME_BRANCH = 'SAME_BRANCH';
 
     public const APPROVER_TYPE_USER = 'USER';
     public const APPROVER_TYPE_ROLE = 'ROLE';

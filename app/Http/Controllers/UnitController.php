@@ -64,6 +64,7 @@ class UnitController extends Controller
         try {
 
             $query = Unit::query()
+                ->where('is_active', true)
                 ->orderBy('nama', 'asc');
 
             // Search

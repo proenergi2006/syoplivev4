@@ -1259,6 +1259,53 @@ class MasterVendorController extends Controller
                 ])
                 ->findOrFail($vendorId);
 
+            /*
+            |--------------------------------------------------------------------------
+            | Audit User
+            |--------------------------------------------------------------------------
+            */
+            $auditUserIds = collect([
+                $vendor->created_by,
+                $vendor->updated_by,
+                $vendor->submitted_by,
+            ])
+                ->filter(
+                    fn($id) => $id !== null
+                        && (int) $id > 0,
+                )
+                ->map(
+                    fn($id) => (int) $id,
+                )
+                ->unique()
+                ->values();
+
+            $auditUsers = User::query()
+                ->whereIn(
+                    'id',
+                    $auditUserIds->all(),
+                )
+                ->get()
+                ->keyBy('id');
+
+            $resolveAuditUserName = function (
+                mixed $userId,
+            ) use (
+                $auditUsers,
+            ): ?string {
+                if (!$userId) {
+                    return null;
+                }
+
+                $auditUser = $auditUsers->get(
+                    (int) $userId,
+                );
+
+                return $auditUser?->name
+                    ?? $auditUser?->fullname
+                    ?? $auditUser?->email
+                    ?? null;
+            };
+
             $approvalUserIds = $vendor->approvals
                 ->filter(function (
                     MasterVendorApproval $approval,
@@ -1451,6 +1498,37 @@ class MasterVendorController extends Controller
                     'kode_vendor'
                     => $vendor->kode_vendor,
 
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Audit Information
+                    |--------------------------------------------------------------------------
+                    */
+                    'created_by'
+                    => $vendor->created_by
+                        ? (int) $vendor->created_by
+                        : null,
+
+                    'created_by_name'
+                    => $resolveAuditUserName(
+                        $vendor->created_by,
+                    ),
+
+                    'created_at'
+                    => $vendor->created_at,
+
+                    'updated_by'
+                    => $vendor->updated_by
+                        ? (int) $vendor->updated_by
+                        : null,
+
+                    'updated_by_name'
+                    => $resolveAuditUserName(
+                        $vendor->updated_by,
+                    ),
+
+                    'updated_at'
+                    => $vendor->updated_at,
+
                     'inisial_vendor'
                     => $vendor->inisial_vendor,
 
@@ -1551,11 +1629,18 @@ class MasterVendorController extends Controller
                     'status_approval'
                     => $vendor->status_approval,
 
+                    'submitted_by'
+                    => $vendor->submitted_by
+                        ? (int) $vendor->submitted_by
+                        : null,
+
+                    'submitted_by_name'
+                    => $resolveAuditUserName(
+                        $vendor->submitted_by,
+                    ),
+
                     'submitted_at'
                     => $vendor->submitted_at,
-
-                    'submitted_by'
-                    => $vendor->submitted_by,
 
                     'transaksi_ids'
                     => $vendor->transaksi
@@ -2661,12 +2746,12 @@ class MasterVendorController extends Controller
             | Untuk mode ALL, creator tidak menerima notifikasi setiap satu
             | kandidat approve; notifikasi dikirim setelah step selesai.
             */
-                if ($stepCompleted) {
+                if ($isFinalApproved) {
                     $this->vendorApprovalNotificationService
                         ->notifyCreatorApproved(
                             vendor: $vendor,
                             approvedBy: $user,
-                            isFinalApproved: $isFinalApproved,
+                            isFinalApproved: true,
                         );
                 }
             } catch (\Throwable $notificationError) {
@@ -2928,6 +3013,9 @@ class MasterVendorController extends Controller
                 notes: $notes,
             );
 
+            $vendor->is_active = false;
+            $vendor->save();
+
             $vendor->refresh();
 
             $approval = $result['approval'] ?? null;
@@ -2974,6 +3062,9 @@ class MasterVendorController extends Controller
 
                     'status_approval'
                     => $vendor->status_approval,
+
+                    'is_active'
+                    => (bool) $vendor->is_active,
 
                     'approval_status'
                     => $approval?->status,

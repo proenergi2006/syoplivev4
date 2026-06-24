@@ -14,7 +14,7 @@ import {
   showConfirmAlert
 } from '@/utils/alert'
 import { getApiErrorMessage } from '@/utils/apiHelper'
-import { formatStatusPKP, formatKategoriVendor, toTitleCase, formatDate } from '@/utils/textFormatter'
+import { formatStatusPKP, formatKategoriVendor, toTitleCase, formatAuditDateTime } from '@/utils/textFormatter'
 import { usePolling } from '@core/composable/usePolling'
 import { usePermissionStore } from '@/stores/permission'
 import ApprovalHistoryDialog from '@core/components/ApprovalHistoryVendorDialog.vue'
@@ -23,7 +23,6 @@ import Swal from 'sweetalert2'
 interface Vendor {
   id: number
   public_id: string
-  kode_vendor: string
   nama_vendor: string
   inisial_vendor: string | null
   kategori_vendor: string | null
@@ -53,10 +52,19 @@ interface Vendor {
     status: string
   } | null
 
-  created_time?: string | null
-  created_ip?: string | null
+  kode_vendor?: string | null
+
   created_by?: number | null
-  lastupdate_time?: string | null
+  created_by_name?: string | null
+  created_at?: string | null
+
+  updated_by?: number | null
+  updated_by_name?: string | null
+  updated_at?: string | null
+
+  submitted_by?: number | null
+  submitted_by_name?: string | null
+  submitted_at?: string | null
 }
 
 interface VendorListResponse {
@@ -1014,6 +1022,12 @@ const submitVendor = async (vendor: any): Promise<void> => {
   }
 }
 
+const isVendorRejected = (vendor: Vendor): boolean => {
+  return String(vendor.status_approval ?? '')
+    .trim()
+    .toUpperCase() === 'REJECTED'
+}
+
 // =========================
 // Snackbar
 // =========================
@@ -1192,17 +1206,34 @@ const fetchRows = async (): Promise<void> => {
     }
   } catch (error: unknown) {
     const err = error as AxiosErrorShape
-    loadError.value = true
+    const status = err.response?.status
 
     rows.value = []
     totalRows.value = 0
     totalPage.value = 1
 
-    console.error('[Purchase Request] FETCH ERROR:', err)
+    /*
+    * Token tidak ada atau sudah kedaluwarsa.
+    * Jangan tampilkan toast "Unauthenticated"
+    * ketika user diarahkan ke halaman login.
+    */
+    if (status === 401) {
+      return
+    }
+
+    loadError.value = true
+
+    console.error(
+      '[Vendor] FETCH ERROR:',
+      err,
+    )
 
     showErrorToast({
       title: 'Error',
-      text: getApiErrorMessage(err, 'Gagal memuat data purchase request'),
+      text: getApiErrorMessage(
+        err,
+        'Gagal memuat data vendor',
+      ),
     })
   } finally {
     loading.value = false
@@ -1504,19 +1535,27 @@ onMounted(async () => {
                           />
                         </template>
 
-                        <VListItemTitle>Edit</VListItemTitle>
+                        <VListItemTitle>
+                          Edit
+                        </VListItemTitle>
                       </VListItem>
 
-                      <VListItem v-if="v.can_submit === true" :disabled="submitVendorLoading" @click="submitVendor(v)">
+                      <VListItem
+                        v-if="v.can_submit === true"
+                        :disabled="submitVendorLoading"
+                        @click="submitVendor(v)"
+                      >
                         <template #prepend>
                           <VIcon
+                            icon="mdi-send-outline"
                             :size="20"
                             class="me-3"
-                            icon="mdi-send-outline"
                           />
                         </template>
 
-                        <VListItemTitle>Submit</VListItemTitle>
+                        <VListItemTitle>
+                          Submit
+                        </VListItemTitle>
                       </VListItem>
 
                       <VListItem
@@ -1533,26 +1572,33 @@ onMounted(async () => {
                           />
                         </template>
 
-                        <VListItemTitle class="text-error">Delete</VListItemTitle>
-                      </VListItem>
-
-                      <VListItem
-                        href="javascript:void(0)"
-                        @click="openStatusDialog(v)"
-                      >
-                        <template #prepend>
-                          <VIcon
-                            :icon="v.is_active ? 'mdi-toggle-switch-off-outline' : 'mdi-toggle-switch-outline'"
-                            :size="20"
-                            class="me-3"
-                          />
-                        </template>
-
-                        <VListItemTitle>
-                          {{ v.is_active ? 'Nonaktifkan' : 'Aktifkan' }}
+                        <VListItemTitle class="text-error">
+                          Delete
                         </VListItemTitle>
                       </VListItem>
                     </template>
+
+                    <VListItem
+                      v-if="!isVendorRejected(v)"
+                      href="javascript:void(0)"
+                      @click="openStatusDialog(v)"
+                    >
+                      <template #prepend>
+                        <VIcon
+                          :icon="
+                            v.is_active
+                              ? 'mdi-toggle-switch-off-outline'
+                              : 'mdi-toggle-switch-outline'
+                          "
+                          :size="20"
+                          class="me-3"
+                        />
+                      </template>
+
+                      <VListItemTitle>
+                        {{ v.is_active ? 'Nonaktifkan' : 'Aktifkan' }}
+                      </VListItemTitle>
+                    </VListItem>
 
                     <!-- ========================= -->
                     <!-- ACTION PENDING REVIEW -->
@@ -1738,8 +1784,27 @@ onMounted(async () => {
                     <div class="text-h5 font-weight-bold">
                       {{ detailVendor.nama_vendor || '-' }}
                     </div>
-                    <div class="text-body-2 text-medium-emphasis mt-1">
-                      Inisial Vendor: {{ detailVendor.inisial_vendor || '-' }}
+
+                    <div class="vendor-summary-meta mt-2">
+                      <div class="vendor-summary-item">
+                        <span class="vendor-summary-label">
+                          Kode Vendor
+                        </span>
+
+                        <span class="vendor-summary-value">
+                          {{ detailVendor.kode_vendor || '-' }}
+                        </span>
+                      </div>
+
+                      <div class="vendor-summary-item">
+                        <span class="vendor-summary-label">
+                          Inisial Vendor
+                        </span>
+
+                        <span class="vendor-summary-value">
+                          {{ detailVendor.inisial_vendor || '-' }}
+                        </span>
+                      </div>
                     </div>
                   </div>
 
@@ -1754,9 +1819,153 @@ onMounted(async () => {
                 </div>
               </div>
 
+              <!-- Informasi Aktivitas -->
+<section class="detail-section">
+  <div class="detail-section-title">
+    Informasi Aktivitas
+  </div>
+
+  <VRow>
+    <!-- Dibuat -->
+    <VCol
+      cols="12"
+      md="4"
+    >
+      <VCard
+        variant="tonal"
+        color="primary"
+        class="h-100"
+      >
+        <VCardText>
+          <div class="d-flex align-start ga-3">
+            <VAvatar
+              size="38"
+              color="primary"
+              variant="tonal"
+            >
+              <VIcon
+                icon="tabler-user-plus"
+                size="20"
+              />
+            </VAvatar>
+
+            <div>
+              <div class="text-caption text-medium-emphasis">
+                Dibuat oleh
+              </div>
+
+              <div class="font-weight-medium">
+                {{ detailVendor.created_by_name || '-' }}
+              </div>
+
+              <div class="text-caption text-medium-emphasis mt-2">
+                Dibuat pada
+              </div>
+
+              <div class="text-body-2">
+                {{ formatAuditDateTime(detailVendor.created_at) }}
+              </div>
+            </div>
+          </div>
+        </VCardText>
+      </VCard>
+    </VCol>
+
+    <!-- Diupdate -->
+    <VCol
+      cols="12"
+      md="4"
+    >
+      <VCard
+        variant="tonal"
+        color="warning"
+        class="h-100"
+      >
+        <VCardText>
+          <div class="d-flex align-start ga-3">
+            <VAvatar
+              size="38"
+              color="warning"
+              variant="tonal"
+            >
+              <VIcon
+                icon="tabler-edit"
+                size="20"
+              />
+            </VAvatar>
+
+            <div>
+              <div class="text-caption text-medium-emphasis">
+                Diupdate oleh
+              </div>
+
+              <div class="font-weight-medium">
+                {{ detailVendor.updated_by_name || '-' }}
+              </div>
+
+              <div class="text-caption text-medium-emphasis mt-2">
+                Diupdate pada
+              </div>
+
+              <div class="text-body-2">
+                {{ formatAuditDateTime(detailVendor.updated_at) }}
+              </div>
+            </div>
+          </div>
+        </VCardText>
+      </VCard>
+    </VCol>
+
+    <!-- Disubmit -->
+    <VCol
+      cols="12"
+      md="4"
+    >
+      <VCard
+        variant="tonal"
+        color="success"
+        class="h-100"
+      >
+        <VCardText>
+          <div class="d-flex align-start ga-3">
+            <VAvatar
+              size="38"
+              color="success"
+              variant="tonal"
+            >
+              <VIcon
+                icon="tabler-send"
+                size="20"
+              />
+            </VAvatar>
+
+            <div>
+              <div class="text-caption text-medium-emphasis">
+                Disubmit oleh
+              </div>
+
+              <div class="font-weight-medium">
+                {{ detailVendor.submitted_by_name || '-' }}
+              </div>
+
+              <div class="text-caption text-medium-emphasis mt-2">
+                Disubmit pada
+              </div>
+
+              <div class="text-body-2">
+                {{ formatAuditDateTime(detailVendor.submitted_at) }}
+              </div>
+            </div>
+          </div>
+        </VCardText>
+      </VCard>
+    </VCol>
+  </VRow>
+</section>
+
               <!-- Data Utama Vendor -->
               <section class="detail-section">
-                <div class="detail-section-title">Data Utama Vendor</div>
+                <div class="detail-section-title">Data Vendor</div>
 
                 <VRow>
                   <VCol cols="12" md="6">
@@ -2311,5 +2520,34 @@ onMounted(async () => {
   &:hover {
     background: rgba(var(--v-theme-warning), 0.09);
   }
+}
+
+.vendor-summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 32px;
+  row-gap: 8px;
+}
+
+.vendor-summary-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vendor-summary-label {
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  font-size: 0.875rem;
+}
+
+.vendor-summary-label::after {
+  content: ':';
+}
+
+.vendor-summary-value {
+  color: rgba(var(--v-theme-on-surface), 0.87);
+  font-size: 0.875rem;
+  font-weight: 600;
 }
 </style>

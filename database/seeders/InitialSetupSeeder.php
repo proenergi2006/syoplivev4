@@ -194,6 +194,18 @@ class InitialSetupSeeder extends Seeder
                 ]
             );
 
+            $goodsReturnMenuId = $this->upsertMenu(
+                ['name' => 'Goods Return', 'parent_id' => $purchaseMenuId],
+                [
+                    'path' => '/non_trade/goods_return',
+                    'route_name' => 'goods-return',
+                    'icon' => 'tabler-archive',
+                    'order_no' => 4,
+                    'permission_key' => null,
+                    'is_active' => true,
+                ]
+            );
+
             // Master children
             $regionalMenuId = $this->upsertMenu(
                 ['name' => 'Regional', 'parent_id' => $masterMenuId],
@@ -574,6 +586,7 @@ class InitialSetupSeeder extends Seeder
                 $purchaseRequestMenuId,
                 $purchaseOrderMenuId,
                 $goodsReceiveMenuId,
+                $goodsReturnMenuId,
                 $regionalMenuId,
                 $provinsiMenuId,
                 $kabMenuId,

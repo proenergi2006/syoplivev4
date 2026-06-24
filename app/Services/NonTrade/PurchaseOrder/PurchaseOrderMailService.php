@@ -183,50 +183,86 @@ class PurchaseOrderMailService
         }
     }
 
-    /**
-     * Kirim status approval kepada requester.
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | Email PO final approved
+    |--------------------------------------------------------------------------
+    | Email kepada creator hanya dikirim ketika seluruh proses approval selesai.
+    |--------------------------------------------------------------------------
+    */
     public function sendApprovalStep(
         PurchaseOrder $po,
         User $approver,
         bool $hasPendingApproval,
     ): void {
-        if (!$po->requester_signed_by) {
+        /*
+        |--------------------------------------------------------------------------
+        | Jangan kirim email jika approval belum final
+        |--------------------------------------------------------------------------
+        */
+        if ($hasPendingApproval) {
             return;
         }
 
-        $requester = User::query()
-            ->find($po->requester_signed_by);
+        $creatorId = (int) ($po->created_by ?? 0);
 
-        if (
-            !$requester
-            || empty(trim((string) $requester->email))
-        ) {
+        if ($creatorId <= 0) {
             Log::warning(
-                '[Purchase Order Mail] Email requester tidak ditemukan',
+                '[Purchase Order Mail] Creator PO tidak ditemukan',
                 [
                     'po_id' => $po->id,
                     'nomor_po' => $po->nomor_po,
-                    'requester_signed_by'
-                    => $po->requester_signed_by,
+                    'created_by' => $po->created_by,
                 ],
             );
 
             return;
         }
 
-        Mail::to($requester->email)
-            ->queue(
-                new PurchaseOrderApprovalMail(
-                    po: $po,
-                    recipient: $requester,
-                    mode: $hasPendingApproval
-                        ? 'step_approved'
-                        : 'final_approved',
-                    actor: $approver,
-                    isFinalApproved: !$hasPendingApproval,
-                ),
+        $creator = User::query()
+            ->find($creatorId);
+
+        if (
+            !$creator
+            || empty(trim((string) $creator->email))
+        ) {
+            Log::warning(
+                '[Purchase Order Mail] Email creator tidak ditemukan',
+                [
+                    'po_id' => $po->id,
+                    'nomor_po' => $po->nomor_po,
+                    'creator_id' => $creatorId,
+                ],
             );
+
+            return;
+        }
+
+        try {
+            Mail::to($creator->email)
+                ->queue(
+                    new PurchaseOrderApprovalMail(
+                        po: $po,
+                        recipient: $creator,
+                        mode: 'final_approved',
+                        actor: $approver,
+                        isFinalApproved: true,
+                    ),
+                );
+        } catch (\Throwable $e) {
+            Log::error(
+                '[Purchase Order Mail] Gagal queue final approved email',
+                [
+                    'po_id' => $po->id,
+                    'nomor_po' => $po->nomor_po,
+                    'creator_id' => $creator->id,
+                    'to' => $creator->email,
+                    'message' => $e->getMessage(),
+                    'file' => $e->getFile(),
+                    'line' => $e->getLine(),
+                ],
+            );
+        }
     }
 
     /**

@@ -36,6 +36,7 @@ interface ApprovalStep {
   label?: string
   is_required?: boolean
   approval_mode?: 'ANY' | 'ALL' | string
+  approver_scope: 'GLOBAL' | 'SAME_BRANCH'
 }
 
 interface ApprovalFlowItem {
@@ -87,6 +88,7 @@ interface EditApprovalStep {
   role_name?: string
   label: string
   is_required: boolean
+  approver_scope: 'GLOBAL' | 'SAME_BRANCH'
 }
 
 interface EditApprovalFlowForm {
@@ -302,6 +304,7 @@ const addEditStep = (): void => {
     approver_id: null,
     label: '',
     is_required: true,
+    approver_scope: 'GLOBAL',
   })
 }
 

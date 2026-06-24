@@ -1808,8 +1808,8 @@ onMounted(async () => {
                   <VDivider class="my-3" />
                 </template>
 
-                <div class="d-flex justify-space-between text-h6">
-                  <span>Grand Total</span>
+                <div class="d-flex justify-space-between">
+                  <span><b>Grand Total</b></span>
                   <strong class="text-success">
                     Rp {{ formatNumberWithoutRp(grandTotal) }}
                   </strong>
@@ -2041,7 +2041,7 @@ onMounted(async () => {
 }
 
 .po-item-table .col-money {
-  width: 150px;
+  width: 200px;
 }
 
 .item-name {
@@ -2068,7 +2068,7 @@ onMounted(async () => {
   }
 
   .po-item-table .col-money {
-    width: 135px;
+    width: 200px;
   }
 }
 

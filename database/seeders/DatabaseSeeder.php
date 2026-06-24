@@ -26,6 +26,7 @@ class DatabaseSeeder extends Seeder
             ApprovalFlowSeeder::class,
             PermissionSeeder::class,
             PermissionModuleSeeder::class,
+            GoodsReturnReasonSeeder::class,
         ]);
     }
 }

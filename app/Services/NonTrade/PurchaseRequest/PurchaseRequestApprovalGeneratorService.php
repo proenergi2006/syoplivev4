@@ -115,9 +115,137 @@ class PurchaseRequestApprovalGeneratorService
         | Snapshot seluruh approver ke transaksi PR
         |--------------------------------------------------------------------------
         */
+        /*
+        |--------------------------------------------------------------------------
+        | Menyimpan user SAME_BRANCH yang sudah dibuat
+        |--------------------------------------------------------------------------
+        | Mencegah user yang mempunyai lebih dari satu role pada step yang sama
+        | tergenerate dua kali.
+        |--------------------------------------------------------------------------
+        */
+        $resolvedSameBranchUsers = [];
+
         foreach ($flowSteps as $flowStep) {
             $stepOrder = (int) $flowStep->step_order;
 
+            $approverType = strtoupper(
+                trim((string) $flowStep->approver_type),
+            );
+
+            $approverScope = strtoupper(
+                trim(
+                    (string) (
+                        $flowStep->approver_scope
+                        ?: ApprovalFlowStep::APPROVER_SCOPE_GLOBAL
+                    ),
+                ),
+            );
+
+            $approvalMode = strtoupper(
+                trim(
+                    (string) (
+                        $flowStep->approval_mode
+                        ?: 'ANY'
+                    ),
+                ),
+            );
+
+            $status = $stepOrder === $firstStepOrder
+                ? PurchaseRequestApproval::STATUS_WAITING
+                : PurchaseRequestApproval::STATUS_PENDING;
+
+            /*
+            |--------------------------------------------------------------------------
+            | Approver berdasarkan role dan cabang dokumen
+            |--------------------------------------------------------------------------
+            */
+            if (
+                $approverScope
+                === ApprovalFlowStep::APPROVER_SCOPE_SAME_BRANCH
+            ) {
+                /*
+                |--------------------------------------------------------------------------
+                | Untuk sementara SAME_BRANCH hanya mendukung approver ROLE
+                |--------------------------------------------------------------------------
+                */
+                if (
+                    $approverType
+                    !== PurchaseRequestApproval::APPROVER_TYPE_ROLE
+                ) {
+                    throw ValidationException::withMessages([
+                        'approval_flow' => [
+                            sprintf(
+                                'Approver scope SAME_BRANCH pada step "%s" harus menggunakan tipe ROLE.',
+                                $flowStep->label ?? '-',
+                            ),
+                        ],
+                    ]);
+                }
+
+                $branchApprovers = $this->resolveSameBranchApprovers(
+                    $flowStep,
+                    $purchaseRequest,
+                );
+
+                foreach ($branchApprovers as $branchApprover) {
+                    /*
+                |--------------------------------------------------------------------------
+                | Hindari user yang sama tergenerate dua kali pada step yang sama
+                |--------------------------------------------------------------------------
+                */
+                    $uniqueKey = sprintf(
+                        '%d-%d',
+                        $stepOrder,
+                        (int) $branchApprover->id,
+                    );
+
+                    if (isset($resolvedSameBranchUsers[$uniqueKey])) {
+                        continue;
+                    }
+
+                    $resolvedSameBranchUsers[$uniqueKey] = true;
+
+                    PurchaseRequestApproval::create([
+                        'purchase_request_id' => $purchaseRequest->id,
+
+                        'approval_flow_id' => $approvalFlow->id,
+
+                        'approval_flow_step_id' => $flowStep->id,
+
+                        'step_order' => $stepOrder,
+
+                        'label' => $flowStep->label,
+
+                        /*
+                    |--------------------------------------------------------------------------
+                    | Hasil resolver disimpan sebagai USER konkret
+                    |--------------------------------------------------------------------------
+                    */
+                        'approver_type'
+                        => PurchaseRequestApproval::APPROVER_TYPE_USER,
+
+                        'approver_id'
+                        => $branchApprover->id,
+
+                        'approver_name_snapshot'
+                        => $branchApprover->name,
+
+                        'approval_mode'
+                        => $approvalMode,
+
+                        'status'
+                        => $status,
+                    ]);
+                }
+
+                continue;
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Approver GLOBAL memakai mekanisme lama
+            |--------------------------------------------------------------------------
+            */
             PurchaseRequestApproval::create([
                 'purchase_request_id' => $purchaseRequest->id,
 
@@ -129,11 +257,7 @@ class PurchaseRequestApprovalGeneratorService
 
                 'label' => $flowStep->label,
 
-                'approver_type' => strtoupper(
-                    trim(
-                        (string) $flowStep->approver_type,
-                    ),
-                ),
+                'approver_type' => $approverType,
 
                 'approver_id' => $flowStep->approver_id,
 
@@ -142,28 +266,60 @@ class PurchaseRequestApprovalGeneratorService
                     $flowStep,
                 ),
 
-                'approval_mode' => strtoupper(
-                    trim(
-                        (string) (
-                            $flowStep->approval_mode
-                            ?: 'ANY'
-                        ),
-                    ),
-                ),
+                'approval_mode'
+                => $approvalMode,
 
-                /*
-                |--------------------------------------------------------------------------
-                | Step pertama aktif
-                |--------------------------------------------------------------------------
-                | WAITING  = bisa diproses approver sekarang
-                | PENDING  = menunggu step sebelumnya selesai
-                |--------------------------------------------------------------------------
-                */
-                'status' => $stepOrder === $firstStepOrder
-                    ? PurchaseRequestApproval::STATUS_WAITING
-                    : PurchaseRequestApproval::STATUS_PENDING,
+                'status'
+                => $status,
             ]);
         }
+    }
+
+    private function resolveSameBranchApprovers(
+        ApprovalFlowStep $flowStep,
+        PurchaseRequest $purchaseRequest,
+    ): \Illuminate\Support\Collection {
+        $branchId = (int) $purchaseRequest->cabang;
+        $roleId = (int) $flowStep->approver_id;
+
+        if ($branchId <= 0) {
+            throw ValidationException::withMessages([
+                'cabang' => [
+                    'Cabang Purchase Requisition belum ditentukan.',
+                ],
+            ]);
+        }
+
+        if ($roleId <= 0) {
+            throw ValidationException::withMessages([
+                'approval_flow' => [
+                    sprintf(
+                        'Role approver untuk step "%s" belum dikonfigurasi.',
+                        $flowStep->label ?? '-',
+                    ),
+                ],
+            ]);
+        }
+
+        $approvers = User::query()
+            ->where('users.cabang_id', $branchId)
+            ->whereHas('roles', function ($roleQuery) use ($roleId) {
+                $roleQuery->where('roles.id', $roleId);
+            })
+            ->get();
+
+        // if ($approvers->isEmpty()) {
+        //     throw ValidationException::withMessages([
+        //         'approval_flow' => [
+        //             sprintf(
+        //                 'Approver "%s" untuk cabang PR belum ditemukan.',
+        //                 $flowStep->label ?? '-',
+        //             ),
+        //         ],
+        //     ]);
+        // }
+
+        return $approvers;
     }
 
     private function calculateTotalAmount(

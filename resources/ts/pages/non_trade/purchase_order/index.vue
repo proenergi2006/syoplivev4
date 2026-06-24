@@ -55,6 +55,7 @@ interface PurchaseOrderItem {
   can_approve?: boolean
   can_update?: boolean
   can_delete?: boolean
+  can_submit?: boolean
   is_owner?: boolean
   status_receive: string | null
 }
@@ -373,13 +374,35 @@ const fetchPurchaseOrders = async (): Promise<void> => {
     totalPage.value = Number(meta?.last_page ?? 1)
     currentPage.value = Number(meta?.current_page ?? 1)
   } catch (error: unknown) {
+    const err = error as AxiosErrorShape
+    const status = err.response?.status
+
+    /*
+    * 401 berarti token tidak ada atau sudah kedaluwarsa.
+    * Jangan tampilkan toast Unauthenticated karena user
+    * sudah diarahkan kembali ke halaman login.
+    */
+    if (status === 401) {
+      rows.value = []
+      totalData.value = 0
+      totalPage.value = 1
+
+      return
+    }
+
     loadError.value = true
 
-    const err = error as AxiosErrorShape
+    console.error(
+      '[Purchase Order] FETCH ERROR:',
+      err,
+    )
 
     showErrorToast({
       title: 'Error',
-      text: getApiErrorMessage(err, 'Gagal memuat data purchase order'),
+      text: getApiErrorMessage(
+        err,
+        'Gagal memuat data purchase order',
+      ),
     })
 
     rows.value = []
@@ -1160,7 +1183,7 @@ onBeforeUnmount(() => {
                     </VListItem>
 
                     <VListItem
-                      v-if="String(v.status).toLowerCase() !== 'draft' && String(v.status).toLowerCase() !== 'rejected'"
+                      v-if="String(v.status).toLowerCase() == 'approved' && String(v.status).toLowerCase() !== 'rejected'"
                       href="javascript:void(0)"
                       :disabled="printLoadingId === v.public_id"
                       @click="printPurchaseOrder(v.public_id)"
@@ -1183,7 +1206,7 @@ onBeforeUnmount(() => {
                       </template>
 
                       <VListItemTitle>
-                        {{ printLoadingId === v.public_id ? 'Membuka...' : 'Cetak PO' }}
+                        {{ printLoadingId === v.public_id ? 'Membuka...' : 'Cetak' }}
                       </VListItemTitle>
                     </VListItem>
 
@@ -1223,7 +1246,7 @@ onBeforeUnmount(() => {
                     </VListItem>
 
                     <VListItem
-                      v-if="String(v.status).toLowerCase() === 'draft'"
+                      v-if="v.can_submit"
                       href="javascript:void(0)"
                       @click="openSubmitPO(v)"
                     >

@@ -50,12 +50,15 @@ interface ApproverForm {
   approver_id: number | null
 }
 
+type ApproverScope = 'GLOBAL' | 'SAME_BRANCH'
+
 interface ApprovalStepForm {
   local_key: string
   step_order: number
   label: string
   approval_mode: 'ANY' | 'ALL'
   approvers: ApproverForm[]
+  approver_scope: ApproverScope
 }
 
 interface ApprovalFlowForm {
@@ -91,6 +94,17 @@ const departmentOptions = ref<MasterDepartmentOption[]>([])
 const APPROVAL_FLOW_INDEX_PATH = '/master/approval-flow'
 const APPROVAL_FLOW_STORE_ENDPOINT = '/master/approval-flows'
 
+const approverScopeOptions = [
+  {
+    title: 'Global',
+    value: 'GLOBAL',
+  },
+  {
+    title: 'Sesuai Cabang Dokumen',
+    value: 'SAME_BRANCH',
+  },
+]
+
 const approverTypeOptions = [
   { title: 'Role', value: 'ROLE' },
   { title: 'User', value: 'USER' },
@@ -102,8 +116,8 @@ const areaTypeOptions = [
 ]
 
 const approvalModeOptions = [
-  { title: 'ANY - Salah satu approver cukup', value: 'ANY' },
-  { title: 'ALL - Semua approver wajib approve', value: 'ALL' },
+  { title: 'ANY', value: 'ANY' },
+  { title: 'ALL', value: 'ALL' },
 ]
 
 const getSelectedApproverId = (value: unknown): number | null => {
@@ -218,6 +232,7 @@ const form = reactive<ApprovalFlowForm>({
           approver_id: null,
         },
       ],
+      approver_scope: 'GLOBAL',
     },
   ],
 })
@@ -492,6 +507,7 @@ const addStep = (): void => {
         approver_id: null,
       },
     ],
+    approver_scope: 'GLOBAL',
   })
 }
 
@@ -710,6 +726,7 @@ const buildPayload = () => {
         approver_type: approver.approver_type,
         approver_id: Number(approver.approver_id),
       })),
+      approver_scope: step.approver_scope ?? 'GLOBAL',
     })),
   }
 }
@@ -1128,7 +1145,7 @@ const formatAmount = (value: number | string | null | undefined): string => {
                     </VBtn>
                   </div>
 
-                  <VRow>
+                  <VRow class="align-start">
                     <VCol
                       cols="12"
                       md="4"
@@ -1136,22 +1153,38 @@ const formatAmount = (value: number | string | null | undefined): string => {
                       <VTextField
                         v-model="step.label"
                         label="Label Step"
-                        placeholder="Contoh: Adm / ADH, Kacab, HRGA Manager"
-                        density="comfortable"
-                        :disabled="submitLoading"
+                        placeholder="Contoh: Adm / ADH"
+                        hide-details="auto"
                       />
                     </VCol>
 
                     <VCol
                       cols="12"
-                      md="8"
+                      md="4"
                     >
                       <VSelect
                         v-model="step.approval_mode"
-                        label="Approval Mode *"
                         :items="approvalModeOptions"
-                        density="comfortable"
-                        :disabled="submitLoading"
+                        item-title="title"
+                        item-value="value"
+                        label="Approval Mode"
+                        hint="ANY: salah satu cukup, ALL: semua harus approve"
+                        persistent-hint
+                      />
+                    </VCol>
+
+                    <VCol
+                      cols="12"
+                      md="4"
+                    >
+                      <VSelect
+                        v-model="step.approver_scope"
+                        :items="approverScopeOptions"
+                        item-title="title"
+                        item-value="value"
+                        label="Approver Scope"
+                        hint="Global atau mengikuti cabang dokumen"
+                        persistent-hint
                       />
                     </VCol>
                   </VRow>

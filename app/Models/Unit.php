@@ -11,6 +11,13 @@ class Unit extends Model
     use HasFactory;
     protected $fillable = ['kode', 'nama', 'kategori'];
 
+    protected function casts(): array
+    {
+        return [
+            'is_active' => 'boolean',
+        ];
+    }
+
     public function unit()
     {
         return $this->belongsTo(Unit::class, 'satuan', 'id');

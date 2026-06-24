@@ -79,6 +79,7 @@ class PurchaseRequestController extends Controller
                         'view_scope' => 'NONE',
                         'can_create' => false,
                         'can_update' => false,
+                        'can_submit' => false,
                         'can_delete' => false,
                     ],
                 ], 401);
@@ -173,6 +174,10 @@ class PurchaseRequestController extends Controller
                 'scope' => $scope,
             ]);
 
+            $canSubmit = $user->hasPermission(
+                'purchase_request.submit',
+            );
+
             /*
         |--------------------------------------------------------------------------
         | Abilities
@@ -194,6 +199,8 @@ class PurchaseRequestController extends Controller
                 'can_update' => $user->hasPermission(
                     'purchase_request.update',
                 ),
+
+                'can_submit' => $canSubmit,
 
                 'can_delete' => $user->hasPermission(
                     'purchase_request.delete',
@@ -474,6 +481,7 @@ class PurchaseRequestController extends Controller
                 function (PurchaseRequest $pr) use (
                     $user,
                     $approvalService,
+                    $canSubmit,
                 ): array {
                     /*
                 |--------------------------------------------------------------------------
@@ -482,6 +490,29 @@ class PurchaseRequestController extends Controller
                 | Menggunakan relation approvals yang sudah di-eager-load.
                 |--------------------------------------------------------------------------
                 */
+                    $prStatus = strtoupper(
+                        trim((string) $pr->status),
+                    );
+
+                    $isCreator = (int) $pr->created_by
+                        === (int) $user->id;
+
+                    $isSameDepartment = (
+                        $user->departemen_id !== null
+                        && (int) $pr->id_department
+                        === (int) $user->departemen_id
+                    );
+
+                    $rowCanSubmit = (
+                        $canSubmit
+                        && $prStatus === PurchaseRequest::STATUS_DRAFT
+                        && (
+                            $isCreator
+                            || $isSameDepartment
+                        )
+                    );
+
+
                     $currentApproval = $pr->approvals
                         ->first(
                             function (
@@ -538,6 +569,7 @@ class PurchaseRequestController extends Controller
                     | Approval Ability untuk FE
                     |--------------------------------------------------------------------------
                     */
+                        'can_submit' => $rowCanSubmit,
                         'can_approve' => $currentApproval !== null,
 
                         'approval_id' => $currentApproval?->id,
@@ -665,6 +697,7 @@ class PurchaseRequestController extends Controller
                     'can_create' => false,
                     'can_update' => false,
                     'can_delete' => false,
+                    'can_submit' => false,
                 ],
                 'debug' => app()->environment('local')
                     ? $e->getMessage()
@@ -700,7 +733,7 @@ class PurchaseRequestController extends Controller
                 'cabang'                 => ['required'],
                 'id_department'          => ['required', 'integer'],
                 'recommended_vendor_id'  => ['nullable', 'integer', 'exists:master_vendor,id'],
-                'kategori'               => ['required', 'string'],
+                'kategori'               => ['nullable', 'string'],
                 'pr_type'                => ['required', 'string', 'max:50', 'in:Rutin,Non Rutin'],
                 'items'                  => ['required', 'string'],
                 'lampiran_request.*'     => ['sometimes', 'file', 'mimes:jpg,jpeg,png,pdf', 'max:3000'],
@@ -1282,7 +1315,7 @@ class PurchaseRequestController extends Controller
                 'cabang'                 => ['required'],
                 'id_department'          => ['required', 'integer'],
                 'recommended_vendor_id'  => ['nullable', 'integer', 'exists:master_vendor,id'],
-                'kategori'               => ['required', 'string'],
+                'kategori'               => ['nullable', 'string'],
                 'pr_type'                => ['required', 'string', 'max:50', 'in:Rutin,Non Rutin'],
                 'items'                  => ['required', 'string'],
                 'existing_attachment_ids' => ['nullable', 'string'],
@@ -1890,6 +1923,13 @@ class PurchaseRequestController extends Controller
         |--------------------------------------------------------------------------
         */
             try {
+                /*
+            |--------------------------------------------------------------------------
+            | Notifikasi aplikasi creator
+            |--------------------------------------------------------------------------
+            | Tetap dibuat setiap ada proses approval.
+            |--------------------------------------------------------------------------
+            */
                 $notificationService->notifyApprovalStep(
                     $purchaseRequest,
                     $user,
@@ -1897,16 +1937,24 @@ class PurchaseRequestController extends Controller
                     $result['has_pending_approval'],
                 );
 
-                $mailService->sendApprovalStep(
-                    $purchaseRequest,
-                    $user,
-                    $result['has_pending_approval'],
-                );
+                /*
+            |--------------------------------------------------------------------------
+            | Email creator hanya saat final approved
+            |--------------------------------------------------------------------------
+            */
+                if ($result['is_final_approved']) {
+                    $mailService->sendApprovalStep(
+                        $purchaseRequest,
+                        $user,
+                        false,
+                    );
+                }
             } catch (\Throwable $notifyError) {
                 Log::error(
                     '[Purchase Request] Notify approval result gagal',
                     [
                         'purchase_request_id' => $purchaseRequest->id,
+                        'is_final_approved' => $result['is_final_approved'],
                         'message' => $notifyError->getMessage(),
                     ],
                 );
@@ -2166,6 +2214,27 @@ class PurchaseRequestController extends Controller
                 ], 422);
             }
 
+            /*
+        |--------------------------------------------------------------------------
+        | Ambil tanda tangan requester
+        |--------------------------------------------------------------------------
+        | Sesuaikan signature_path dengan nama kolom tanda tangan pada tabel users.
+        |--------------------------------------------------------------------------
+        */
+
+            // BARU
+            $requesterSignaturePath = $user->signature_path;
+
+            // BARU
+            if (blank($requesterSignaturePath)) {
+                DB::rollBack();
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Tanda tangan requester belum tersedia. Silakan lengkapi tanda tangan terlebih dahulu.',
+                ], 422);
+            }
+
             if (str_starts_with((string) $pr->nomor_pr, 'DRAFT/')) {
                 $pr->nomor_pr = generatePRNumber($pr);
             }
@@ -2184,18 +2253,34 @@ class PurchaseRequestController extends Controller
         | Tidak menggunakan current_level lagi.
         |--------------------------------------------------------------------------
         */
+
+            // BARU: gunakan waktu yang sama untuk submit dan tanda tangan requester
+            $submittedAt = now();
+
             $pr->status = PurchaseRequest::STATUS_IN_PROGRESS;
-            $pr->submitted_at = now();
+            $pr->submitted_at = $submittedAt;
             $pr->submitted_by = $user->id;
+
+            /*
+        |--------------------------------------------------------------------------
+        | Snapshot tanda tangan requester
+        |--------------------------------------------------------------------------
+        */
+
+            // BARU
+            $pr->requester_signed_by = $user->id;
+            $pr->requester_signature_path = $requesterSignaturePath;
+            $pr->requester_signed_at = $submittedAt;
+
             $pr->save();
 
             DB::commit();
 
             /*
-            |--------------------------------------------------------------------------
-            | Notifikasi aplikasi setelah transaksi berhasil
-            |--------------------------------------------------------------------------
-            */
+        |--------------------------------------------------------------------------
+        | Notifikasi aplikasi setelah transaksi berhasil
+        |--------------------------------------------------------------------------
+        */
             $pr->refresh();
             $pr->loadMissing('items');
 
@@ -2236,6 +2321,11 @@ class PurchaseRequestController extends Controller
                     'status' => $pr->status,
                     'submitted_at' => $pr->submitted_at,
                     'submitted_by' => $pr->submitted_by,
+
+                    // BARU: opsional agar mudah dicek dari response
+                    'requester_signed_by' => $pr->requester_signed_by,
+                    'requester_signature_path' => $pr->requester_signature_path,
+                    'requester_signed_at' => $pr->requester_signed_at,
                 ],
             ], 200);
         } catch (ValidationException $e) {
@@ -2296,13 +2386,17 @@ class PurchaseRequestController extends Controller
 
             $items = $pr->getRelation('items');
 
-            if (
-                strtoupper(trim((string) $pr->status))
-                !== PurchaseRequest::STATUS_APPROVED
-            ) {
+            $currentStatus = strtoupper(trim((string) $pr->status));
+
+            $allowedStatuses = [
+                'IN PROGRESS',
+                PurchaseRequest::STATUS_APPROVED,
+            ];
+
+            if (!in_array($currentStatus, $allowedStatuses, true)) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Purchase Requisition hanya dapat dicetak setelah final approval.',
+                    'message' => 'Purchase Requisition belum dapat dicetak.',
                 ], 422);
             }
 

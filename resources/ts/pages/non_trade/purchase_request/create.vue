@@ -505,11 +505,15 @@ const getFileType = (file: File): string => {
 }
 
 const validateForm = async (): Promise<boolean> => {
+  const kategoriIsValid = isITDepartment.value
+    ? required(form.kategori)
+    : true
+
   if (
     !required(form.tanggal_pr)
     || !required(form.cabang)
     || !required(form.id_department)
-    || !required(form.kategori)
+    || !kategoriIsValid
     || !required(form.pr_type)
   ) {
     showWarningToast({
@@ -538,7 +542,11 @@ const validateForm = async (): Promise<boolean> => {
     return false
   }
 
-  if (form.items.some(item => !item.qty || Number(item.qty) <= 0)) {
+  if (
+    form.items.some(
+      item => !item.qty || Number(item.qty) <= 0,
+    )
+  ) {
     showWarningToast({
       title: 'Warning',
       text: 'Qty item wajib diisi.',
@@ -547,7 +555,11 @@ const validateForm = async (): Promise<boolean> => {
     return false
   }
 
-  if (form.items.some(item => !required(item.satuan))) {
+  if (
+    form.items.some(
+      item => !required(item.satuan),
+    )
+  ) {
     showWarningToast({
       title: 'Warning',
       text: 'Satuan item wajib dipilih.',
@@ -556,7 +568,13 @@ const validateForm = async (): Promise<boolean> => {
     return false
   }
 
-  if (form.items.some(item => item.harga_unit === null || Number(item.harga_unit) <= 0)) {
+  if (
+    form.items.some(
+      item =>
+        item.harga_unit === null
+        || Number(item.harga_unit) <= 0,
+    )
+  ) {
     showWarningToast({
       title: 'Warning',
       text: 'Harga satuan item wajib diisi.',
@@ -567,7 +585,6 @@ const validateForm = async (): Promise<boolean> => {
 
   return true
 }
-
 const buildFormData = (): FormData => {
   const formData = new FormData()
 
@@ -668,6 +685,32 @@ const calcTempGrandTotal = (): number => {
     return total + Number(item.subtotal || 0)
   }, 0)
 }
+
+const selectedDepartment = computed(() => {
+  return departmentList.value.find(
+    department =>
+      Number(department.id) === Number(form.id_department),
+  )
+})
+
+const isITDepartment = computed(() => {
+  const departmentCode = String(
+    selectedDepartment.value?.kode ?? '',
+  )
+    .trim()
+    .toUpperCase()
+
+  return departmentCode === 'IT'
+})
+
+watch(
+  isITDepartment,
+  isIT => {
+    if (!isIT)
+      form.kategori = null
+  },
+  { immediate: true },
+)
 
 const savePurchaseRequest = async (event?: Event): Promise<void> => {
   event?.preventDefault()
@@ -932,7 +975,11 @@ onMounted(async () => {
               </VAutocomplete>
             </VCol>
 
-            <VCol cols="12" md="4">
+            <VCol
+              v-if="isITDepartment"
+              cols="12"
+              md="4"
+            >
               <VAutocomplete
                 v-model="form.kategori"
                 label="Kategori *"
@@ -944,8 +991,18 @@ onMounted(async () => {
                   offset: 8,
                   maxHeight: 300,
                 }"
-                :error="isSubmitted && !form.kategori"
-                :error-messages="isSubmitted && !form.kategori ? ['Kategori wajib dipilih'] : []"
+                :error="
+                  isSubmitted
+                    && isITDepartment
+                    && !form.kategori
+                "
+                :error-messages="
+                  isSubmitted
+                    && isITDepartment
+                    && !form.kategori
+                    ? ['Kategori wajib dipilih']
+                    : []
+                "
                 no-data-text="Kategori tidak ditemukan"
                 placeholder="Pilih kategori"
               />

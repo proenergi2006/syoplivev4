@@ -84,6 +84,10 @@ class PurchaseOrderController extends Controller
                 'purchase_order.update',
             );
 
+            $canSubmit = $user->hasPermission(
+                'purchase_order.submit',
+            );
+
             $canDelete = $user->hasPermission(
                 'purchase_order.delete',
             );
@@ -111,7 +115,7 @@ class PurchaseOrderController extends Controller
         |--------------------------------------------------------------------------
         */
             $userDepartmentId = (int) (
-                $user->department_id
+                $user->departemen_id
                 ?? 0
             );
 
@@ -507,6 +511,8 @@ class PurchaseOrderController extends Controller
                     $userRoleIds,
                     $canUpdate,
                     $canDelete,
+                    $canSubmit,
+                    $userDepartmentId,
                 ) {
                     /*
                 |--------------------------------------------------------------------------
@@ -600,6 +606,39 @@ class PurchaseOrderController extends Controller
 
                     $poStatus = strtoupper(
                         trim((string) $po->status),
+                    );
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Ownership PO
+                    |--------------------------------------------------------------------------
+                    */
+                    $isCreator = (int) $po->created_by
+                        === (int) $user->id;
+
+                    $isSameDepartment = (
+                        $userDepartmentId > 0
+                        && (int) $po->id_department
+                        === (int) $userDepartmentId
+                    );
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Hak submit per row
+                    |--------------------------------------------------------------------------
+                    | Syarat:
+                    | 1. Memiliki permission purchase_order.submit
+                    | 2. Status PO masih DRAFT
+                    | 3. Creator PO atau satu department
+                    |--------------------------------------------------------------------------
+                    */
+                    $canSubmitRow = (
+                        $canSubmit
+                        && $poStatus === 'DRAFT'
+                        && (
+                            $isCreator
+                            || $isSameDepartment
+                        )
                     );
 
                     /*
@@ -741,6 +780,9 @@ class PurchaseOrderController extends Controller
                     | Abilities per row
                     |--------------------------------------------------------------------------
                     */
+                        'can_submit'
+                        => $canSubmitRow,
+
                         'can_approve'
                         => $canApprove,
 
@@ -934,17 +976,17 @@ class PurchaseOrderController extends Controller
 
             $user = $request->user();
 
-            $departmentId = (int) ($user->departemen_id ?? 0);
+            $departmentId = (int) $request->id_department;
 
             if ($departmentId <= 0) {
                 DB::rollBack();
 
                 return response()->json([
                     'success' => false,
-                    'message' => 'Department akun Anda belum tersedia.',
+                    'message' => 'Department wajib dipilih.',
                     'errors' => [
                         'id_department' => [
-                            'Department akun login tidak ditemukan. Silakan hubungi administrator.',
+                            'Department wajib dipilih.',
                         ],
                     ],
                 ], 422);
@@ -1039,12 +1081,12 @@ class PurchaseOrderController extends Controller
     public function show($publicId, Request $request)
     {
         $user = $request->user();
-        if (!$user || !$user->hasPermission('purchase_order.update')) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Anda tidak memiliki akses untuk mengubah Purchase Order.',
-            ], 403);
-        }
+        // if (!$user || !$user->hasPermission('purchase_order.update')) {
+        //     return response()->json([
+        //         'success' => false,
+        //         'message' => 'Anda tidak memiliki akses untuk mengubah Purchase Order.',
+        //     ], 403);
+        // }
 
         try {
             $id = Crypt::decryptString($publicId);
@@ -1954,17 +1996,23 @@ class PurchaseOrderController extends Controller
         */
             DB::commit();
 
-            /*
-        |--------------------------------------------------------------------------
-        | Notifikasi requester terkait approval yang baru diproses
-        |--------------------------------------------------------------------------
-        */
             try {
                 /*
-            | hasPendingApproval di sini berarti PO belum final approved.
-            */
+                |--------------------------------------------------------------------------
+                | Status pending approval
+                |--------------------------------------------------------------------------
+                | Bernilai true selama PO belum final approved.
+                |--------------------------------------------------------------------------
+                */
                 $hasPendingApproval = !$isFinalApproved;
 
+                /*
+                |--------------------------------------------------------------------------
+                | Notifikasi aplikasi creator
+                |--------------------------------------------------------------------------
+                | Tetap dibuat pada setiap proses approval.
+                |--------------------------------------------------------------------------
+                */
                 $this->poNotificationService
                     ->notifyApprovalStep(
                         $po,
@@ -1973,12 +2021,19 @@ class PurchaseOrderController extends Controller
                         $hasPendingApproval,
                     );
 
-                $this->poMailService
-                    ->sendApprovalStep(
-                        $po,
-                        $user,
-                        $hasPendingApproval,
-                    );
+                /*
+                |--------------------------------------------------------------------------
+                | Email creator hanya saat final approved
+                |--------------------------------------------------------------------------
+                */
+                if ($isFinalApproved) {
+                    $this->poMailService
+                        ->sendApprovalStep(
+                            $po,
+                            $user,
+                            false,
+                        );
+                }
             } catch (\Throwable $notificationError) {
                 Log::error(
                     '[Purchase Order] Notifikasi status approval gagal dikirim',
@@ -1986,6 +2041,7 @@ class PurchaseOrderController extends Controller
                         'po_id' => $po->id,
                         'nomor_po' => $po->nomor_po,
                         'approval_id' => $processedApproval?->id,
+                        'is_final_approved' => $isFinalApproved,
                         'message' => $notificationError->getMessage(),
                         'file' => $notificationError->getFile(),
                         'line' => $notificationError->getLine(),
@@ -2415,25 +2471,57 @@ class PurchaseOrderController extends Controller
                 ], 422);
             }
 
+            /*
+            |--------------------------------------------------------------------------
+            | Outstanding penerimaan normal
+            |--------------------------------------------------------------------------
+            | GR yang memiliki source_goods_return_id tidak dihitung karena merupakan
+            | penerimaan replacement dari Goods Return.
+            |--------------------------------------------------------------------------
+            */
             $remainingSql = "
-            (
-                purchase_order_items.qty
-                - COALESCE(
-                    purchase_order_items.qty_received,
-                    0
+                (
+                    COALESCE(
+                        purchase_order_items.qty_outstanding_receive,
+
+                        GREATEST(
+                            COALESCE(
+                                purchase_order_items.qty,
+                                0
+                            )
+                            -
+                            COALESCE(
+                                purchase_order_items.qty_received,
+                                0
+                            ),
+                            0
+                        )
+                    )
+
+                    -
+
+                    COALESCE(
+                        (
+                            SELECT SUM(
+                                COALESCE(
+                                    gri.qty_receive,
+                                    0
+                                )
+                            )
+                            FROM goods_receive_items AS gri
+                            INNER JOIN goods_receives AS gr
+                                ON gr.id = gri.goods_receive_id
+                            WHERE gri.purchase_order_item_id
+                                = purchase_order_items.id
+                            AND UPPER(
+                                    TRIM(gr.status)
+                                ) = 'DRAFT'
+                            AND gr.deleted_at IS NULL
+                        ),
+                        0
+                    )
                 )
-                - COALESCE((
-                    SELECT SUM(gri.qty_receive)
-                    FROM goods_receive_items gri
-                    JOIN goods_receives gr
-                        ON gr.id = gri.goods_receive_id
-                    WHERE gri.purchase_order_item_id
-                        = purchase_order_items.id
-                      AND UPPER(TRIM(gr.status)) = 'DRAFT'
-                      AND gr.deleted_at IS NULL
-                ), 0)
-            )
-        ";
+            ";
 
             $purchaseOrders = PurchaseOrder::query()
                 ->with([
@@ -2520,21 +2608,28 @@ class PurchaseOrderController extends Controller
                                 ?? 0
                             );
 
-                            $qtyReceived = (float) (
-                                $item->qty_received
-                                ?? 0
-                            );
-
                             $hargaUnit = (float) (
                                 $item->harga_unit
                                 ?? 0
                             );
 
                             /*
-                        |--------------------------------------------------------------------------
-                        | Qty yang masih berada pada GR Draft
-                        |--------------------------------------------------------------------------
-                        */
+                    |--------------------------------------------------------------------------
+                    | Total GR normal yang sudah POSTED
+                    |--------------------------------------------------------------------------
+                    | GR replacement tidak dihitung pada dropdown penerimaan normal.
+                    |--------------------------------------------------------------------------
+                    */
+                            $qtyReceived = (float) (
+                                $item->qty_received
+                                ?? 0
+                            );
+
+                            /*
+                    |--------------------------------------------------------------------------
+                    | Total qty pada GR normal yang masih DRAFT
+                    |--------------------------------------------------------------------------
+                    */
                             $draftQty = (float) DB::table(
                                 'goods_receive_items as gri',
                             )
@@ -2552,13 +2647,25 @@ class PurchaseOrderController extends Controller
                                     'UPPER(TRIM(gr.status)) = ?',
                                     ['DRAFT'],
                                 )
-                                ->whereNull('gr.deleted_at')
-                                ->sum('gri.qty_receive');
+                                ->whereNull(
+                                    'gr.deleted_at',
+                                )
+                                ->sum(
+                                    'gri.qty_receive',
+                                );
+
+                            $baseOutstanding = (
+                                $item->qty_outstanding_receive
+                                !== null
+                            )
+                                ? (float) $item->qty_outstanding_receive
+                                : max(
+                                    $qty - $qtyReceived,
+                                    0,
+                                );
 
                             $qtyOutstanding = max(
-                                $qty
-                                    - $qtyReceived
-                                    - $draftQty,
+                                $baseOutstanding - $draftQty,
                                 0,
                             );
 
@@ -2711,7 +2818,7 @@ class PurchaseOrderController extends Controller
                     => $request->user()?->id,
 
                     'department_id'
-                    => $request->user()?->department_id,
+                    => $request->user()?->departemen_id,
 
                     'message'
                     => $e->getMessage(),

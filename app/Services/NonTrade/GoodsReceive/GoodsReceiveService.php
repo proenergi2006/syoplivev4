@@ -36,7 +36,10 @@ class GoodsReceiveService
             $gr = GoodsReceive::create([
                 'nomor_gr' => $payload['nomor_gr'],
                 'purchase_order_id' => $po->id,
+                'source_goods_return_id' => $payload['source_goods_return_id'] ?? null,
                 'vendor_id' => $po->vendor_id,
+                'cabang' => $po->cabang,
+                'id_department' => $po->id_department,
                 'tanggal_gr' => $payload['tanggal_gr'] ?? now()->toDateString(),
                 'nomor_surat_jalan' => $payload['nomor_surat_jalan'] ?? null,
                 'status' => 'DRAFT',

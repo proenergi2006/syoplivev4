@@ -682,12 +682,65 @@ const getExistingFileType = (file: ExistingPrAttachment): string => {
   return 'IMAGE'
 }
 
+const selectedDepartment = computed(() => {
+  return departmentList.value.find(
+    department =>
+      Number(department.id) === Number(form.id_department),
+  )
+})
+
+const isITDepartment = computed(() => {
+  const departmentCode = String(
+    selectedDepartment.value?.kode ?? '',
+  )
+    .trim()
+    .toUpperCase()
+
+  return departmentCode === 'IT'
+})
+
+watch(
+  [
+    () => form.id_department,
+    () => departmentList.value.length,
+  ],
+  () => {
+    /*
+    |--------------------------------------------------------------------------
+    | Tunggu department dan daftar department selesai dimuat
+    |--------------------------------------------------------------------------
+    */
+    if (
+      !form.id_department
+      || !selectedDepartment.value
+    ) {
+      return
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | PR selain Department IT tidak menyimpan kategori
+    |--------------------------------------------------------------------------
+    */
+    if (!isITDepartment.value) {
+      form.kategori = null
+    }
+  },
+  {
+    immediate: true,
+  },
+)
+
 const validateForm = async (): Promise<boolean> => {
+  const kategoriIsValid = isITDepartment.value
+    ? required(form.kategori)
+    : true
+
   if (
     !required(form.tanggal_pr)
     || !required(form.cabang)
     || !required(form.id_department)
-    || !required(form.kategori)
+    || !kategoriIsValid
     || !required(form.pr_type)
   ) {
     showWarningToast({
@@ -1097,7 +1150,11 @@ onMounted(async () => {
                 </VAutocomplete>
               </VCol>
 
-              <VCol cols="12" md="4">
+              <VCol
+                v-if="isITDepartment"
+                cols="12"
+                md="4"
+              >
                 <VAutocomplete
                   v-model="form.kategori"
                   label="Kategori *"
@@ -1109,8 +1166,18 @@ onMounted(async () => {
                     offset: 8,
                     maxHeight: 300,
                   }"
-                  :error="isSubmitted && !form.kategori"
-                  :error-messages="isSubmitted && !form.kategori ? ['Kategori wajib dipilih'] : []"
+                  :error="
+                    isSubmitted
+                    && isITDepartment
+                    && !form.kategori
+                  "
+                  :error-messages="
+                    isSubmitted
+                    && isITDepartment
+                    && !form.kategori
+                      ? ['Kategori wajib dipilih']
+                      : []
+                  "
                   no-data-text="Kategori tidak ditemukan"
                   placeholder="Pilih kategori"
                 />

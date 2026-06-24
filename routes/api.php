@@ -50,6 +50,7 @@ use App\Http\Controllers\Api\PurchaseOrderController;
 use App\Http\Controllers\Api\PurchaseRequestController;
 use App\Http\Controllers\MasterBankController;
 use App\Http\Controllers\UnitController;
+use App\Http\Controllers\Api\GoodsReturnController;
 
 Route::post('/auth/login', [AuthController::class, 'login']);
 
@@ -228,10 +229,10 @@ Route::middleware('auth:sanctum')->group(function () {
             ]);
 
             /*
-        |--------------------------------------------------------------------------
-        | PURCHASE ORDER
-        |--------------------------------------------------------------------------
-        */
+            |--------------------------------------------------------------------------
+            | PURCHASE ORDER
+            |--------------------------------------------------------------------------
+            */
 
             Route::get(
                 'purchase-order/dropdown-receivable',
@@ -276,10 +277,10 @@ Route::middleware('auth:sanctum')->group(function () {
             ]);
 
             /*
-        |--------------------------------------------------------------------------
-        | GOODS RECEIVE
-        |--------------------------------------------------------------------------
-        */
+            |--------------------------------------------------------------------------
+            | GOODS RECEIVE
+            |--------------------------------------------------------------------------
+            */
 
             Route::patch(
                 'goods-receive/{publicId}/post',
@@ -301,6 +302,49 @@ Route::middleware('auth:sanctum')->group(function () {
                 GoodsReceiveController::class,
             )->parameters([
                 'goods-receive' => 'publicId',
+            ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | GOODS RETURN
+            |--------------------------------------------------------------------------
+            */
+
+            Route::get(
+                'goods-return/reasons',
+                [GoodsReturnController::class, 'reasons'],
+            );
+
+            Route::get(
+                'goods-return/create-data',
+                [GoodsReturnController::class, 'createData'],
+            );
+
+            Route::patch(
+                'goods-return/{publicId}/post',
+                [GoodsReturnController::class, 'post'],
+            );
+
+            Route::get(
+                'goods-return/replacement-receivable',
+                [GoodsReturnController::class, 'replacementReceivable'],
+            );
+
+            Route::patch(
+                'goods-return/{publicId}/cancel',
+                [GoodsReturnController::class, 'cancel'],
+            );
+
+            Route::get(
+                'goods-return/{publicId}/edit',
+                [GoodsReturnController::class, 'edit'],
+            );
+
+            Route::apiResource(
+                'goods-return',
+                GoodsReturnController::class,
+            )->parameters([
+                'goods-return' => 'publicId',
             ]);
         });
 
