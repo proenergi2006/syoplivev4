@@ -1,29 +1,70 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch, onBeforeUnmount } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref, watch, onBeforeUnmount, nextTick } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import axios from '@axios'
 import {
   showLoadingAlert,
   showSuccessAlert,
   showErrorAlert,
   closeAlert,
+  showSuccessToast,
+  showErrorToast,
+  showWarningToast,
+  showInfoToast,
+  showConfirmAlert
 } from '@/utils/alert'
 import { getApiErrorMessage } from '@/utils/apiHelper'
-import { formatStatusPKP, formatKategoriVendor } from '@/utils/textFormatter'
+import { formatStatusPKP, formatKategoriVendor, toTitleCase, formatAuditDateTime } from '@/utils/textFormatter'
+import { usePolling } from '@core/composable/usePolling'
+import { usePermissionStore } from '@/stores/permission'
+import ApprovalHistoryDialog from '@core/components/ApprovalHistoryVendorDialog.vue'
+import Swal from 'sweetalert2'
 
 interface Vendor {
   id: number
   public_id: string
-  kode_vendor: string
   nama_vendor: string
   inisial_vendor: string | null
   kategori_vendor: string | null
   is_active: boolean
   status_approval: string | null
-  created_time?: string | null
-  created_ip?: string | null
+  
+  is_creator?: boolean
+  is_same_department?: boolean
+  
+  can_approve?: boolean
+  requires_vendor_code?: boolean
+  is_waiting_my_approval?: boolean
+  can_update?: boolean
+  can_delete?: boolean
+  can_submit?: boolean
+
+  current_step_order?: number | null
+  current_approval_candidates_count?: number
+
+  current_approval?: {
+    id: number
+    step_order: number
+    approver_type: 'USER' | 'ROLE'
+    approver_id: number
+    approval_mode: 'ANY' | 'ALL'
+    label?: string | null
+    status: string
+  } | null
+
+  kode_vendor?: string | null
+
   created_by?: number | null
-  lastupdate_time?: string | null
+  created_by_name?: string | null
+  created_at?: string | null
+
+  updated_by?: number | null
+  updated_by_name?: string | null
+  updated_at?: string | null
+
+  submitted_by?: number | null
+  submitted_by_name?: string | null
+  submitted_at?: string | null
 }
 
 interface VendorListResponse {
@@ -32,6 +73,7 @@ interface VendorListResponse {
   last_page?: number
   current_page?: number
   per_page?: number
+  abilities?: VendorAbilities
 }
 
 interface VendorQueryParams {
@@ -53,9 +95,118 @@ interface AxiosErrorShape {
   }
 }
 
+interface VendorAbilities {
+  can_view: boolean
+  view_scope:
+    | 'NONE'
+    | 'OWN_DATA'
+    | 'OWN_DEPARTMENT'
+    | 'OWN_CABANG'
+    | 'ALL'
+
+  can_create: boolean
+  can_update: boolean
+  can_submit: boolean
+  can_delete: boolean
+}
+
+const defaultVendorAbilities = (): VendorAbilities => ({
+  can_view: false,
+  view_scope: 'NONE',
+  can_create: false,
+  can_update: false,
+  can_submit: false,
+  can_delete: false,
+})
+
+const abilities = ref<VendorAbilities>(
+  defaultVendorAbilities(),
+)
+
+const isApprovalHistoryDialogOpen = ref(false)
+const selectedVendorLabel = ref('')
+const selectedApprovalHistory = ref<any[]>([])
+
+const openApprovalHistory = async (
+  item: any,
+): Promise<void> => {
+  try {
+    showLoadingAlert(
+      'Memuat history approval...',
+      'Mohon tunggu sebentar',
+    )
+
+    const res = await axios.get(
+      `/master/vendor/${encodeURIComponent(item.public_id)}/`,
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+    )
+
+    closeAlert()
+
+    const data = res.data?.data ?? {}
+
+    selectedVendorLabel.value = [
+      data.kode_vendor ?? item.kode_vendor,
+      data.nama_vendor ?? item.nama_vendor,
+    ]
+      .filter(Boolean)
+      .join(' - ') || '-'
+
+    selectedApprovalHistory.value
+      = Array.isArray(data.approvals)
+        ? data.approvals
+        : []
+
+    isApprovalHistoryDialogOpen.value = true
+  } catch (error: unknown) {
+    closeAlert()
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(
+        error,
+        'Gagal memuat history approval Master Vendor.',
+      ),
+    })
+  }
+}
+
+const permissionStore = usePermissionStore()
+
+const canView = computed(() => {
+  return permissionStore.can('vendor.view')
+})
+
+const canCreate = computed(() => {
+  return permissionStore.can('vendor.create')
+})
+
+const canUpdate = computed(() => {
+  return permissionStore.can('vendor.update')
+})
+
+const canDelete = computed(() => {
+  return permissionStore.can('vendor.delete')
+})
+
+const isCheckingPermission = ref(true)
+
 type SnackbarColor = 'success' | 'error' | 'warning' | 'info'
 
+const route = useRoute()
 const router = useRouter()
+
+const approveVendorLoading = ref(false)
+
+const rejectVendorDialog = ref(false)
+const rejectVendorLoading = ref(false)
+const rejectVendorTarget = ref<any | null>(null)
+const rejectVendorNotes = ref('')
+const rejectVendorSubmitted = ref(false)
 
 // =========================
 // Navigation
@@ -74,6 +225,7 @@ const goToEdit = (public_id: string): void => {
 const statusDialog = ref<boolean>(false)
 const statusLoading = ref<boolean>(false)
 const statusTarget = ref<Vendor | null>(null)
+const loadError = ref(false)
 
 const openStatusDialog = (row: Vendor): void => {
   statusTarget.value = row
@@ -104,9 +256,11 @@ const confirmUpdateStatus = async (): Promise<void> => {
       is_active: nextStatus,
     })
 
-    await showSuccessAlert({
+    closeAlert()
+
+    showSuccessToast({
       title: 'Berhasil',
-      text: `Status vendor "${vendorName}" berhasil diubah menjadi ${nextStatus ? 'aktif' : 'nonaktif'}`,
+      text: `Status vendor "${vendorName}" berhasil diubah menjadi ${nextStatus ? 'AKTIF' : 'NON AKTIF'}`,
     })
 
     await fetchRows()
@@ -115,7 +269,7 @@ const confirmUpdateStatus = async (): Promise<void> => {
 
     const err = error as AxiosErrorShape
 
-    await showErrorAlert({
+    showErrorToast({
       title: 'Error',
       text: getApiErrorMessage(err, 'Gagal memperbarui status vendor'),
     })
@@ -124,11 +278,491 @@ const confirmUpdateStatus = async (): Promise<void> => {
   }
 }
 
+const approveVendor = async (vendor: any): Promise<void> => {
+  if (
+    !vendor?.public_id
+    || approveVendorLoading.value
+  ) {
+    return
+  }
+
+  if (vendor.can_approve !== true) {
+    showErrorToast({
+      title: 'Akses Ditolak',
+      text: 'Anda bukan approver aktif untuk Vendor ini.',
+    })
+
+    return
+  }
+
+  let kodeVendor: string | null = null
+
+  /*
+  |--------------------------------------------------------------------------
+  | Final approval wajib input Kode Vendor
+  |--------------------------------------------------------------------------
+  */
+  if (vendor.requires_vendor_code === true) {
+    const existingCode = String(
+      vendor.kode_vendor ?? '',
+    )
+      .trim()
+      .toUpperCase()
+
+    const inputResult = await Swal.fire({
+      icon: 'info',
+      title: 'Masukkan Kode Vendor',
+      text: `Vendor "${vendor.nama_vendor}" akan memasuki approval final.`,
+
+      input: 'text',
+      inputLabel: 'Kode Vendor Final',
+      inputPlaceholder: 'Contoh: VND-0001',
+
+      inputValue: existingCode.startsWith('TEMP-')
+        ? ''
+        : existingCode,
+
+      showCancelButton: true,
+      confirmButtonText: 'Simpan Kode',
+      cancelButtonText: 'Batal',
+      reverseButtons: true,
+
+      customClass: {
+        confirmButton: 'swal-confirm-button-white',
+        cancelButton: 'swal-confirm-button-white',
+        input: 'swal-input-uppercase',
+      },
+
+      inputAttributes: {
+        maxlength: '100',
+        autocapitalize: 'characters',
+        autocomplete: 'off',
+        spellcheck: 'false',
+      },
+
+      /*
+      |--------------------------------------------------------------------------
+      | Auto uppercase ketika user mengetik
+      |--------------------------------------------------------------------------
+      */
+      didOpen: () => {
+        const input = Swal.getInput()
+
+        if (!input)
+          return
+
+        input.addEventListener('input', () => {
+          const cursorPosition = input.selectionStart
+
+          input.value = input.value.toUpperCase()
+
+          if (cursorPosition !== null) {
+            input.setSelectionRange(
+              cursorPosition,
+              cursorPosition,
+            )
+          }
+        })
+
+        input.focus()
+      },
+
+      inputValidator: value => {
+        const normalizedCode = String(value ?? '')
+          .trim()
+          .toUpperCase()
+
+        if (!normalizedCode)
+          return 'Kode Vendor wajib diisi.'
+
+        if (normalizedCode.startsWith('TEMP-'))
+          return 'Kode Vendor final tidak boleh menggunakan kode TEMP.'
+
+        if (normalizedCode.length > 100)
+          return 'Kode Vendor maksimal 100 karakter.'
+
+        return undefined
+      },
+    })
+
+    if (!inputResult.isConfirmed)
+      return
+
+    kodeVendor = String(inputResult.value ?? '')
+      .trim()
+      .toUpperCase()
+
+    /*
+    |--------------------------------------------------------------------------
+    | Safety check sebelum request API
+    |--------------------------------------------------------------------------
+    */
+    if (!kodeVendor) {
+      showErrorToast({
+        title: 'Kode Vendor Belum Diisi',
+        text: 'Kode Vendor wajib diisi pada approval final.',
+      })
+
+      return
+    }
+  }
+
+  const confirm = await showConfirmAlert({
+    title: 'Approve Vendor?',
+    text: kodeVendor
+      ? `Vendor "${vendor.nama_vendor}" akan disetujui dengan kode "${kodeVendor}".`
+      : `Vendor "${vendor.nama_vendor}" akan disetujui.`,
+    confirmButtonText: 'Ya, approve',
+    cancelButtonText: 'Batal',
+  })
+
+  if (!confirm.isConfirmed)
+    return
+
+  approveVendorLoading.value = true
+
+  try {
+    showLoadingAlert(
+      'Approve Vendor...',
+      'Mohon tunggu sebentar',
+    )
+
+    /*
+    |--------------------------------------------------------------------------
+    | kode_vendor wajib berada di body request
+    |--------------------------------------------------------------------------
+    */
+    const payload: {
+      notes: string | null
+      kode_vendor: string | null
+    } = {
+      notes: null,
+      kode_vendor: kodeVendor,
+    }
+
+    console.log('[APPROVE VENDOR PAYLOAD]', payload)
+
+    const response = await axios.patch(
+      `/master/vendor/${encodeURIComponent(vendor.public_id)}/approve`,
+      payload,
+      {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+      },
+    )
+
+    closeAlert()
+
+    showSuccessToast({
+      title: 'Berhasil',
+      text:
+        response.data?.message
+        || `Vendor "${vendor.nama_vendor}" berhasil diapprove.`,
+    })
+
+    await fetchRows()
+  } catch (error: unknown) {
+    closeAlert()
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(
+        error,
+        'Gagal approve Vendor.',
+      ),
+    })
+  } finally {
+    approveVendorLoading.value = false
+  }
+}
+
+const openRejectVendor = (vendor: any): void => {
+  if (!vendor?.public_id || rejectVendorLoading.value)
+    return
+
+  if (vendor.can_approve !== true) {
+    showErrorToast({
+      title: 'Akses Ditolak',
+      text: 'Anda bukan approver aktif untuk Vendor ini.',
+    })
+
+    return
+  }
+
+  rejectVendorTarget.value = vendor
+  rejectVendorNotes.value = ''
+  rejectVendorSubmitted.value = false
+  rejectVendorDialog.value = true
+}
+
+const confirmRejectVendor = async (): Promise<void> => {
+  if (
+    !rejectVendorTarget.value?.public_id
+    || rejectVendorLoading.value
+  ) {
+    return
+  }
+
+  rejectVendorSubmitted.value = true
+
+  const notes = rejectVendorNotes.value.trim()
+
+  if (!notes) {
+    return
+  }
+
+  const target = {
+    ...rejectVendorTarget.value,
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Tutup dialog notes terlebih dahulu
+  |--------------------------------------------------------------------------
+  */
+  rejectVendorDialog.value = false
+
+  await nextTick()
+
+  /*
+  |--------------------------------------------------------------------------
+  | Tunggu animasi VDialog selesai
+  |--------------------------------------------------------------------------
+  */
+  await new Promise<void>(resolve => {
+    window.setTimeout(resolve, 250)
+  })
+
+  /*
+  |--------------------------------------------------------------------------
+  | Baru tampilkan SweetAlert
+  |--------------------------------------------------------------------------
+  */
+  const confirm = await showConfirmAlert({
+    title: 'Reject Vendor?',
+    text: `Vendor "${target.nama_vendor}" akan ditolak.`,
+    confirmButtonText: 'Ya, reject',
+    cancelButtonText: 'Batal',
+  })
+
+  if (!confirm.isConfirmed) {
+    /*
+    |--------------------------------------------------------------------------
+    | Jika batal, buka kembali dialog dan notes tidak hilang
+    |--------------------------------------------------------------------------
+    */
+    rejectVendorDialog.value = true
+
+    return
+  }
+
+  await submitRejectVendor(target, notes)
+}
+
+const closeRejectVendorDialog = (): void => {
+  if (rejectVendorLoading.value)
+    return
+
+  rejectVendorDialog.value = false
+  rejectVendorTarget.value = null
+  rejectVendorNotes.value = ''
+  rejectVendorSubmitted.value = false
+}
+
+const rejectVendor = async (): Promise<void> => {
+  if (
+    !rejectVendorTarget.value?.public_id
+    || rejectVendorLoading.value
+  ) {
+    return
+  }
+
+  rejectVendorSubmitted.value = true
+
+  const notes = rejectVendorNotes.value.trim()
+
+  /*
+  |--------------------------------------------------------------------------
+  | Notes wajib karena backend reject Master Vendor juga required
+  |--------------------------------------------------------------------------
+  */
+  if (!notes) {
+    showErrorToast({
+      title: 'Catatan Wajib Diisi',
+      text: 'Silakan isi alasan penolakan Vendor.',
+    })
+
+    return
+  }
+
+  const target = {
+    ...rejectVendorTarget.value,
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Tutup dialog notes agar SweetAlert tidak tertutup overlay dialog
+  |--------------------------------------------------------------------------
+  */
+  rejectVendorDialog.value = false
+
+  await nextTick()
+
+  const confirm = await showConfirmAlert({
+    title: 'Reject Vendor?',
+    text: `Vendor "${target.nama_vendor}" akan ditolak.`,
+    confirmButtonText: 'Ya, reject',
+    cancelButtonText: 'Batal',
+  })
+
+  if (!confirm.isConfirmed) {
+    /*
+    |--------------------------------------------------------------------------
+    | Jika batal, buka kembali dialog dengan notes tetap tersimpan
+    |--------------------------------------------------------------------------
+    */
+    rejectVendorDialog.value = true
+
+    return
+  }
+
+  rejectVendorLoading.value = true
+
+  try {
+    showLoadingAlert(
+      'Reject Vendor...',
+      'Mohon tunggu sebentar',
+    )
+
+    const response = await axios.patch(
+      `/master/vendor/${target.public_id}/reject`,
+      {
+        notes,
+      },
+      {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+      },
+    )
+
+    closeAlert()
+
+    showSuccessToast({
+      title: 'Berhasil',
+      text:
+        response.data?.message
+        || `Vendor "${target.nama_vendor}" berhasil direject.`,
+    })
+
+    rejectVendorNotes.value = ''
+    rejectVendorTarget.value = null
+    rejectVendorSubmitted.value = false
+    rejectVendorDialog.value = false
+
+    await fetchRows()
+  } catch (error: unknown) {
+    closeAlert()
+
+    /*
+    |--------------------------------------------------------------------------
+    | Jika gagal, tampilkan kembali dialog agar notes tidak perlu diketik ulang
+    |--------------------------------------------------------------------------
+    */
+    rejectVendorDialog.value = true
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(
+        error,
+        'Gagal reject Vendor.',
+      ),
+    })
+  } finally {
+    rejectVendorLoading.value = false
+  }
+}
+
+const submitRejectVendor = async (
+  target: any,
+  notes: string,
+): Promise<void> => {
+  if (
+    !target?.public_id
+    || rejectVendorLoading.value
+  ) {
+    return
+  }
+
+  rejectVendorLoading.value = true
+
+  try {
+    showLoadingAlert(
+      'Reject Vendor...',
+      'Mohon tunggu sebentar',
+    )
+
+    const response = await axios.patch(
+      `/master/vendor/${target.public_id}/reject`,
+      {
+        notes,
+      },
+      {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+      },
+    )
+
+    closeAlert()
+
+    showSuccessToast({
+      title: 'Berhasil',
+      text:
+        response.data?.message
+        || `Vendor "${target.nama_vendor}" berhasil direject.`,
+    })
+
+    rejectVendorDialog.value = false
+    rejectVendorTarget.value = null
+    rejectVendorNotes.value = ''
+    rejectVendorSubmitted.value = false
+
+    await fetchRows()
+  } catch (error: unknown) {
+    closeAlert()
+
+    /*
+    |--------------------------------------------------------------------------
+    | Buka kembali dialog agar notes dapat dikoreksi
+    |--------------------------------------------------------------------------
+    */
+    rejectVendorDialog.value = true
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(
+        error,
+        'Gagal reject Vendor.',
+      ),
+    })
+  } finally {
+    rejectVendorLoading.value = false
+  }
+}
+
 // =========================
 // Main state
 // =========================
 const loading = ref<boolean>(false)
 const rows = ref<Vendor[]>([])
+const isVendorDraft = (vendor: any): boolean => {
+  return String(vendor?.status_approval || '').toUpperCase() === 'DRAFT'
+}
 
 // =========================
 // Filters
@@ -246,7 +880,7 @@ const openDetail = async (publicId: string): Promise<void> => {
     const err = error as AxiosErrorShape
     detailError.value = getApiErrorMessage(err, 'Gagal memuat detail vendor')
 
-    await showErrorAlert({
+    showErrorToast({
       title: 'Error',
       text: detailError.value,
     })
@@ -328,6 +962,72 @@ const selectedTransaksiList = computed(() => {
     })
 })
 
+const submitVendorLoading = ref(false)
+
+const submitVendor = async (vendor: any): Promise<void> => {
+  if (!vendor?.public_id || submitVendorLoading.value)
+    return
+
+  const confirm = await showConfirmAlert({
+    title: 'Submit Vendor?',
+    text: `Vendor "${vendor.nama_vendor}" akan masuk proses approval.`,
+    confirmButtonText: 'Ya, submit',
+    cancelButtonText: 'Batal',
+  })
+
+  if (!confirm.isConfirmed)
+    return
+
+  submitVendorLoading.value = true
+
+  try {
+    showLoadingAlert(
+      'Submit Vendor...',
+      'Mohon tunggu sebentar',
+    )
+
+    const response = await axios.patch(
+      `/master/vendor/${vendor.public_id}/submit`,
+      {},
+      {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+      },
+    )
+
+    closeAlert()
+
+    showSuccessToast({
+      title: 'Berhasil',
+      text:
+        response.data?.message
+        || `Vendor "${vendor.nama_vendor}" berhasil disubmit.`,
+    })
+
+    await fetchRows()
+  } catch (error: unknown) {
+    closeAlert()
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(
+        error,
+        'Gagal submit Vendor',
+      ),
+    })
+  } finally {
+    submitVendorLoading.value = false
+  }
+}
+
+const isVendorRejected = (vendor: Vendor): boolean => {
+  return String(vendor.status_approval ?? '')
+    .trim()
+    .toUpperCase() === 'REJECTED'
+}
+
 // =========================
 // Snackbar
 // =========================
@@ -348,54 +1048,80 @@ const notify = (
 }
 
 // =========================
-// Delete dialog
+// Delete Vendor
 // =========================
-const deleteDialog = ref<boolean>(false)
 const deleteLoading = ref<boolean>(false)
-const deleteTarget = ref<Vendor | null>(null)
 
-const openDelete = (row: Vendor): void => {
-  deleteTarget.value = row
-  deleteDialog.value = true
-}
+const openDelete = async (row: Vendor): Promise<void> => {
+  if (deleteLoading.value) return
 
-const closeDelete = (): void => {
-  deleteDialog.value = false
-  deleteTarget.value = null
-}
+  const vendorPublicId = row.public_id
+  const vendorName = row.nama_vendor || '-'
 
-const confirmDelete = async (): Promise<void> => {
-  if (!deleteTarget.value || deleteLoading.value) return
+  if (!vendorPublicId) {
+    showErrorToast({
+      title: 'Data Tidak Valid',
+      text: 'Public ID vendor tidak ditemukan.',
+    })
+
+    return
+  }
+
+  const confirm = await showConfirmAlert({
+    icon: 'question',
+    title: 'Hapus Vendor?',
+    html: `Apakah Anda yakin ingin menghapus vendor <strong>${vendorName}</strong>?`,
+    confirmButtonText: 'Ya, hapus',
+    cancelButtonText: 'Batal',
+  })
+
+  if (!confirm.isConfirmed) return
 
   deleteLoading.value = true
 
-  const vendorPublicId = deleteTarget.value.public_id
-  const vendorName = deleteTarget.value.nama_vendor
-
   try {
-    closeDelete()
+    showLoadingAlert(
+      'Menghapus vendor...',
+      'Mohon tunggu sebentar',
+    )
 
-    showLoadingAlert('Menghapus vendor...', 'Mohon tunggu sebentar')
-
-    await axios.delete(`/master/vendor/${vendorPublicId}`)
+    const response = await axios.delete(
+      `/master/vendor/${encodeURIComponent(vendorPublicId)}`,
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+    )
 
     closeAlert()
 
-    await showSuccessAlert({
-      title: 'Berhasil',
-      text: `Vendor "${vendorName}" berhasil dihapus`,
-      timer: 1800,
-    })
+    if (response.data?.success) {
+      showSuccessToast({
+        title: 'Berhasil',
+        text: `Vendor "${vendorName}" berhasil dihapus`,
+      })
 
-    await fetchRows()
+      await fetchRows()
+
+      return
+    }
+
+    showErrorToast({
+      title: 'Gagal',
+      text: response.data?.message || 'Gagal menghapus vendor',
+    })
   } catch (error: unknown) {
     closeAlert()
 
     const err = error as AxiosErrorShape
 
-    await showErrorAlert({
-      title: 'Error',
-      text: getApiErrorMessage(err, 'Gagal menghapus vendor'),
+    showErrorToast({
+      title: 'Gagal',
+      text: getApiErrorMessage(
+        err,
+        'Gagal menghapus vendor',
+      ),
     })
 
     console.error('[Vendor] DELETE ERROR:', err)
@@ -440,6 +1166,7 @@ const fetchRows = async (): Promise<void> => {
   if (loading.value) return
 
   loading.value = true
+  loadError.value = false
 
   try {
     const params = buildParams()
@@ -459,22 +1186,67 @@ const fetchRows = async (): Promise<void> => {
     if (currentPage.value > totalPage.value) {
       currentPage.value = totalPage.value
     }
+
+    const responseAbilities = data.abilities ?? {
+      can_view: false,
+      view_scope: 'NONE',
+      can_create: false,
+      can_update: false,
+      can_submit: false,
+      can_delete: false,
+    }
+
+    abilities.value = {
+      can_view: responseAbilities.can_view === true,
+      view_scope: responseAbilities.view_scope ?? 'NONE',
+      can_create: responseAbilities.can_create === true,
+      can_update: responseAbilities.can_update === true,
+      can_submit: responseAbilities.can_submit === true,
+      can_delete: responseAbilities.can_delete === true,
+    }
   } catch (error: unknown) {
     const err = error as AxiosErrorShape
+    const status = err.response?.status
 
     rows.value = []
     totalRows.value = 0
     totalPage.value = 1
 
-    notify(getApiErrorMessage(err, 'Gagal memuat data vendor'), 'error')
+    /*
+    * Token tidak ada atau sudah kedaluwarsa.
+    * Jangan tampilkan toast "Unauthenticated"
+    * ketika user diarahkan ke halaman login.
+    */
+    if (status === 401) {
+      return
+    }
+
+    loadError.value = true
+
     console.error(
       '[Vendor] FETCH ERROR:',
-      err.response?.status,
-      err.response?.data ?? error,
+      err,
     )
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(
+        err,
+        'Gagal memuat data vendor',
+      ),
+    })
   } finally {
     loading.value = false
   }
+}
+
+// UsePolling
+// usePolling(fetchRows, {
+//   interval: 30000,
+// })
+
+const handleMasterVendorRefresh = async (): Promise<void> => {
+  await fetchRows()
 }
 
 // =========================
@@ -514,6 +1286,7 @@ watch(currentPage, async (newPage, oldPage) => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('master-vendor:refresh', handleMasterVendorRefresh)
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
   }
@@ -523,11 +1296,48 @@ onBeforeUnmount(() => {
 // Initial load
 // =========================
 onMounted(async () => {
+
+  await permissionStore.loadPermissions()
+
+  if (!canView.value) {
+    await router.replace('/forbidden')
+    return
+  }
+
+  isCheckingPermission.value = false
+
   await Promise.all([
     fetchRows(),
     loadMasterDokumen(),
     loadTransaksi(),
   ])
+
+  window.addEventListener('master-vendor:refresh', handleMasterVendorRefresh)
+
+  const success = route.query.success
+
+  if (success) {
+    await router.replace({
+      path: '/master/vendor',
+      query: {},
+    })
+
+    setTimeout(() => {
+      if (success === 'created') {
+        showSuccessToast({
+          title: 'Berhasil',
+          text: 'Data Vendor berhasil disimpan.',
+        })
+      }
+
+      if (success === 'updated') {
+        showSuccessToast({
+          title: 'Berhasil',
+          text: 'Data Vendor berhasil diperbarui.',
+        })
+      }
+    }, 300)
+  }
 })
 </script>
 
@@ -560,10 +1370,11 @@ onMounted(async () => {
 
           <VCol cols="12" sm="3" class="d-flex align-end">
             <VBtn
-              variant="outlined"
               color="secondary"
+              prepend-icon="tabler-refresh"
               block
               @click="resetFilters"
+              class="text-none"
             >
               Reset Filter
             </VBtn>
@@ -575,13 +1386,34 @@ onMounted(async () => {
     <!-- Table -->
     <VCard>
       <VCardText class="d-flex flex-wrap gap-4 align-center">
-        <VBtn color="primary" @click="goToCreate">
-          + Tambah Vendor
+        <VBtn color="primary" @click="goToCreate" class="text-none" v-if="abilities.can_create" prepend-icon="tabler-plus">
+        Tambah Vendor
         </VBtn>
 
         <VSpacer />
 
-        <VChip v-if="loading" size="small" variant="tonal">Loading...</VChip>
+        <div class="d-flex align-center gap-2">
+          <!-- LOADING -->
+          <VChip
+            v-if="loading"
+            size="small"
+            variant="tonal"
+          >
+            Loading...
+          </VChip>
+
+          <!-- ERROR -->
+          <VBtn
+            v-else-if="loadError"
+            size="small"
+            color="error"
+            variant="tonal"
+            prepend-icon="tabler-refresh"
+            @click="fetchRows"
+          >
+            Reload Data
+          </VBtn>
+        </div>
       </VCardText>
 
       <VDivider />
@@ -589,52 +1421,65 @@ onMounted(async () => {
       <VTable class="text-no-wrap">
         <thead>
           <tr>
-            <th scope="col">NO</th>
-            <th scope="col">KODE</th>
-            <th scope="col">NAMA VENDOR</th>
-            <th scope="col">INISIAL</th>
-            <th scope="col">KATEGORI VENDOR</th>
-            <th scope="col">STATUS</th>
-            <th scope="col">STATUS APPROVAL</th>
-            <th scope="col" class="text-center" style="width: 5rem;">ACTIONS</th>
+            <th scope="col">No</th>
+            <th scope="col">Kode</th>
+            <th scope="col">Nama Vendor</th>
+            <th scope="col">Inisial</th>
+            <th scope="col">Status</th>
+            <th scope="col">Status Pengajuan</th>
+            <th scope="col" class="text-center" style="width: 5rem;">Actions</th>
           </tr>
         </thead>
 
         <tbody>
-          <tr v-for="(v, index) in rows" :key="v.id">
+          <tr v-for="(v, index) in rows" :key="v.id" :class="{
+            'vendor-row-need-approval': v.is_waiting_my_approval,
+          }">
             <td class="text-medium-emphasis">{{ index + 1 }}</td>
-            <td class="text-medium-emphasis">{{ v.kode_vendor }}</td>
+            <td>
+              <div class="d-flex flex-column gap-1">
+                <div class="font-weight-medium">
+                  {{ v.kode_vendor || '-' }}
+                </div>
+
+                <VChip
+                  v-if="v.is_waiting_my_approval === true"
+                  size="x-small"
+                  color="warning"
+                  variant="tonal"
+                >
+                  <VIcon
+                    icon="tabler-alert-circle"
+                    size="14"
+                    start
+                  />
+                  Menunggu Approval Anda
+                </VChip>
+              </div>
+            </td>
             <td class="text-medium-emphasis">{{ v.nama_vendor }}</td>
             <td class="text-medium-emphasis">{{ v.inisial_vendor ?? '-' }}</td>
-            <td class="text-medium-emphasis">{{ formatKategoriVendor(v.kategori_vendor) }}</td>
             <td>
-              <VChip :color="v.is_active ? 'success' : 'secondary'" size="small" class="text-capitalize">
-                {{ v.is_active ? 'active' : 'inactive' }}
+              <VChip :color="v.is_active ? 'success' : 'secondary'" size="small">
+                {{ v.is_active ? 'Aktif' : 'Tidak Aktif' }}
               </VChip>
             </td>
             <td>
               <VChip
                 :color="
-                  v.status_approval === 'APPROVED'
+                  v.status_approval === 'DRAFT'
+                    ? 'secondary'
+                    : v.status_approval === 'APPROVED'
                     ? 'success'
                     : v.status_approval === 'REJECTED'
                     ? 'error'
-                    : v.status_approval === 'PENDING_REVIEW'
-                    ? 'grey'
+                    : v.status_approval === 'PENDING REVIEW'
+                    ? 'warning'
                     : 'secondary'
                 "
                 size="small"
-                class="text-capitalize"
               >
-                {{
-                  v.status_approval === 'APPROVED'
-                    ? 'Approved'
-                    : v.status_approval === 'REJECTED'
-                    ? 'Rejected'
-                    : v.status_approval === 'PENDING_REVIEW'
-                    ? 'Pending Review'
-                    : '-'
-                }}
+                {{toTitleCase(v.status_approval)}}
               </VChip>
             </td>
             <td class="text-center" style="width: 5rem;">
@@ -643,37 +1488,152 @@ onMounted(async () => {
 
                 <VMenu activator="parent">
                   <VList>
-                    <VListItem href="javascript:void(0)" @click="openDetail(v.public_id)">
-                      <template #prepend>
-                        <VIcon icon="tabler-eye" :size="20" class="me-3" />
-                      </template>
-                      <VListItemTitle>Lihat Detail</VListItemTitle>
-                    </VListItem>
-                    <VListItem href="javascript:void(0)" @click="goToEdit(v.public_id)">
-                      <template #prepend>
-                        <VIcon icon="mdi-pencil-outline" :size="20" class="me-3" />
-                      </template>
-                      <VListItemTitle>Edit</VListItemTitle>
-                    </VListItem>
-                    <VListItem href="javascript:void(0)" @click="openDelete(v)">
-                      <template #prepend>
-                        <VIcon icon="mdi-delete-outline" :size="20" class="me-3" />
-                      </template>
-                      <VListItemTitle>Delete</VListItemTitle>
-                    </VListItem>
-
-                    <VListItem href="javascript:void(0)" @click="openStatusDialog(v)">
+                    <!-- Selalu muncul -->
+                    <VListItem
+                      href="javascript:void(0)"
+                      @click="openDetail(v.public_id)"
+                    >
                       <template #prepend>
                         <VIcon
-                          :icon="v.is_active ? 'mdi-toggle-switch-off-outline' : 'mdi-toggle-switch-outline'"
+                          icon="tabler-eye"
                           :size="20"
                           class="me-3"
                         />
                       </template>
+
+                      <VListItemTitle>Lihat Detail</VListItemTitle>
+                    </VListItem>
+
+                    <VListItem
+                      @click="openApprovalHistory(v)"
+                    >
+                      <template #prepend>
+                        <VIcon
+                          icon="tabler-history"
+                          size="20"
+                          class="me-3"
+                        />
+                      </template>
+
+                      <VListItemTitle>
+                        History Approval
+                      </VListItemTitle>
+                    </VListItem>
+
+                    <!-- Hanya muncul jika DRAFT -->
+                    <template v-if="isVendorDraft(v)">
+                      <VListItem
+                        v-if="v.can_update === true"
+                        href="javascript:void(0)"
+                        @click="goToEdit(v.public_id)"
+                      >
+                        <template #prepend>
+                          <VIcon
+                            icon="mdi-pencil-outline"
+                            :size="20"
+                            class="me-3"
+                          />
+                        </template>
+
+                        <VListItemTitle>
+                          Edit
+                        </VListItemTitle>
+                      </VListItem>
+
+                      <VListItem
+                        v-if="v.can_submit === true"
+                        :disabled="submitVendorLoading"
+                        @click="submitVendor(v)"
+                      >
+                        <template #prepend>
+                          <VIcon
+                            icon="mdi-send-outline"
+                            :size="20"
+                            class="me-3"
+                          />
+                        </template>
+
+                        <VListItemTitle>
+                          Submit
+                        </VListItemTitle>
+                      </VListItem>
+
+                      <VListItem
+                        v-if="v.can_delete === true"
+                        href="javascript:void(0)"
+                        class="text-error"
+                        @click="openDelete(v)"
+                      >
+                        <template #prepend>
+                          <VIcon
+                            icon="mdi-delete-outline"
+                            :size="20"
+                            class="me-3"
+                          />
+                        </template>
+
+                        <VListItemTitle class="text-error">
+                          Delete
+                        </VListItemTitle>
+                      </VListItem>
+                    </template>
+
+                    <VListItem
+                      v-if="!isVendorRejected(v)"
+                      href="javascript:void(0)"
+                      @click="openStatusDialog(v)"
+                    >
+                      <template #prepend>
+                        <VIcon
+                          :icon="
+                            v.is_active
+                              ? 'mdi-toggle-switch-off-outline'
+                              : 'mdi-toggle-switch-outline'
+                          "
+                          :size="20"
+                          class="me-3"
+                        />
+                      </template>
+
                       <VListItemTitle>
                         {{ v.is_active ? 'Nonaktifkan' : 'Aktifkan' }}
                       </VListItemTitle>
                     </VListItem>
+
+                    <!-- ========================= -->
+                    <!-- ACTION PENDING REVIEW -->
+                    <!-- ========================= -->
+                    <template v-if="String(v.status_approval).toUpperCase() === 'PENDING REVIEW'">
+                      <VListItem v-if="v.can_approve === true" @click="approveVendor(v)">
+                        <template #prepend>
+                          <VIcon
+                            icon="mdi-check-circle-outline"
+                            :size="20"
+                            class="me-3"
+                            color="success"
+                          />
+                        </template>
+
+                        <VListItemTitle>
+                          Approve
+                        </VListItemTitle>
+                      </VListItem>
+
+                      <VListItem v-if="v.can_approve === true" :disabled="rejectVendorLoading" @click="openRejectVendor(v)">
+                        <template #prepend>
+                          <VIcon
+                            icon="mdi-close-circle-outline"
+                            :size="20"
+                            class="me-3"
+                            color="error"
+                          />
+                        </template>
+
+                        <VListItemTitle>
+                          Reject
+                        </VListItemTitle>
+                      </VListItem>
+                    </template>
                   </VList>
                 </VMenu>
               </VBtn>
@@ -721,27 +1681,6 @@ onMounted(async () => {
       </VCardText>
     </VCard>
 
-    <!-- Confirm Delete -->
-    <VDialog v-model="deleteDialog" max-width="520">
-      <VCard>
-        <VCardTitle class="text-h6">Konfirmasi Hapus</VCardTitle>
-
-        <VCardText>
-          Kamu yakin ingin menghapus vendor
-          <b>{{ deleteTarget?.nama_vendor }}</b>
-          (kode: <b>{{ deleteTarget?.kode_vendor }}</b>)?
-          <div class="text-body-2 opacity-70 mt-2">
-            Data yang sudah dihapus tidak bisa dikembalikan.
-          </div>
-        </VCardText>
-
-        <VCardActions class="justify-end">
-          <VBtn type="button" variant="text" :disabled="deleteLoading" @click="closeDelete">Batal</VBtn>
-          <VBtn type="button" color="error" :loading="deleteLoading" @click="confirmDelete">Hapus</VBtn>
-        </VCardActions>
-      </VCard>
-    </VDialog>
-
     <!-- Confirm Update Status -->
     <VDialog v-model="statusDialog" max-width="420">
       <VCard>
@@ -783,7 +1722,7 @@ onMounted(async () => {
         max-width="1100"
         scrollable
       >
-        <VCard rounded="xl">
+        <VCard rounded="lg">
           <!-- Header -->
           <VCardItem class="px-6 py-5">
             <template #prepend>
@@ -845,8 +1784,27 @@ onMounted(async () => {
                     <div class="text-h5 font-weight-bold">
                       {{ detailVendor.nama_vendor || '-' }}
                     </div>
-                    <div class="text-body-2 text-medium-emphasis mt-1">
-                      Inisial Vendor: {{ detailVendor.inisial_vendor || '-' }}
+
+                    <div class="vendor-summary-meta mt-2">
+                      <div class="vendor-summary-item">
+                        <span class="vendor-summary-label">
+                          Kode Vendor
+                        </span>
+
+                        <span class="vendor-summary-value">
+                          {{ detailVendor.kode_vendor || '-' }}
+                        </span>
+                      </div>
+
+                      <div class="vendor-summary-item">
+                        <span class="vendor-summary-label">
+                          Inisial Vendor
+                        </span>
+
+                        <span class="vendor-summary-value">
+                          {{ detailVendor.inisial_vendor || '-' }}
+                        </span>
+                      </div>
                     </div>
                   </div>
 
@@ -861,9 +1819,153 @@ onMounted(async () => {
                 </div>
               </div>
 
+              <!-- Informasi Aktivitas -->
+<section class="detail-section">
+  <div class="detail-section-title">
+    Informasi Aktivitas
+  </div>
+
+  <VRow>
+    <!-- Dibuat -->
+    <VCol
+      cols="12"
+      md="4"
+    >
+      <VCard
+        variant="tonal"
+        color="primary"
+        class="h-100"
+      >
+        <VCardText>
+          <div class="d-flex align-start ga-3">
+            <VAvatar
+              size="38"
+              color="primary"
+              variant="tonal"
+            >
+              <VIcon
+                icon="tabler-user-plus"
+                size="20"
+              />
+            </VAvatar>
+
+            <div>
+              <div class="text-caption text-medium-emphasis">
+                Dibuat oleh
+              </div>
+
+              <div class="font-weight-medium">
+                {{ detailVendor.created_by_name || '-' }}
+              </div>
+
+              <div class="text-caption text-medium-emphasis mt-2">
+                Dibuat pada
+              </div>
+
+              <div class="text-body-2">
+                {{ formatAuditDateTime(detailVendor.created_at) }}
+              </div>
+            </div>
+          </div>
+        </VCardText>
+      </VCard>
+    </VCol>
+
+    <!-- Diupdate -->
+    <VCol
+      cols="12"
+      md="4"
+    >
+      <VCard
+        variant="tonal"
+        color="warning"
+        class="h-100"
+      >
+        <VCardText>
+          <div class="d-flex align-start ga-3">
+            <VAvatar
+              size="38"
+              color="warning"
+              variant="tonal"
+            >
+              <VIcon
+                icon="tabler-edit"
+                size="20"
+              />
+            </VAvatar>
+
+            <div>
+              <div class="text-caption text-medium-emphasis">
+                Diupdate oleh
+              </div>
+
+              <div class="font-weight-medium">
+                {{ detailVendor.updated_by_name || '-' }}
+              </div>
+
+              <div class="text-caption text-medium-emphasis mt-2">
+                Diupdate pada
+              </div>
+
+              <div class="text-body-2">
+                {{ formatAuditDateTime(detailVendor.updated_at) }}
+              </div>
+            </div>
+          </div>
+        </VCardText>
+      </VCard>
+    </VCol>
+
+    <!-- Disubmit -->
+    <VCol
+      cols="12"
+      md="4"
+    >
+      <VCard
+        variant="tonal"
+        color="success"
+        class="h-100"
+      >
+        <VCardText>
+          <div class="d-flex align-start ga-3">
+            <VAvatar
+              size="38"
+              color="success"
+              variant="tonal"
+            >
+              <VIcon
+                icon="tabler-send"
+                size="20"
+              />
+            </VAvatar>
+
+            <div>
+              <div class="text-caption text-medium-emphasis">
+                Disubmit oleh
+              </div>
+
+              <div class="font-weight-medium">
+                {{ detailVendor.submitted_by_name || '-' }}
+              </div>
+
+              <div class="text-caption text-medium-emphasis mt-2">
+                Disubmit pada
+              </div>
+
+              <div class="text-body-2">
+                {{ formatAuditDateTime(detailVendor.submitted_at) }}
+              </div>
+            </div>
+          </div>
+        </VCardText>
+      </VCard>
+    </VCol>
+  </VRow>
+</section>
+
               <!-- Data Utama Vendor -->
               <section class="detail-section">
-                <div class="detail-section-title">Data Utama Vendor</div>
+                <div class="detail-section-title">Data Vendor</div>
 
                 <VRow>
                   <VCol cols="12" md="6">
@@ -885,6 +1987,11 @@ onMounted(async () => {
                     <div class="detail-item">
                       <div class="detail-label">Kategori Vendor</div>
                       <div class="detail-value">{{ formatKategoriVendor(detailVendor.kategori_vendor) || '-' }}</div>
+                    </div>
+
+                    <div class="detail-item">
+                      <div class="detail-label">Department Vendor</div>
+                      <div class="detail-value">{{ detailVendor.department.label || '-' }}</div>
                     </div>
                   </VCol>
 
@@ -1170,12 +2277,163 @@ onMounted(async () => {
               color="secondary"
               variant="tonal"
               @click="closeDetail"
+              class="text-none"
             >
               Tutup
             </VBtn>
           </VCardActions>
         </VCard>
       </VDialog>
+
+      <VDialog
+        v-model="rejectVendorDialog"
+        max-width="560"
+        persistent
+      >
+        <VCard>
+          <VCardTitle class="d-flex align-center gap-2">
+            <VIcon
+              icon="mdi-close-circle-outline"
+              color="error"
+            />
+            Reject Vendor
+          </VCardTitle>
+
+          <VDivider />
+
+          <VCardText>
+            <p class="text-body-2 mb-4">
+              Anda akan menolak Vendor:
+              <strong>{{ rejectVendorTarget?.nama_vendor || '-' }}</strong>
+            </p>
+
+            <VTextarea
+              v-model="rejectVendorNotes"
+              label="Catatan reject"
+              placeholder="Masukkan alasan reject jika diperlukan"
+              rows="4"
+              auto-grow
+              clearable
+              :disabled="rejectVendorLoading"
+            />
+
+            <div class="text-caption text-medium-emphasis mt-2">
+              Catatan bersifat optional, namun disarankan diisi agar pembuat vendor mengetahui alasan penolakan.
+            </div>
+          </VCardText>
+
+          <VDivider />
+
+          <VCardActions>
+            <VSpacer />
+
+            <VBtn
+              variant="tonal"
+              color="secondary"
+              :disabled="rejectVendorLoading"
+              @click="rejectVendorDialog = false"
+            >
+              Batal
+            </VBtn>
+
+            <VBtn
+              color="error"
+              :loading="rejectVendorLoading"
+              @click="rejectVendor"
+            >
+              Reject
+            </VBtn>
+          </VCardActions>
+        </VCard>
+      </VDialog>
+
+      <VDialog
+        v-model="rejectVendorDialog"
+        max-width="560"
+        persistent
+      >
+        <VCard>
+          <VCardTitle class="d-flex align-center gap-2">
+            <VIcon
+              icon="mdi-close-circle-outline"
+              color="error"
+            />
+
+            Reject Master Vendor
+          </VCardTitle>
+
+          <VDivider />
+
+          <VCardText>
+            <p class="text-body-2 mb-4">
+              Anda akan menolak Vendor:
+              <strong>
+                {{ rejectVendorTarget?.nama_vendor || '-' }}
+              </strong>
+            </p>
+
+            <VTextarea
+              v-model="rejectVendorNotes"
+              label="Catatan reject *"
+              placeholder="Masukkan alasan penolakan Vendor"
+              rows="4"
+              auto-grow
+              clearable
+              counter="2000"
+              maxlength="2000"
+              :disabled="rejectVendorLoading"
+              :error="
+                rejectVendorSubmitted
+                  && !rejectVendorNotes.trim()
+              "
+              :error-messages="
+                rejectVendorSubmitted
+                  && !rejectVendorNotes.trim()
+                    ? ['Catatan penolakan wajib diisi']
+                    : []
+              "
+            />
+
+            <div class="text-caption text-medium-emphasis mt-2">
+              Catatan wajib diisi agar pembuat Vendor mengetahui alasan
+              penolakan.
+            </div>
+          </VCardText>
+
+          <VDivider />
+
+          <VCardActions>
+            <VSpacer />
+
+            <VBtn
+              variant="tonal"
+              color="secondary"
+              :disabled="rejectVendorLoading"
+              @click="closeRejectVendorDialog"
+            >
+              Batal
+            </VBtn>
+
+            <VBtn
+              color="error"
+              :loading="rejectVendorLoading"
+              :disabled="
+                rejectVendorLoading
+                  || !rejectVendorNotes.trim()
+              "
+              @click="confirmRejectVendor"
+            >
+              Simpan Catatan
+            </VBtn>
+          </VCardActions>
+        </VCard>
+      </VDialog>
+
+      <ApprovalHistoryDialog
+        v-model="isApprovalHistoryDialogOpen"
+        :vendor-label="selectedVendorLabel"
+        :approvals="selectedApprovalHistory"
+      />
 
     <!-- Snackbar -->
     <VSnackbar
@@ -1191,10 +2449,6 @@ onMounted(async () => {
     </VSnackbar>
   </section>
 </template>
-
-<style lang="scss">
-.text-capitalize { text-transform: capitalize; }
-</style>
 
 <style lang="scss" scoped>
 .user-pagination-select {
@@ -1258,5 +2512,42 @@ onMounted(async () => {
     margin-top: 16px;
     padding-top: 20px;
   }
+}
+
+.vendor-row-need-approval {
+  background: rgba(var(--v-theme-warning), 0.055);
+
+  &:hover {
+    background: rgba(var(--v-theme-warning), 0.09);
+  }
+}
+
+.vendor-summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 32px;
+  row-gap: 8px;
+}
+
+.vendor-summary-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vendor-summary-label {
+  color: rgba(var(--v-theme-on-surface), 0.6);
+  font-size: 0.875rem;
+}
+
+.vendor-summary-label::after {
+  content: ':';
+}
+
+.vendor-summary-value {
+  color: rgba(var(--v-theme-on-surface), 0.87);
+  font-size: 0.875rem;
+  font-weight: 600;
 }
 </style>

@@ -1,124 +1,326 @@
 <script lang="ts" setup>
-import poseFs9 from '@images/pages/pose-fs-9.png'
+import axios from '@axios';
+import { computed, ref } from 'vue'
+import {
+  showLoadingAlert,
+  showSuccessToast,
+  showWarningToast,
+  showErrorToast,
+  closeAlert,
+  showConfirmAlert,
+} from '@/utils/alert'
 
 const isCurrentPasswordVisible = ref(false)
 const isNewPasswordVisible = ref(false)
 const isConfirmPasswordVisible = ref(false)
+
 const currentPassword = ref('')
 const newPassword = ref('')
 const confirmPassword = ref('')
 
-const passwordRequirements = [
-  'Minimum 8 characters long - the more, the better',
-  'At least one lowercase character',
-  'At least one number, symbol, or whitespace character',
-]
-
-const serverKeys = [
-  {
-    name: 'Server Key 1',
-    key: '23eaf7f0-f4f7-495e-8b86-fad3261282ac',
-    createdOn: '28 Apr 2021, 18:20 GTM+4:10',
-    permission: 'Full Access',
-  },
-  {
-    name: 'Server Key 2',
-    key: 'bb98e571-a2e2-4de8-90a9-2e231b5e99',
-    createdOn: '12 Feb 2021, 10:30 GTM+2:30',
-    permission: 'Read Only',
-  },
-  {
-    name: 'Server Key 3',
-    key: '2e915e59-3105-47f2-8838-6e46bf83b711',
-    createdOn: '28 Dec 2020, 12:21 GTM+4:10',
-    permission: 'Full Access',
-  },
-]
-
-const recentDevices = [
-  {
-    browser: 'Chrome on Windows',
-    device: 'HP Spectre 360',
-    location: 'New York, NY',
-    recentActivity: '28 Apr 2022, 18:20',
-    deviceIcon: { icon: 'mdi-microsoft-windows', color: 'info' },
-  },
-  {
-    browser: 'Chrome on iPhone',
-    device: 'iPhone 12x',
-    location: 'Los Angeles, CA',
-    recentActivity: '20 Apr 2022, 10:20',
-    deviceIcon: { icon: 'mdi-cellphone', color: 'error' },
-  },
-  {
-    browser: 'Chrome on Android',
-    device: 'Oneplus 9 Pro',
-    location: 'San Francisco, CA',
-    recentActivity: '16 Apr 2022, 04:20',
-    deviceIcon: { icon: 'mdi-android', color: 'success' },
-  },
-  {
-    browser: 'Chrome on MacOS',
-    device: 'Apple iMac',
-    location: 'New York, NY',
-    recentActivity: '28 Apr 2022, 18:20',
-    deviceIcon: { icon: 'mdi-apple', color: 'secondary' },
-  },
-  {
-    browser: 'Chrome on Windows',
-    device: 'HP Spectre 360',
-    location: 'Los Angeles, CA',
-    recentActivity: '20 Apr 2022, 10:20',
-    deviceIcon: { icon: 'mdi-microsoft-windows', color: 'info' },
-  },
-  {
-    browser: 'Chrome on Android',
-    device: 'Oneplus 9 Pro',
-    location: 'San Francisco, CA',
-    recentActivity: '16 Apr 2022, 04:20',
-    deviceIcon: { icon: 'mdi-android', color: 'success' },
-  },
-]
+const submitLoading = ref(false)
+const isSubmitted = ref(false)
 
 const isOneTimePasswordDialogVisible = ref(false)
+
+const hasMinLength = computed(() => newPassword.value.length >= 8)
+const hasLowercase = computed(() => /[a-z]/.test(newPassword.value))
+const hasUppercase = computed(() => /[A-Z]/.test(newPassword.value))
+const hasNumber = computed(() => /\d/.test(newPassword.value))
+const hasSymbol = computed(() => /[!@#$%^&*(),.?":{}|<>_\-+=/\\[\]`;']/ .test(newPassword.value))
+
+const isConfirmPasswordMatch = computed(() => {
+  if (!confirmPassword.value)
+    return false
+
+  return newPassword.value === confirmPassword.value
+})
+
+const passwordRequirements = computed(() => [
+  {
+    text: 'Panjang minimal 8 karakter',
+    valid: hasMinLength.value,
+  },
+  {
+    text: 'Kombinasi huruf kecil',
+    valid: hasLowercase.value,
+  },
+  {
+    text: 'Kombinasi huruf besar',
+    valid: hasUppercase.value,
+  },
+  {
+    text: 'Setidaknya satu angka',
+    valid: hasNumber.value,
+  },
+  {
+    text: 'Setidaknya satu simbol',
+    valid: hasSymbol.value,
+  },
+])
+
+const isPasswordRequirementValid = computed(() => {
+  return hasMinLength.value
+    && hasLowercase.value
+    && hasUppercase.value
+    && hasNumber.value
+    && hasSymbol.value
+})
+
+const passwordStrengthScore = computed(() => {
+  let score = 0
+
+  if (hasMinLength.value)
+    score += 1
+
+  if (hasLowercase.value)
+    score += 1
+
+  if (hasUppercase.value)
+    score += 1
+
+  if (hasNumber.value)
+    score += 1
+
+  if (hasSymbol.value)
+    score += 1
+
+  if (newPassword.value.length >= 12)
+    score += 1
+
+  return score
+})
+
+const passwordStrength = computed(() => {
+  if (!newPassword.value) {
+    return {
+      label: 'Belum diisi',
+      color: 'secondary',
+      percent: 0,
+      className: '',
+    }
+  }
+
+  if (passwordStrengthScore.value <= 2) {
+    return {
+      label: 'Password Lemah',
+      color: 'error',
+      percent: 25,
+      className: 'strength-weak',
+    }
+  }
+
+  if (passwordStrengthScore.value === 3) {
+    return {
+      label: 'Password Sedang',
+      color: 'warning',
+      percent: 50,
+      className: 'strength-medium',
+    }
+  }
+
+  if (passwordStrengthScore.value === 4 || passwordStrengthScore.value === 5) {
+    return {
+      label: 'Password Kuat',
+      color: 'info',
+      percent: 75,
+      className: 'strength-strong',
+    }
+  }
+
+  return {
+    label: 'Password Sangat Kuat',
+    color: 'success',
+    percent: 100,
+    className: 'strength-very-strong',
+  }
+})
+
+const isFormValid = computed(() => {
+  return Boolean(currentPassword.value)
+    && isPasswordRequirementValid.value
+    && isConfirmPasswordMatch.value
+})
+
+const currentPasswordError = computed(() => {
+  if (!isSubmitted.value)
+    return ''
+
+  if (!currentPassword.value)
+    return 'Password lama wajib diisi.'
+
+  return ''
+})
+
+const newPasswordError = computed(() => {
+  if (!isSubmitted.value && !newPassword.value)
+    return ''
+
+  if (!newPassword.value)
+    return 'Password baru wajib diisi.'
+
+  if (!isPasswordRequirementValid.value)
+    return 'Password baru belum memenuhi persyaratan.'
+
+  if (currentPassword.value && newPassword.value === currentPassword.value)
+    return 'Password baru tidak boleh sama dengan password lama.'
+
+  return ''
+})
+
+const confirmPasswordError = computed(() => {
+  if (!isSubmitted.value && !confirmPassword.value)
+    return ''
+
+  if (!confirmPassword.value)
+    return 'Konfirmasi password baru wajib diisi.'
+
+  if (!isConfirmPasswordMatch.value)
+    return 'Konfirmasi password baru tidak sama dengan password baru.'
+
+  return ''
+})
+
+const resetForm = (): void => {
+  currentPassword.value = ''
+  newPassword.value = ''
+  confirmPassword.value = ''
+  isSubmitted.value = false
+
+  isCurrentPasswordVisible.value = false
+  isNewPasswordVisible.value = false
+  isConfirmPasswordVisible.value = false
+}
+
+const submitChangePassword = async (): Promise<void> => {
+  isSubmitted.value = true
+
+  if (!isFormValid.value) {
+    showErrorToast({
+      title: 'Validasi gagal',
+      text: 'Mohon lengkapi form dan pastikan password baru sudah memenuhi persyaratan.',
+    })
+
+    return
+  }
+
+  if (newPassword.value === currentPassword.value) {
+    showErrorToast({
+      title: 'Password tidak valid',
+      text: 'Password baru tidak boleh sama dengan password lama.',
+    })
+
+    return
+  }
+
+  const confirm = await showConfirmAlert({
+    icon: 'question',
+    title: 'Ubah Password?',
+    text: 'Pastikan password baru sudah benar. Anda perlu menggunakan password baru pada login berikutnya.',
+    confirmButtonText: 'Ya, simpan',
+    cancelButtonText: 'Batal',
+  })
+
+  if (!confirm.isConfirmed)
+    return
+
+  submitLoading.value = true
+
+  try {
+    showLoadingAlert('Mengubah password...', 'Mohon tunggu sebentar.')
+
+    const response = await axios.put('/account/change-password', {
+      current_password: currentPassword.value,
+      password: newPassword.value,
+      password_confirmation: confirmPassword.value,
+    }, {
+      headers: {
+        Accept: 'application/json',
+      },
+    })
+
+    closeAlert()
+
+    if (response.data?.success) {
+      showSuccessToast({
+        title: 'Berhasil',
+        text: response.data?.message || 'Password berhasil diubah.',
+      })
+
+      resetForm()
+
+      return
+    }
+
+    showErrorToast({
+      title: 'Gagal',
+      text: response.data?.message || 'Gagal mengubah password.',
+    })
+  } catch (error: any) {
+    closeAlert()
+
+    const message = error.response?.data?.message
+      || error.response?.data?.errors?.current_password?.[0]
+      || error.response?.data?.errors?.password?.[0]
+      || 'Gagal mengubah password.'
+
+    showErrorToast({
+      title: 'Gagal',
+      text: message,
+    })
+  } finally {
+    submitLoading.value = false
+  }
+}
 </script>
 
 <template>
   <VRow>
-    <!-- SECTION: Change Password -->
     <VCol cols="12">
-      <VCard title="Change Password">
-        <VForm>
+      <VCard>
+        <VCardTitle class="text-h6 font-weight-bold">
+          Ubah Password
+        </VCardTitle>
+
+        <VForm @submit.prevent="submitChangePassword">
           <VCardText class="pt-0">
-            <!-- 👉 Current Password -->
             <VRow class="mb-3">
               <VCol
                 cols="12"
                 md="6"
               >
-                <!-- 👉 current password -->
                 <VTextField
                   v-model="currentPassword"
                   :type="isCurrentPasswordVisible ? 'text' : 'password'"
                   :append-inner-icon="isCurrentPasswordVisible ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
-                  label="Current Password"
+                  label="Password lama"
+                  placeholder="Masukkan password saat ini"
+                  density="compact"
+                  variant="outlined"
+                  :error="Boolean(currentPasswordError)"
+                  :error-messages="currentPasswordError"
+                  autocomplete="current-password"
                   @click:append-inner="isCurrentPasswordVisible = !isCurrentPasswordVisible"
                 />
               </VCol>
             </VRow>
 
-            <!-- 👉 New Password -->
             <VRow>
               <VCol
                 cols="12"
                 md="6"
               >
-                <!-- 👉 new password -->
                 <VTextField
                   v-model="newPassword"
                   :type="isNewPasswordVisible ? 'text' : 'password'"
                   :append-inner-icon="isNewPasswordVisible ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
-                  label="New Password"
+                  label="Password baru"
+                  placeholder="Masukkan password baru"
+                  density="compact"
+                  variant="outlined"
+                  :error="Boolean(newPasswordError)"
+                  :error-messages="newPasswordError"
+                  autocomplete="new-password"
                   @click:append-inner="isNewPasswordVisible = !isNewPasswordVisible"
                 />
               </VCol>
@@ -127,50 +329,110 @@ const isOneTimePasswordDialogVisible = ref(false)
                 cols="12"
                 md="6"
               >
-                <!-- 👉 confirm password -->
                 <VTextField
                   v-model="confirmPassword"
                   :type="isConfirmPasswordVisible ? 'text' : 'password'"
                   :append-inner-icon="isConfirmPasswordVisible ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
-                  label="Confirm New Password"
+                  label="Konfirmasi password baru"
+                  placeholder="Ulangi password baru"
+                  density="compact"
+                  variant="outlined"
+                  :error="Boolean(confirmPasswordError)"
+                  :error-messages="confirmPasswordError"
+                  autocomplete="new-password"
                   @click:append-inner="isConfirmPasswordVisible = !isConfirmPasswordVisible"
                 />
               </VCol>
             </VRow>
           </VCardText>
 
-          <!-- 👉 Password Requirements -->
+          <VCardText class="pt-0">
+            <div class="password-strength-box">
+              <div class="d-flex align-center justify-space-between mb-2">
+                <span class="text-caption text-medium-emphasis">
+                  Kekuatan Password
+                </span>
+
+                <VChip
+                  size="x-small"
+                  :color="passwordStrength.color"
+                  variant="tonal"
+                  class="font-weight-bold"
+                >
+                  {{ passwordStrength.label }}
+                </VChip>
+              </div>
+
+              <VProgressLinear
+                :model-value="passwordStrength.percent"
+                :color="passwordStrength.color"
+                height="8"
+                rounded
+                class="password-strength-progress"
+                :class="passwordStrength.className"
+              />
+            </div>
+          </VCardText>
+
           <VCardText>
-            <p class="text-base mt-2">
-              Password Requirements:
+            <p class="text-base mt-2 mb-3">
+              Persyaratan Password:
             </p>
 
-            <ul class="d-flex flex-column gap-y-3">
+            <ul class="password-requirement-list">
               <li
                 v-for="item in passwordRequirements"
-                :key="item"
-                class="d-flex"
+                :key="item.text"
+                class="password-requirement-item"
+                :class="{
+                  'is-valid': item.valid,
+                  'is-invalid': !item.valid && newPassword,
+                }"
               >
-                <div>
-                  <VIcon
-                    size="7"
-                    icon="mdi-circle"
-                    class="me-3"
-                  />
-                </div>
-                <span class="text-base">{{ item }}</span>
+                <VIcon
+                  :icon="item.valid ? 'tabler-circle-check' : 'tabler-circle'"
+                  size="18"
+                  class="requirement-icon"
+                />
+
+                <span>{{ item.text }}</span>
+              </li>
+
+              <li
+                class="password-requirement-item"
+                :class="{
+                  'is-valid': isConfirmPasswordMatch,
+                  'is-invalid': !isConfirmPasswordMatch && confirmPassword,
+                }"
+              >
+                <VIcon
+                  :icon="isConfirmPasswordMatch ? 'tabler-circle-check' : 'tabler-circle'"
+                  size="18"
+                  class="requirement-icon"
+                />
+
+                <span>Konfirmasi password harus sama dengan password baru</span>
               </li>
             </ul>
           </VCardText>
 
-          <!-- 👉 Action Buttons -->
           <VCardText class="d-flex flex-wrap gap-4">
-            <VBtn>Save changes</VBtn>
+            <VBtn
+              type="submit"
+              class="text-none"
+              :loading="submitLoading"
+              :disabled="!isFormValid || submitLoading"
+            >
+              Simpan
+            </VBtn>
 
             <VBtn
-              type="reset"
+              type="button"
               color="secondary"
               variant="tonal"
+              class="text-none"
+              :disabled="submitLoading"
+              @click="resetForm"
             >
               Reset
             </VBtn>
@@ -178,183 +440,134 @@ const isOneTimePasswordDialogVisible = ref(false)
         </VForm>
       </VCard>
     </VCol>
-    <!-- !SECTION -->
-
-    <!-- SECTION Two-steps verification -->
-    <VCol cols="12">
-      <VCard title="Two-steps verification">
-        <VCardText class="text-base">
-          <p>
-            Two factor authentication is not enabled yet.
-          </p>
-          <p>
-            Two-factor authentication adds an additional layer of security to your account by requiring more than just a password to log in.
-            <a
-              href="javascript:void(0)"
-              class="text-decoration-none"
-            >Learn more.</a>
-          </p>
-
-          <VBtn @click="isOneTimePasswordDialogVisible = true">
-            Enable two-FA
-          </VBtn>
-        </VCardText>
-      </VCard>
-    </VCol>
-    <!-- !SECTION -->
-
-    <VCol cols="12">
-      <!-- SECTION: Create an API key -->
-      <VCard title="Create an API key">
-        <VRow>
-          <!-- 👉 Choose API Key -->
-          <VCol
-            cols="12"
-            md="5"
-            order-md="0"
-            order="1"
-          >
-            <VCardText>
-              <VForm @submit.prevent="() => {}">
-                <VRow>
-                  <!-- 👉 Choose API Key -->
-                  <VCol cols="12">
-                    <VSelect
-                      label="Choose the API key type you want to create"
-                      :items="['Full Control', 'Modify', 'Read & Execute', 'List Folder Contents', 'Read Only', 'Read & Write']"
-                    />
-                  </VCol>
-
-                  <!-- 👉 Name the API Key -->
-                  <VCol cols="12">
-                    <VTextField label="Name the API key" />
-                  </VCol>
-
-                  <!-- 👉 Create Key Button -->
-                  <VCol cols="12">
-                    <VBtn
-                      type="submit"
-                      block
-                    >
-                      Create Key
-                    </VBtn>
-                  </VCol>
-                </VRow>
-              </VForm>
-            </VCardText>
-          </VCol>
-
-          <!-- 👉 Lady image -->
-          <VCol
-            cols="12"
-            md="7"
-            order="0"
-            order-md="1"
-            class="d-flex flex-column justify-center align-center"
-          >
-            <VImg
-              :src="poseFs9"
-              :width="180"
-              :style="$vuetify.display.smAndDown ? '' : 'position: absolute; bottom: 0;'"
-            />
-          </VCol>
-        </VRow>
-      </VCard>
-    <!-- !SECTION -->
-    </VCol>
-
-    <VCol cols="12">
-      <!-- SECTION: API Keys List -->
-      <VCard title="API Key List &amp; Access">
-        <VCardText>
-          An API key is a simple encrypted string that identifies an application without any principal. They are useful for accessing public data anonymously, and are used to associate API requests with your project for quota and billing.
-        </VCardText>
-
-        <!-- 👉 Server Status -->
-        <VCardText class="d-flex flex-column gap-y-4">
-          <div
-            v-for="serverKey in serverKeys"
-            :key="serverKey.key"
-            class="bg-var-theme-background pa-4"
-          >
-            <div class="d-flex align-center flex-wrap mb-3">
-              <h6 class="text-h6 mb-0 me-3">
-                {{ serverKey.name }}
-              </h6>
-              <VChip
-                color="primary"
-                size="small"
-              >
-                {{ serverKey.permission }}
-              </VChip>
-            </div>
-            <p class="text-base font-weight-medium">
-              <span class="me-3">{{ serverKey.key }}</span>
-              <VIcon
-                :size="18"
-                icon="mdi-content-copy"
-                class="cursor-pointer"
-              />
-            </p>
-            <span class="text-disabled">Created on {{ serverKey.createdOn }}</span>
-          </div>
-        </VCardText>
-      </VCard>
-      <!-- !SECTION -->
-    </VCol>
-
-    <!-- SECTION Recent Devices -->
-    <VCol cols="12">
-      <!-- 👉 Table -->
-      <VCard title="Recent Devices">
-        <VTable class="text-no-wrap">
-          <thead>
-            <tr>
-              <th scope="col">
-                BROWSER
-              </th>
-              <th scope="col">
-                DEVICE
-              </th>
-              <th scope="col">
-                LOCATION
-              </th>
-              <th scope="col">
-                RECENT ACTIVITIES
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="device in recentDevices"
-              :key="device.recentActivity"
-            >
-              <td>
-                <VIcon
-                  start
-                  :icon="device.deviceIcon.icon"
-                  :color="device.deviceIcon.color"
-                />
-                {{ device.browser }}
-              </td>
-              <td class="text-medium-emphasis">
-                {{ device.device }}
-              </td>
-              <td class="text-medium-emphasis">
-                {{ device.location }}
-              </td>
-              <td class="text-medium-emphasis">
-                {{ device.recentActivity }}
-              </td>
-            </tr>
-          </tbody>
-        </VTable>
-      </VCard>
-    </VCol>
-    <!-- !SECTION -->
   </VRow>
 
-  <!-- SECTION Enable One time password -->
   <EnableOneTimePasswordDialog v-model:isDialogVisible="isOneTimePasswordDialogVisible" />
-  <!-- !SECTION -->
 </template>
+
+<style scoped lang="scss">
+.password-requirement-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-left: 0;
+  list-style: none;
+}
+
+.password-requirement-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: rgba(var(--v-theme-on-surface), 0.58);
+  transition: all 0.25s ease;
+  transform: translateX(0);
+
+  .requirement-icon {
+    color: rgba(var(--v-theme-on-surface), 0.38);
+    transition: all 0.25s ease;
+  }
+
+  &.is-valid {
+    color: rgb(var(--v-theme-success));
+    transform: translateX(4px);
+
+    .requirement-icon {
+      color: rgb(var(--v-theme-success));
+      transform: scale(1.1);
+    }
+  }
+
+  &.is-invalid {
+    color: rgb(var(--v-theme-error));
+
+    .requirement-icon {
+      color: rgb(var(--v-theme-error));
+    }
+  }
+}
+
+.password-strength-box {
+  padding: 12px;
+  // border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  // border-radius: 12px;
+  // background-color: rgba(var(--v-theme-surface-variant), 0.05);
+  transition: all 0.25s ease;
+}
+
+.password-strength-progress {
+  overflow: hidden;
+  transition: all 0.25s ease;
+}
+
+.password-strength-progress :deep(.v-progress-linear__determinate) {
+  transition: width 0.35s ease, background-color 0.25s ease;
+}
+
+.strength-weak {
+  animation: strengthPulseWeak 0.35s ease;
+}
+
+.strength-medium {
+  animation: strengthPulseMedium 0.35s ease;
+}
+
+.strength-strong {
+  animation: strengthPulseStrong 0.35s ease;
+}
+
+.strength-very-strong {
+  animation: strengthPulseVeryStrong 0.35s ease;
+}
+
+@keyframes strengthPulseWeak {
+  0% {
+    transform: scaleX(0.96);
+    opacity: 0.75;
+  }
+
+  100% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+@keyframes strengthPulseMedium {
+  0% {
+    transform: scaleX(0.97);
+    opacity: 0.8;
+  }
+
+  100% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+@keyframes strengthPulseStrong {
+  0% {
+    transform: scaleX(0.98);
+    opacity: 0.85;
+  }
+
+  100% {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+@keyframes strengthPulseVeryStrong {
+  0% {
+    transform: scale(0.98);
+    opacity: 0.85;
+  }
+
+  60% {
+    transform: scale(1.01);
+    opacity: 1;
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+</style>

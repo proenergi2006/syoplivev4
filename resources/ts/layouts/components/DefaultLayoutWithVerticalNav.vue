@@ -1,5 +1,9 @@
 <script lang="ts" setup>
-import navItems from '@/navigation/vertical'
+import { computed, onMounted } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useWindowSize } from '@vueuse/core'
+
+import { useNavigationStore } from '@/stores/navigation'
 import { useThemeConfig } from '@core/composable/useThemeConfig'
 
 // Components
@@ -14,12 +18,59 @@ import UserProfile from '@/layouts/components/UserProfile.vue'
 // @layouts plugin
 import { VerticalNavLayout } from '@layouts'
 
-const { appRouteTransition, isLessThanOverlayNavBreakpoint } = useThemeConfig()
+const navigationStore = useNavigationStore()
+
+const {
+  items: navItems,
+  loaded: navigationLoaded,
+} = storeToRefs(navigationStore)
+
+const {
+  appRouteTransition,
+  isLessThanOverlayNavBreakpoint,
+} = useThemeConfig()
+
 const { width: windowWidth } = useWindowSize()
+
+/*
+|--------------------------------------------------------------------------
+| Key untuk memaksa komponen navigation render ulang ketika menu berubah
+|--------------------------------------------------------------------------
+*/
+const navigationRenderKey = computed(() => JSON.stringify(navItems.value))
+
+onMounted(async () => {
+  /*
+  |--------------------------------------------------------------------------
+  | Jika navigation belum pernah dimuat, ambil dari localStorage lebih dahulu
+  |--------------------------------------------------------------------------
+  */
+  if (!navigationLoaded.value) {
+    navigationStore.loadFromLocal()
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Jika localStorage kosong tetapi user sudah login, ambil dari API
+  |--------------------------------------------------------------------------
+  */
+  if (navItems.value.length === 0 && localStorage.getItem('access_token')) {
+    try {
+      await navigationStore.fetchFromApi(true)
+    }
+    catch (error) {
+      console.error(
+        'Gagal memuat menu navigation:',
+        error,
+      )
+    }
+  }
+})
 </script>
 
 <template>
   <VerticalNavLayout
+    :key="navigationRenderKey"
     :nav-items="navItems"
   >
     <!-- 👉 navbar -->
@@ -53,12 +104,15 @@ const { width: windowWidth } = useWindowSize()
     </template>
 
     <!-- 👉 Pages -->
-    <RouterView v-slot="{ Component }">
+    <RouterView v-slot="{ Component, route }">
       <Transition
         :name="appRouteTransition"
         mode="out-in"
       >
-        <Component :is="Component" />
+        <Component
+          :is="Component"
+          :key="route.path"
+        />
       </Transition>
     </RouterView>
 

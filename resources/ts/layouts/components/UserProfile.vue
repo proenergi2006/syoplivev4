@@ -1,30 +1,128 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue'
 import type { Anchor } from 'vuetify/lib/components'
+import axios from '@axios'
 import { initialAbility } from '@/plugins/casl/ability'
 import { useAppAbility } from '@/plugins/casl/useAppAbility'
+import { showConfirmAlert, showErrorToast, showLoadingAlert, closeAlert } from '@/utils/alert'
+import { usePermissionStore } from '@/stores/permission'
+import { useNavigationStore } from '@/stores/navigation'
 
 const router = useRouter()
 const ability = useAppAbility()
-const userData = JSON.parse(localStorage.getItem('userData') || 'null')
-console.log(userData)
 
-const logout = () => {
-  // Remove "userData" from localStorage
-  localStorage.removeItem('userData')
+const logoutLoading = ref(false)
+const permissionStore = usePermissionStore()
+const navigationStore = useNavigationStore()
 
-  // Remove "accessToken" from localStorage
-  localStorage.removeItem('accessToken')
+const userData = computed(() => {
+  try {
+    return JSON.parse(localStorage.getItem('userData') || '{}')
+  } catch {
+    return {}
+  }
+})
 
-  // Redirect to login page
-  router.push('/login')
-    .then(() => {
-      // ℹ️ We had to remove abilities in then block because if we don't nav menu items mutation is visible while redirecting user to login page
-      // Remove "userAbilities" from localStorage
-      localStorage.removeItem('userAbilities')
+const displayName = computed(() => {
+  return userData.value?.name
+    || userData.value?.fullName
+    || userData.value?.full_name
+    || userData.value?.username
+    || 'User'
+})
 
-      // Reset ability to initial ability
-      ability.update(initialAbility)
+const displayRole = computed(() => {
+  return userData.value?.role
+    || userData.value?.role_name
+    || userData.value?.role_code
+    || '-'
+})
+
+const avatarUrl = computed(() => {
+  return userData.value?.avatar || null
+})
+
+const clearAuthStorageAndRedirect = async (): Promise<void> => {
+  /*
+  |--------------------------------------------------------------------------
+  | Kosongkan menu dari memory dan localStorage
+  |--------------------------------------------------------------------------
+  */
+  navigationStore.clearNavigation()
+
+  /*
+  |--------------------------------------------------------------------------
+  | Bersihkan state permission jika ada
+  |--------------------------------------------------------------------------
+  */
+  try {
+    permissionStore.$reset()
+  }
+  catch (error) {
+    console.warn('Gagal reset permission store:', error)
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Hapus data sesi akun lama
+  |--------------------------------------------------------------------------
+  */
+  const keysToRemove = [
+    'accessToken',
+    'token',
+    'userData',
+    'userAbilities',
+    'navItems',
+  ]
+
+  keysToRemove.forEach(key => {
+    localStorage.removeItem(key)
+    sessionStorage.removeItem(key)
+  })
+
+  delete axios.defaults.headers.common.Authorization
+
+  await router.replace('/login')
+}
+
+const logout = async (): Promise<void> => {
+  if (logoutLoading.value) return
+
+  const confirm = await showConfirmAlert({
+    title: 'Keluar dari sistem?',
+    text: 'Anda yakin ingin keluar dari aplikasi?',
+    confirmButtonText: 'Ya, keluar',
+    cancelButtonText: 'Batal',
+  })
+
+  if (!confirm.isConfirmed) return
+
+  logoutLoading.value = true
+
+  try {
+    showLoadingAlert('Sedang keluar..', 'Mohon tunggu sebentar')
+
+    await axios.post('/auth/logout', {}, {
+      headers: {
+        Accept: 'application/json',
+      },
     })
+
+    closeAlert()
+
+    await clearAuthStorageAndRedirect()
+  } catch (error) {
+    console.error('LOGOUT ERROR:', error)
+
+    showErrorToast({
+      title: 'Logout gagal',
+      text: 'Gagal menghubungi server. Anda tetap akan diarahkan ke halaman login.',
+    })
+
+    await clearAuthStorageAndRedirect()
+  } finally {
+    logoutLoading.value = false
+  }
 }
 
 const avatarBadgeProps = {
@@ -45,35 +143,33 @@ const avatarBadgeProps = {
       variant="tonal"
     >
       <VImg
-        v-if="userData && userData.avatar"
-        :src="userData.avatar"
+        v-if="avatarUrl"
+        :src="avatarUrl"
       />
       <VIcon
         v-else
         icon="mdi-account-outline"
       />
 
-      <!-- SECTION Menu -->
       <VMenu
         activator="parent"
-        width="230"
+        width="260"
         location="bottom end"
         offset="14px"
       >
         <VList>
-          <!-- 👉 User Avatar & Name -->
           <VListItem>
             <template #prepend>
               <VListItemAction start>
                 <VBadge v-bind="avatarBadgeProps">
                   <VAvatar
                     color="primary"
-                    size="40"
+                    size="42"
                     variant="tonal"
                   >
                     <VImg
-                      v-if="userData && userData.avatar"
-                      :src="userData.avatar"
+                      v-if="avatarUrl"
+                      :src="avatarUrl"
                     />
                     <VIcon
                       v-else
@@ -85,17 +181,17 @@ const avatarBadgeProps = {
             </template>
 
             <VListItemTitle class="font-weight-medium">
-              {{ userData.name }}
+              {{ displayName }}
             </VListItemTitle>
+
             <VListItemSubtitle>
-              {{ userData.role }}
+              {{ displayRole }}
             </VListItemSubtitle>
           </VListItem>
 
           <VDivider class="my-2" />
 
-          <!-- 👉 Profile -->
-          <VListItem :to="{ name: 'apps-user-view-id', params: { id: 21 } }">
+          <!-- <VListItem :to="{ name: 'apps-user-view-id', params: { id: 21 } }">
             <template #prepend>
               <VIcon
                 class="me-2"
@@ -105,9 +201,8 @@ const avatarBadgeProps = {
             </template>
 
             <VListItemTitle>Profile</VListItemTitle>
-          </VListItem>
+          </VListItem> -->
 
-          <!-- 👉 Settings -->
           <VListItem :to="{ name: 'pages-account-settings-tab', params: { tab: 'account' } }">
             <template #prepend>
               <VIcon
@@ -120,21 +215,7 @@ const avatarBadgeProps = {
             <VListItemTitle>Settings</VListItemTitle>
           </VListItem>
 
-          <!-- 👉 Pricing -->
-          <!-- <VListItem :to="{ name: 'pages-pricing' }">
-            <template #prepend>
-              <VIcon
-                class="me-2"
-                icon="mdi-currency-usd"
-                size="22"
-              />
-            </template>
-
-            <VListItemTitle>Pricing</VListItemTitle>
-          </VListItem> -->
-
-          <!-- 👉 FAQ -->
-          <VListItem :to="{ name: 'pages-faq' }">
+          <!-- <VListItem :to="{ name: 'pages-faq' }">
             <template #prepend>
               <VIcon
                 class="me-2"
@@ -144,14 +225,11 @@ const avatarBadgeProps = {
             </template>
 
             <VListItemTitle>FAQ</VListItemTitle>
-          </VListItem>
+          </VListItem> -->
 
-          <!-- Divider -->
-          <VDivider class="my-2" />
-
-          <!-- 👉 Logout -->
           <VListItem
             link
+            :disabled="logoutLoading"
             @click="logout"
           >
             <template #prepend>
@@ -162,11 +240,12 @@ const avatarBadgeProps = {
               />
             </template>
 
-            <VListItemTitle>Logout</VListItemTitle>
+            <VListItemTitle>
+              {{ logoutLoading ? 'Logging out...' : 'Logout' }}
+            </VListItemTitle>
           </VListItem>
         </VList>
       </VMenu>
-      <!-- !SECTION -->
     </VAvatar>
   </VBadge>
 </template>

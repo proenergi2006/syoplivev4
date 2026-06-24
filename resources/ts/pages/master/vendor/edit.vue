@@ -4,13 +4,15 @@ import { useRoute, useRouter } from 'vue-router'
 import axios from '@axios'
 import {
   showLoadingAlert,
-  showSuccessAlert,
-  showErrorAlert,
+  showSuccessToast,
+  showErrorToast,
   closeAlert,
   showConfirmAlert,
-  showWarningAlert,
+  showWarningToast,
+  showInfoToast,
 } from '@/utils/alert'
 import { getApiErrorMessage } from '@/utils/apiHelper'
+import { usePermissionStore } from '@/stores/permission'
 
 interface ApiErrorResponse {
   message?: string
@@ -64,6 +66,7 @@ interface VendorForm {
   kategori_vendor: string | null
   nomor_ktp: string
   alamat: string
+  id_department: number | null
 
   contact_nama: string
   contact_jabatan: string
@@ -84,6 +87,13 @@ interface VendorForm {
   top: number | null
 }
 
+interface VendorDepartment {
+  id: number
+  kode?: string | null
+  label: string
+  nama?: string | null
+}
+
 interface VendorDetail {
   public_id: string
   nama_vendor: string
@@ -95,6 +105,14 @@ interface VendorDetail {
   kategori_vendor: string | null
   nomor_ktp: string | null
   alamat: string | null
+
+  id_department?: number | null
+
+  department?: {
+    id: number
+    label?: string | null
+    nama_department?: string | null
+  } | null
 
   contact_nama: string | null
   contact_jabatan: string | null
@@ -146,6 +164,21 @@ interface MasterBankItem {
   is_active: boolean
 }
 
+interface DepartmentOption {
+  id: number
+  kode: string
+  nama: string
+  label: string
+}
+
+const permissionStore = usePermissionStore()
+
+const canUpdate = computed(() => {
+  return permissionStore.can('vendor.update')
+})
+
+const isCheckingPermission = ref(true)
+
 const router = useRouter()
 const route = useRoute()
 
@@ -174,6 +207,10 @@ const loadingBanks = ref(false)
 const bankError = ref<string | null>(null)
 const masterBanks = ref<MasterBankItem[]>([])
 
+const departmentOptions = ref<DepartmentOption[]>([])
+const loadingDepartments = ref(false)
+const departmentLoadError = ref(false)
+
 const form = reactive<VendorForm>({
   nama_vendor: '',
   inisial_vendor: '',
@@ -184,6 +221,7 @@ const form = reactive<VendorForm>({
   kategori_vendor: null,
   nomor_ktp: '',
   alamat: '',
+  id_department: null,
 
   contact_nama: '',
   contact_jabatan: '',
@@ -273,9 +311,9 @@ const goBack = (): void => {
 const confirmCancel = async (): Promise<void> => {
   const result = await showConfirmAlert({
     title: 'Batalkan perubahan?',
-    text: 'Data yang sudah diisi tidak akan tersimpan. Apakah Anda yakin ingin keluar?',
-    confirmButtonText: 'Ya, keluar',
-    cancelButtonText: 'Batal',
+    text: 'Data yang sudah diubah tidak akan tersimpan. Apakah Anda yakin?',
+    confirmButtonText: 'Ya, batal',
+    cancelButtonText: 'Tidak',
   })
 
   if (result.isConfirmed) {
@@ -435,7 +473,7 @@ const loadMasterBanks = async (): Promise<void> => {
   } catch (error: any) {
     bankError.value = 'Data master bank gagal dimuat'
 
-    await showErrorAlert({
+    showErrorToast({
       title: 'Error',
       text: getApiErrorMessage(error, 'Gagal memuat master bank.'),
     })
@@ -443,6 +481,96 @@ const loadMasterBanks = async (): Promise<void> => {
     masterBanks.value = []
   } finally {
     loadingBanks.value = false
+  }
+}
+
+const fetchDepartments = async (
+  showNotification = false,
+): Promise<void> => {
+  if (loadingDepartments.value)
+    return
+
+  loadingDepartments.value = true
+  departmentLoadError.value = false
+
+  try {
+    const response = await axios.get(
+      '/master/department/dropdown-select',
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+    )
+
+    const rows = Array.isArray(response.data?.data)
+      ? response.data.data
+      : []
+
+    departmentOptions.value = rows
+      .map((item: any): DepartmentOption | null => {
+        const id = Number(
+          item.id
+            ?? item.id_department
+            ?? 0,
+        )
+
+        if (!Number.isFinite(id) || id <= 0)
+          return null
+
+        const kode = String(
+          item.kode
+            ?? item.kode_department
+            ?? '',
+        ).trim()
+
+        const nama = String(
+          item.nama
+            ?? item.nama_department
+            ?? '',
+        ).trim()
+
+        const label = String(
+          item.label
+            ?? (
+              kode && nama
+                ? `${kode} - ${nama}`
+                : nama || kode
+            ),
+        ).trim()
+
+        return {
+          id,
+          kode,
+          nama,
+          label,
+        }
+      })
+      .filter(
+        (
+          item: DepartmentOption | null,
+        ): item is DepartmentOption => item !== null,
+      )
+
+    if (showNotification) {
+      showSuccessToast({
+        title: 'Berhasil',
+        text: 'Data department berhasil dimuat ulang.',
+      })
+    }
+  } catch (error: unknown) {
+    departmentOptions.value = []
+    departmentLoadError.value = true
+
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(
+        error,
+        'Gagal memuat data department.',
+      ),
+    })
+  } finally {
+    loadingDepartments.value = false
   }
 }
 
@@ -482,7 +610,7 @@ const validateDokumen = async (): Promise<boolean> => {
     const hasNewFiles = (dokumenFiles.value[id] || []).length > 0
 
     if (!hasExistingFiles && !hasNewFiles) {
-      await showWarningAlert({
+      showWarningToast({
         title: 'Peringatan',
         text: 'Lampiran wajib diunggah untuk dokumen yang dipilih.',
       })
@@ -508,6 +636,9 @@ const loadVendorDetail = async (): Promise<void> => {
     const response = await axios.get<VendorDetailResponse>(`/master/vendor/${vendorPublicId.value}`)
     const detail = response.data?.data
 
+    console.log('[DEPARTMENT RESPONSE]', response.data)
+    console.log('[DEPARTMENT ROWS]', response.data?.data)   
+
     if (!detail) {
       throw new Error('Data vendor tidak ditemukan')
     }
@@ -522,6 +653,10 @@ const loadVendorDetail = async (): Promise<void> => {
         ? String(detail.jenis_perusahaan)
         : null
     form.kategori_vendor = detail.kategori_vendor ?? null
+    form.id_department = detail.id_department !== null
+      && detail.id_department !== undefined
+      ? Number(detail.id_department)
+      : null
     form.nomor_ktp = detail.nomor_ktp ?? ''
     form.alamat = detail.alamat ?? ''
 
@@ -570,7 +705,7 @@ const loadVendorDetail = async (): Promise<void> => {
     const err = error as AxiosErrorShape
     loadError.value = getApiErrorMessage(err, 'Gagal memuat detail vendor')
 
-    await showErrorAlert({
+    showErrorToast({
       title: 'Error',
       text: loadError.value,
     })
@@ -603,15 +738,24 @@ const getCleanBanks = () => {
 
 const validateForm = async (): Promise<boolean> => {
   if (!form.nama_vendor || !form.inisial_vendor || !form.jenis_perusahaan || !form.kategori_vendor) {
-    await showWarningAlert({
+    showWarningToast({
       title: 'Warning',
       text: 'Silakan isi semua kolom wajib.',
     })
     return false
   }
 
+  if (!form.id_department) {
+    showErrorToast({
+      title: 'Warning',
+      text: 'Department wajib dipilih.',
+    })
+
+    return false
+  }
+
   if (form.telepon && !/^[0-9]+$/.test(form.telepon)) {
-    await showWarningAlert({
+    showWarningToast({
       title: 'Warning',
       text: 'Nomor telepon hanya boleh angka.',
     })
@@ -619,7 +763,7 @@ const validateForm = async (): Promise<boolean> => {
   }
 
   if (form.contact_hp && !/^[0-9]+$/.test(form.contact_hp)) {
-    await showWarningAlert({
+    showWarningToast({
       title: 'Warning',
       text: 'Nomor HP PIC hanya boleh angka.',
     })
@@ -627,7 +771,7 @@ const validateForm = async (): Promise<boolean> => {
   }
 
   if (form.email && !validateEmail(form.email)) {
-    await showWarningAlert({
+    showWarningToast({
       title: 'Warning',
       text: emailValidationMessage,
     })
@@ -635,7 +779,7 @@ const validateForm = async (): Promise<boolean> => {
   }
 
   if (form.contact_email && !validateEmail(form.contact_email)) {
-    await showWarningAlert({
+    showWarningToast({
       title: 'Warning',
       text: emailValidationMessage,
     })
@@ -643,7 +787,7 @@ const validateForm = async (): Promise<boolean> => {
   }
 
   if (!form.jenis_pembayaran) {
-    await showWarningAlert({
+    showWarningToast({
       title: 'Warning',
       text: 'Pilih sistem pembayaran.',
     })
@@ -651,7 +795,7 @@ const validateForm = async (): Promise<boolean> => {
   }
 
   if (form.jenis_pembayaran === 'TOP' && (!form.top || form.top <= 0)) {
-    await showWarningAlert({
+    showWarningToast({
       title: 'Warning',
       text: 'Isi jumlah hari TOP.',
     })
@@ -693,7 +837,7 @@ const validateBanks = async (): Promise<boolean> => {
     if (!nomorRekening) missingFields.push('Nomor Rekening')
 
     if (missingFields.length) {
-      await showErrorAlert({
+      showErrorToast({
         title: 'Data Bank Belum Lengkap',
         text: `Data bank ke-${i + 1} belum lengkap. Lengkapi: ${missingFields.join(', ')}`,
       })
@@ -703,6 +847,16 @@ const validateBanks = async (): Promise<boolean> => {
   }
 
   return true
+}
+
+const isBankRowFilled = (bank: any): boolean => {
+  return Boolean(
+    bank.bank_id
+    || String(bank.atas_nama || '').trim()
+    || String(bank.nomor_rekening || '').trim()
+    || String(bank.cabang || '').trim()
+    || String(bank.alamat_bank || '').trim(),
+  )
 }
 
 const mapBanksFromDetail = (bankRows: any[] = []): void => {
@@ -735,6 +889,13 @@ const buildPayload = (): FormData => {
   payload.append('email', form.email ?? '')
   payload.append('jenis_perusahaan', form.jenis_perusahaan ?? '')
   payload.append('kategori_vendor', form.kategori_vendor ?? '')
+  payload.append(
+    'id_department',
+    form.id_department !== null
+      && form.id_department !== undefined
+      ? String(form.id_department)
+      : '',
+  )
   payload.append('nomor_ktp', form.nomor_ktp ?? '')
   payload.append('alamat', form.alamat ?? '')
 
@@ -791,7 +952,7 @@ const saveVendor = async (): Promise<void> => {
   if (!isBankValid) return
 
   if (!vendorPublicId.value) {
-    await showErrorAlert({
+    showErrorToast({
       title: 'Error',
       text: 'ID vendor tidak ditemukan.',
     })
@@ -822,7 +983,7 @@ const saveVendor = async (): Promise<void> => {
       payload.append('_method', 'PUT')
     }
 
-    const response = await axios.post(`/master/vendor/${vendorPublicId.value}`, payload, {
+    await axios.post(`/master/vendor/${vendorPublicId.value}`, payload, {
       headers: {
         'Content-Type': 'multipart/form-data',
         Accept: 'application/json',
@@ -831,18 +992,16 @@ const saveVendor = async (): Promise<void> => {
 
     closeAlert()
 
-    await showSuccessAlert({
-      title: 'Berhasil',
-      text: response.data?.message || 'Data vendor berhasil diperbarui',
+    await router.replace({
+      path: '/master/vendor',
+      query: { success: 'created' },
     })
-
-    await goBack()
   } catch (error: unknown) {
     closeAlert()
 
     const err = error as AxiosErrorShape
 
-    await showErrorAlert({
+    showErrorToast({
       title: 'Error',
       text: getApiErrorMessage(err, 'Gagal memperbarui vendor'),
     })
@@ -854,11 +1013,21 @@ const saveVendor = async (): Promise<void> => {
 }
 
 onMounted(async () => {
+  await permissionStore.loadPermissions()
+
+  if (!canUpdate.value) {
+    await router.replace('/forbidden')
+    return
+  }
+
+  isCheckingPermission.value = false
+  
   await Promise.all([
     loadMasterBanks(),
     loadTransaksi(),
     loadMasterDokumen(),
     loadVendorDetail(),
+    fetchDepartments(false)
   ])
 })
 </script>
@@ -936,6 +1105,7 @@ onMounted(async () => {
               color="secondary"
               prepend-icon="tabler-arrow-left"
               @click="goBack"
+              class="text-none"
             >
               Kembali
             </VBtn>
@@ -1031,57 +1201,158 @@ onMounted(async () => {
                   <!-- Email -->
                   <VCol
                     cols="12"
-                    md="4"
+                    md="6"
                   >
                     <VTextField
-                        v-model="form.email"
-                        label="Email"
-                        placeholder="contoh@email.com"
-                        :error="!!(form.email && !validateEmail(form.email))"
-                        :error-messages="form.email && !validateEmail(form.email)
-                            ? [emailValidationMessage]
-                            : []"
-                        @update:model-value="value => form.email = formatEmail(value)"
+                      v-model="form.email"
+                      label="Email"
+                      placeholder="contoh@email.com"
+                      :error="!!(form.email && !validateEmail(form.email))"
+                      :error-messages="
+                        form.email && !validateEmail(form.email)
+                          ? [emailValidationMessage]
+                          : []
+                      "
+                      @update:model-value="value => form.email = formatEmail(value)"
                     />
                   </VCol>
 
                   <!-- Jenis Perusahaan -->
                   <VCol
                     cols="12"
-                    md="4"
+                    md="6"
                   >
-                    <VSelect
+                    <VAutocomplete
                       v-model="form.jenis_perusahaan"
                       label="Jenis Perusahaan *"
                       :items="[
-                        { title: 'Orang Pribadi / Perorangan', value: '1' },
-                        { title: 'Firma / CV / PD', value: '2' },
-                        { title: 'PT / Perseroan', value: '3' },
+                        {
+                          title: 'Orang Pribadi / Perorangan',
+                          value: '1',
+                        },
+                        {
+                          title: 'Firma / CV / PD',
+                          value: '2',
+                        },
+                        {
+                          title: 'PT / Perseroan',
+                          value: '3',
+                        },
                       ]"
                       item-title="title"
                       item-value="value"
+                      clearable
+                      density="comfortable"
+                      :menu-props="{
+                        location: 'bottom',
+                        offset: 8,
+                        maxHeight: 300,
+                      }"
                       :error="isSubmitted && !form.jenis_perusahaan"
-                      :error-messages="isSubmitted && !form.jenis_perusahaan ? ['Jenis perusahaan wajib dipilih'] : []"
+                      :error-messages="
+                        isSubmitted && !form.jenis_perusahaan
+                          ? ['Jenis perusahaan wajib dipilih']
+                          : []
+                      "
+                      no-data-text="Jenis perusahaan tidak ditemukan"
+                      placeholder="Pilih jenis perusahaan"
                     />
                   </VCol>
 
-                  <!-- Kategori vendor -->
+                  <!-- Kategori Vendor -->
                   <VCol
                     cols="12"
-                    md="4"
+                    md="6"
                   >
-                    <VSelect
+                    <VAutocomplete
                       v-model="form.kategori_vendor"
                       label="Kategori Vendor *"
                       :items="[
-                        { title: 'TRADING', value: 'TRADING' },
-                        { title: 'NON TRADING', value: 'NON_TRADING' },
+                        {
+                          title: 'TRADING',
+                          value: 'TRADING',
+                        },
+                        {
+                          title: 'NON TRADING',
+                          value: 'NON_TRADING',
+                        },
                       ]"
                       item-title="title"
                       item-value="value"
+                      clearable
+                      density="comfortable"
+                      :menu-props="{
+                        location: 'bottom',
+                        offset: 8,
+                        maxHeight: 300,
+                      }"
                       :error="isSubmitted && !form.kategori_vendor"
-                      :error-messages="isSubmitted && !form.kategori_vendor ? ['Kategori vendor wajib dipilih'] : []"
+                      :error-messages="
+                        isSubmitted && !form.kategori_vendor
+                          ? ['Kategori vendor wajib dipilih']
+                          : []
+                      "
+                      no-data-text="Kategori vendor tidak ditemukan"
+                      placeholder="Pilih kategori vendor"
                     />
+                  </VCol>
+
+                  <!-- Department -->
+                  <VCol
+                    cols="12"
+                    md="6"
+                  >
+                    <VAutocomplete
+                      v-model="form.id_department"
+                      label="Department *"
+                      :items="departmentOptions"
+                      item-title="label"
+                      item-value="id"
+                      clearable
+                      density="comfortable"
+                      :loading="loadingDepartments"
+                      :menu-props="{
+                        location: 'bottom',
+                        offset: 8,
+                        maxHeight: 300,
+                      }"
+                      :error="isSubmitted && !form.id_department"
+                      :error-messages="
+                        isSubmitted && !form.id_department
+                          ? ['Department wajib dipilih']
+                          : []
+                      "
+                      no-data-text="Department tidak ditemukan"
+                      placeholder="Pilih department"
+                    >
+                      <template #append-inner>
+                        <VProgressCircular
+                          v-if="loadingDepartments"
+                          indeterminate
+                          size="18"
+                          width="2"
+                        />
+
+                        <VTooltip
+                          v-else-if="departmentLoadError"
+                          text="Reload data department"
+                          location="top"
+                        >
+                          <template #activator="{ props }">
+                            <VBtn
+                              v-bind="props"
+                              icon
+                              size="x-small"
+                              variant="text"
+                              color="primary"
+                              @click.stop.prevent="fetchDepartments(true)"
+                            >
+                              <VIcon icon="tabler-refresh" />
+                            </VBtn>
+                          </template>
+                        </VTooltip>
+                      </template>
+                    </VAutocomplete>
                   </VCol>
 
                   <!-- Nomor E-KTP -->
@@ -1480,16 +1751,20 @@ onMounted(async () => {
                                 <VCol cols="12" md="6">
                                   <VAutocomplete
                                     v-model="bank.bank_id"
-                                    label="Nama Bank *"
+                                    label="Nama Bank"
                                     :items="masterBanks"
                                     item-title="nama_bank"
                                     item-value="id"
                                     clearable
                                     density="comfortable"
-                                    :menu-props="{ maxHeight: 300 }"
+                                    :menu-props="{
+                                      location: 'bottom',
+                                      offset: 8,
+                                      maxHeight: 300,
+                                    }"
                                     :custom-filter="filterMasterBank"
-                                    :error="isSubmitted && !bank.bank_id"
-                                    :error-messages="isSubmitted && !bank.bank_id ? ['Nama bank wajib dipilih'] : []"
+                                    :error="isSubmitted && isBankRowFilled(bank) && !bank.bank_id"
+                                    :error-messages="isSubmitted && isBankRowFilled(bank) && !bank.bank_id ? ['Nama bank wajib dipilih'] : []"
                                     no-data-text="Data bank tidak ditemukan"
                                     placeholder="Cari nama bank..."
                                     @update:model-value="handleSelectBank(index)"
@@ -1530,10 +1805,10 @@ onMounted(async () => {
                                 <VCol cols="12" md="6">
                                   <VTextField
                                     v-model="bank.atas_nama"
-                                    label="Atas Nama *"
+                                    label="Atas Nama"
                                     placeholder="Atas Nama Rekening"
-                                    :error="isSubmitted && !bank.atas_nama"
-                                    :error-messages="isSubmitted && !bank.atas_nama ? ['Atas nama wajib diisi'] : []"
+                                    :error="isSubmitted && isBankRowFilled(bank) && !bank.atas_nama"
+                                    :error-messages="isSubmitted && isBankRowFilled(bank) && !bank.atas_nama ? ['Atas nama wajib diisi'] : []"
                                     @update:model-value="value => bank.atas_nama = toUpper(value)"
                                   />
                                 </VCol>
@@ -1541,10 +1816,10 @@ onMounted(async () => {
                                 <VCol cols="12" md="6">
                                   <VTextField
                                     v-model="bank.nomor_rekening"
-                                    label="Nomor Rekening *"
+                                    label="Nomor Rekening"
                                     placeholder="Nomor Rekening"
-                                    :error="isSubmitted && !bank.nomor_rekening"
-                                    :error-messages="isSubmitted && !bank.nomor_rekening ? ['Nomor rekening wajib diisi'] : []"
+                                    :error="isSubmitted && isBankRowFilled(bank) && !bank.nomor_rekening"
+                                    :error-messages="isSubmitted && isBankRowFilled(bank) && !bank.nomor_rekening ? ['Nomor rekening wajib diisi'] : []"
                                     @update:model-value="value => bank.nomor_rekening = onlyNumber(value)"
                                   />
                                 </VCol>
@@ -1811,6 +2086,7 @@ onMounted(async () => {
                         color="secondary"
                         variant="outlined"
                         @click="confirmCancel"
+                        class="text-none"
                     >
                         Batal
                     </VBtn>
@@ -1820,6 +2096,7 @@ onMounted(async () => {
                         color="primary"
                         :loading="isSaving"
                         @click="saveVendor"
+                        class="text-none"
                     >
                         Simpan
                     </VBtn>

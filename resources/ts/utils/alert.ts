@@ -1,4 +1,5 @@
 import Swal, { type SweetAlertIcon, type SweetAlertOptions, type SweetAlertResult } from 'sweetalert2'
+import { toast } from 'vue3-toastify'
 
 interface ConfirmAlertOptions {
   title: string
@@ -116,4 +117,33 @@ export const showDeleteConfirm = async (
     confirmButtonText: 'Ya, hapus',
     cancelButtonText: 'Batal',
   })
+}
+
+/* =========================================================
+ * BASE TOAST
+========================================================= */
+interface ToastOptions {
+  title?: string
+  text?: string
+}
+
+const buildMessage = ({ title, text }: ToastOptions): string => {
+  if (title && text) return `${title}\n${text}`
+  return title || text || ''
+}
+
+export const showSuccessToast = (options: ToastOptions): void => {
+  toast.success(buildMessage(options))
+}
+
+export const showErrorToast = (options: ToastOptions): void => {
+  toast.error(buildMessage(options))
+}
+
+export const showWarningToast = (options: ToastOptions): void => {
+  toast.warning(buildMessage(options))
+}
+
+export const showInfoToast = (options: ToastOptions): void => {
+  toast.info(buildMessage(options))
 }

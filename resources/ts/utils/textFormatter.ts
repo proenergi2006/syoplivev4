@@ -167,3 +167,131 @@ export const formatSanitizedNumberInput = (
 export const getClipboardText = (event: ClipboardEvent): string => {
   return event.clipboardData?.getData('text') || ''
 }
+
+export const formatCurrency = (value: number | string | null | undefined): string => {
+  const numberValue = Number(value || 0)
+
+  return new Intl.NumberFormat('id-ID', {
+    style: 'currency',
+    currency: 'IDR',
+    minimumFractionDigits: 0,
+  }).format(numberValue)
+}
+
+export const formatNumberWithoutRp = (
+  value: number | string | null | undefined,
+): string => {
+  const numberValue = Number(value || 0)
+
+  return new Intl.NumberFormat('id-ID', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(numberValue)
+}
+
+export const unformatMoney = (value: string | number | null): number => {
+  if (!value) return 0
+
+  return Number(String(value).replace(/[^\d]/g, '')) || 0
+}
+
+export const formatDate = (value: string | null): string => {
+  if (!value) return '-'
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime())) return value
+
+  return new Intl.DateTimeFormat('id-ID', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(date)
+}
+
+export const formatAuditDateTime = (
+  value?: string | null,
+): string => {
+  if (!value)
+    return '-'
+
+  const date = new Date(value)
+
+  if (Number.isNaN(date.getTime()))
+    return '-'
+
+  return new Intl.DateTimeFormat('id-ID', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date)
+}
+
+export const sanitizeDecimalInput = (
+  value: string | number | null | undefined,
+  options: {
+    maxIntegerLength?: number
+    maxDecimalLength?: number
+    allowZero?: boolean
+  } = {},
+): string => {
+  const {
+    maxIntegerLength = 12,
+    maxDecimalLength = 2,
+    allowZero = false,
+  } = options
+
+  let raw = String(value ?? '')
+
+  raw = raw.replace(',', '.')
+  raw = raw.replace(/[^\d.]/g, '')
+
+  const parts = raw.split('.')
+  let integerPart = parts[0] ?? ''
+  let decimalPart = parts.slice(1).join('') ?? ''
+
+  integerPart = integerPart.replace(/^0+(?=\d)/, '')
+  integerPart = integerPart.slice(0, maxIntegerLength)
+  decimalPart = decimalPart.slice(0, maxDecimalLength)
+
+  if (!integerPart && decimalPart) {
+    integerPart = '0'
+  }
+
+  if (!allowZero && integerPart === '0' && !decimalPart) {
+    return '0'
+  }
+
+  return raw.includes('.')
+    ? `${integerPart || '0'}.${decimalPart}`
+    : integerPart
+}
+
+export const parseDecimalInput = (
+  value: string | number | null | undefined,
+): number => {
+  const normalized = String(value ?? '')
+    .replace(',', '.')
+    .replace(/[^\d.]/g, '')
+
+  const parsed = Number(normalized)
+
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+export const formatDecimalQty = (
+  value: string | number | null | undefined,
+  maxDecimal = 2,
+): string => {
+  const numberValue = Number(value ?? 0)
+
+  if (!Number.isFinite(numberValue)) return '0'
+
+  return new Intl.NumberFormat('id-ID', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: maxDecimal,
+  }).format(numberValue)
+}

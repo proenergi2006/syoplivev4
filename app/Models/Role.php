@@ -18,4 +18,14 @@ class Role extends Model
         return $this->belongsToMany(Menu::class, 'role_menus', 'role_id', 'menu_id');
         // JANGAN withTimestamps kalau role_menus tidak punya created_at/updated_at
     }
+
+    public function permissions()
+    {
+        return $this->belongsToMany(Permission::class, 'role_permissions')
+            ->withPivot([
+                'scope',
+                'is_active',
+            ])
+            ->withTimestamps();
+    }
 }
