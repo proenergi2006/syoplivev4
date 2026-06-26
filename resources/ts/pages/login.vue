@@ -1,23 +1,21 @@
 <script setup lang="ts">
 import { useAppAbility } from '@/plugins/casl/useAppAbility'
 import axios from '@axios'
-import { VNodeRenderer } from '@layouts/components/VNodeRenderer'
-import { themeConfig } from '@themeConfig'
+import loginBackground from '@images/pages/bg2.png'
 import { requiredValidator } from '@validators'
-import { ref } from 'vue'
+
+import { ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { VForm } from 'vuetify/components'
 
-import authBg from '@images/pages/bg.png'
-
 const isPasswordVisible = ref(false)
-const refVForm = ref<VForm>()
+const refVForm = ref<InstanceType<typeof VForm> | null>(null)
 const loginLoading = ref(false)
+
 const username = ref('')
 const password = ref('')
-const rememberMe = ref(false)
 
-const errors = ref<Record<string, string | undefined>>({
+const errors = ref<Record<'username' | 'password', string | undefined>>({
   username: undefined,
   password: undefined,
 })
@@ -26,136 +24,228 @@ const route = useRoute()
 const router = useRouter()
 const ability = useAppAbility()
 
-const login = async () => {
-  if (loginLoading.value) return
+/**
+ * Menghapus pesan error ketika user mulai mengetik kembali.
+ */
+watch(username, () => {
+  errors.value.username = undefined
+})
 
+watch(password, () => {
+  errors.value.password = undefined
+})
+
+const resetErrors = () => {
+  errors.value = {
+    username: undefined,
+    password: undefined,
+  }
+}
+
+const saveUserData = (authUser: any) => {
+  const userData = {
+    id: authUser?.id ?? null,
+    name: authUser?.name ?? '-',
+    username: authUser?.username ?? username.value,
+    email: authUser?.email ?? null,
+
+    role_id: authUser?.role_id ?? null,
+    role: authUser?.role || authUser?.role_name || '-',
+    roles: authUser?.roles || [],
+    role_code: authUser?.role_code || authUser?.role_kode || null,
+
+    cabang_id: authUser?.cabang_id ?? null,
+    cabang: authUser?.cabang ?? null,
+
+    department_id: authUser?.department_id ?? null,
+    department: authUser?.department ?? null,
+  }
+
+  localStorage.setItem('userData', JSON.stringify(userData))
+}
+
+const login = async () => {
+  if (loginLoading.value)
+    return
+
+  resetErrors()
   loginLoading.value = true
+
   try {
-    const { data } = await axios.post('/auth/login', {
+    /**
+     * Proses login.
+     */
+    const loginResponse = await axios.post('/auth/login', {
       username: username.value,
       password: password.value,
     })
 
-    localStorage.setItem('accessToken', data.token)
+    const token = loginResponse.data?.token
 
-    axios.defaults.headers.common.Authorization = `Bearer ${data.token}`
+    if (!token)
+      throw new Error('Token tidak ditemukan pada response login.')
 
-    const meRes = await axios.get('/auth/me', {
+    /**
+     * Simpan token dan pasang pada header Axios.
+     */
+    localStorage.setItem('accessToken', token)
+
+    axios.defaults.headers.common.Authorization = `Bearer ${token}`
+
+    /**
+     * Ambil data user terbaru.
+     */
+    const meResponse = await axios.get('/auth/me', {
       headers: {
         Accept: 'application/json',
       },
     })
 
-    const authUser = meRes.data?.data || meRes.data?.user || data.user
+    const authUser
+      = meResponse.data?.data
+        || meResponse.data?.user
+        || loginResponse.data?.user
 
-    localStorage.setItem(
-      'userData',
-      JSON.stringify({
-        id: authUser.id,
-        name: authUser.name,
-        username: authUser.username,
-        email: authUser.email,
+    if (!authUser)
+      throw new Error('Data user tidak ditemukan.')
 
-        role_id: authUser.role_id,
-        role: authUser.role || authUser.role_name || '-',
-        roles: authUser.roles || [],
-        role_code: authUser.role_code || authUser.role_kode || null,
+    saveUserData(authUser)
 
-        cabang_id: authUser.cabang_id,
-        cabang: authUser.cabang,
+    /**
+     * Untuk sementara seluruh user diberikan ability manage all.
+     * Nantinya dapat diganti dengan abilities dari backend.
+     */
+    const abilities = [
+      {
+        action: 'manage',
+        subject: 'all',
+      },
+    ]
 
-        department_id: authUser.department_id,
-        department: authUser.department,
-      }),
-    )
-
-    const abilities = [{ action: 'manage', subject: 'all' }]
     localStorage.setItem('userAbilities', JSON.stringify(abilities))
     ability.update(abilities)
 
+    /**
+     * Mengambil menu yang diizinkan untuk user.
+     * Kegagalan mengambil menu tidak membatalkan login.
+     */
     try {
-      const menuRes = await axios.get('/auth/my-menus')
-      localStorage.setItem('navItems', JSON.stringify(menuRes.data))
-    } catch (err) {
-      console.warn('Fetch menu failed, redirect anyway:', err)
+      const menuResponse = await axios.get('/auth/my-menus')
+
+      localStorage.setItem(
+        'navItems',
+        JSON.stringify(menuResponse.data),
+      )
+    }
+    catch (menuError) {
+      console.warn(
+        'Fetch menu gagal, proses redirect tetap dilanjutkan:',
+        menuError,
+      )
     }
 
-    const redirectTo = (route.query.to as string) || '/dashboards/crm'
-    router.replace(redirectTo)
-  } catch (e: any) {
-    const res = e?.response
-    console.error('LOGIN ERROR:', res?.status, res?.data || e)
+    /**
+     * Redirect ke halaman yang sebelumnya dituju,
+     * atau ke dashboard default.
+     */
+    const queryRedirect = route.query.to
+    const redirectTo
+      = typeof queryRedirect === 'string'
+        ? queryRedirect
+        : '/dashboards/crm'
 
-    errors.value = {
-      username: undefined,
-      password: undefined,
-    }
+    await router.replace(redirectTo)
+  }
+  catch (error: any) {
+    const response = error?.response
 
-    if (res?.status === 422 && res.data?.errors) {
+    console.error(
+      'LOGIN ERROR:',
+      response?.status,
+      response?.data || error,
+    )
+
+    resetErrors()
+
+    /**
+     * Validation error Laravel.
+     */
+    if (response?.status === 422 && response.data?.errors) {
       errors.value = {
-        username: res.data.errors.username?.[0],
-        password: res.data.errors.password?.[0],
+        username: response.data.errors.username?.[0],
+        password: response.data.errors.password?.[0],
       }
+
       return
     }
 
-    if (res?.status === 401) {
-      errors.value = {
-        username: undefined,
-        password: undefined,
+    /**
+     * Username atau password salah.
+     */
+    if (response?.status === 401) {
+      const field = response.data?.field
+      const message = response.data?.message || 'Username atau password salah.'
+
+      if (field === 'username') {
+        errors.value.username = message
+        return
       }
 
-      if (res.data?.field === 'username') {
-        errors.value.username = res.data.message
+      if (field === 'password') {
+        errors.value.password = message
+        return
       }
 
-      if (res.data?.field === 'password') {
-        errors.value.password = res.data.message
-      }
-
+      errors.value.password = message
       return
     }
 
-    errors.value = {
-      username: 'Login gagal, cek console/network',
-      password: 'Login gagal, cek console/network',
+    /**
+     * Error server atau koneksi.
+     */
+    if (!response) {
+      errors.value.username = 'Tidak dapat terhubung ke server.'
+      return
     }
-  } finally {
+
+    errors.value.username
+      = response.data?.message || 'Login gagal. Silakan coba kembali.'
+  }
+  finally {
     loginLoading.value = false
   }
 }
 
-const onSubmit = () => {
-  refVForm.value?.validate().then(({ valid }) => {
-    if (valid) login()
-  })
+const onSubmit = async () => {
+  const validation = await refVForm.value?.validate()
+
+  if (validation?.valid)
+    await login()
 }
 </script>
 
 <template>
   <div class="auth-page">
-    <!-- <div class="auth-logo d-flex align-start gap-x-3">
-      <VNodeRenderer :nodes="themeConfig.app.logo" />
-      <h1 class="font-weight-medium leading-normal text-2xl text-uppercase">
-        {{ themeConfig.app.title }}
-      </h1>
-    </div> -->
-
     <VRow
       no-gutters
       class="auth-wrapper"
     >
+      <!-- Background login -->
       <VCol
+        cols="12"
         lg="8"
         class="d-none d-lg-flex auth-left"
       >
         <VImg
-          :src="authBg"
+          :src="loginBackground"
+          alt="Pro Energi Oil and Gas"
           cover
-          class="auth-bg"
+          eager
+          class="auth-background-image"
         />
       </VCol>
 
+      <!-- Form login -->
       <VCol
         cols="12"
         lg="4"
@@ -163,14 +253,16 @@ const onSubmit = () => {
       >
         <VCard
           flat
-          :max-width="500"
-          class="mt-12 mt-sm-0 pa-4"
+          width="100%"
+          max-width="500"
+          class="login-card pa-4"
         >
           <VCardText>
-            <h5 class="text-h5 mb-1">
+            <h1 class="text-h5 mb-1">
               System Operasional
-            </h5>
-            <p class="mb-0">
+            </h1>
+
+            <p class="mb-0 text-medium-emphasis">
               Please sign in with your account.
             </p>
           </VCardText>
@@ -185,10 +277,12 @@ const onSubmit = () => {
                   <VTextField
                     v-model="username"
                     label="Username"
+                    placeholder="Masukkan username"
                     :rules="[requiredValidator]"
                     :error-messages="errors.username"
                     prepend-inner-icon="mdi-account-outline"
                     autocomplete="username"
+                    autofocus
                   />
                 </VCol>
 
@@ -196,25 +290,28 @@ const onSubmit = () => {
                   <VTextField
                     v-model="password"
                     label="Password"
+                    placeholder="Masukkan password"
                     :rules="[requiredValidator]"
                     :type="isPasswordVisible ? 'text' : 'password'"
                     :error-messages="errors.password"
-                    :append-inner-icon="isPasswordVisible ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
+                    :append-inner-icon="
+                      isPasswordVisible
+                        ? 'mdi-eye-off-outline'
+                        : 'mdi-eye-outline'
+                    "
                     prepend-inner-icon="mdi-lock-outline"
                     autocomplete="current-password"
-                    @click:append-inner="isPasswordVisible = !isPasswordVisible"
+                    @click:append-inner="
+                      isPasswordVisible = !isPasswordVisible
+                    "
                   />
+                </VCol>
 
-                  <div class="d-flex align-center justify-space-between mt-1 mb-4">
-                    <!-- <VCheckbox
-                      v-model="rememberMe"
-                      label="Remember me"
-                    /> -->
-                  </div>
-
+                <VCol cols="12">
                   <VBtn
                     block
                     type="submit"
+                    size="large"
                     :loading="loginLoading"
                     :disabled="loginLoading"
                   >
@@ -224,23 +321,27 @@ const onSubmit = () => {
 
                 <VCol
                   cols="12"
-                  class="d-flex align-center"
+                  class="d-flex align-center mt-4"
                 >
                   <VDivider />
-                  <span class="mx-4">-</span>
+
+                  <span class="mx-4 text-medium-emphasis">
+                    -
+                  </span>
+
                   <VDivider />
                 </VCol>
 
                 <VCol
                   cols="12"
-                  class="text-center mt-6"
+                  class="text-center mt-4"
                 >
                   <div class="text-body-2 font-weight-medium text-primary">
                     SYOP Version 4.0
                   </div>
 
                   <div class="text-caption text-medium-emphasis">
-                    Proenergi Operational System
+                    Pro Energi Operational System
                   </div>
                 </VCol>
               </VRow>
@@ -256,23 +357,58 @@ const onSubmit = () => {
 @use "@core-scss/template/pages/page-auth.scss";
 
 .auth-page {
+  width: 100%;
   min-height: 100vh;
+  overflow: hidden;
 }
 
 .auth-wrapper {
+  width: 100%;
   min-height: 100vh;
+  margin: 0 !important;
 }
 
 .auth-left {
   position: relative;
+  min-height: 100vh;
   padding: 0 !important;
   overflow: hidden;
+  background-color: #eef4fa;
+}
+
+.auth-background-image {
+  width: 100%;
+  height: 100vh;
   min-height: 100vh;
 }
 
-.auth-bg {
-  width: 100%;
-  height: 100vh;
+/*
+ * Memastikan gambar VImg memenuhi seluruh area sebelah kiri.
+ */
+.auth-background-image :deep(.v-img__img) {
+  object-fit: cover;
+  object-position: center center;
+}
+
+.auth-card-v2 {
+  min-height: 100vh;
+  padding: 24px;
+  background-color: rgb(var(--v-theme-surface));
+}
+
+.login-card {
+  background-color: transparent !important;
+}
+
+@media (max-width: 1279px) {
+  .auth-card-v2 {
+    min-height: 100vh;
+    padding: 16px;
+  }
+
+  .login-card {
+    max-width: 500px !important;
+  }
 }
 </style>
 

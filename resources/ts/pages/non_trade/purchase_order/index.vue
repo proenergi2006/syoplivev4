@@ -58,6 +58,7 @@ interface PurchaseOrderItem {
   can_submit?: boolean
   is_owner?: boolean
   status_receive: string | null
+  approved_at: string | null
 }
 
 interface PurchaseOrderApiResponse {
@@ -119,6 +120,7 @@ const signatureLoading = ref(false)
 const submitLoading = ref(false)
 const approveLoading = ref(false)
 const approveNotes = ref('')
+const approveDialog = ref(false)
 
 // Reject
 const rejectDialog = ref(false)
@@ -514,18 +516,41 @@ const openSubmitPO = async (po: any): Promise<void> => {
   await submitPurchaseOrder()
 }
 
-const openApprovePO = async (po: any): Promise<void> => {
+const openApprovePO = async (
+  po: any,
+): Promise<void> => {
   selectedPo.value = po
   pendingAction.value = 'approve'
 
-  const hasSignature = await checkUserSignature()
+  try {
+    const hasSignature
+      = await checkUserSignature()
 
-  if (!hasSignature) {
-    openSignatureDialog()
-    return
+    if (!hasSignature) {
+      await openSignatureDialog()
+
+      return
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Tanda tangan sudah tersedia
+    |--------------------------------------------------------------------------
+    | Buka dialog catatan dan konfirmasi.
+    | Jangan langsung menjalankan approve.
+    |--------------------------------------------------------------------------
+    */
+    showApprovePODialog()
   }
-
-  await approvePurchaseOrder()
+  catch (error: unknown) {
+    showErrorToast({
+      title: 'Error',
+      text: getApiErrorMessage(
+        error,
+        'Gagal memeriksa tanda tangan digital.',
+      ),
+    })
+  }
 }
 
 const openSignatureDialog = async (): Promise<void> => {
@@ -609,7 +634,9 @@ const saveSignatureAndContinue = async (): Promise<void> => {
     }
 
     if (pendingAction.value === 'approve') {
-      await approvePurchaseOrder()
+      showApprovePODialog()
+
+      return
     }
   } catch (error) {
     console.error(error)
@@ -812,46 +839,114 @@ const submitPurchaseOrder = async (): Promise<void> => {
   }
 }
 
+const showApprovePODialog = (): void => {
+  if (!selectedPo.value)
+    return
+
+  approveNotes.value = ''
+  approveDialog.value = true
+}
+
 const approvePurchaseOrder = async (): Promise<void> => {
-  if (!selectedPo.value || approveLoading.value) return
+  if (
+    !selectedPo.value
+    || approveLoading.value
+  ) {
+    return
+  }
 
-  const target = { ...selectedPo.value }
+  const target = {
+    ...selectedPo.value,
+  }
 
-  const confirm = await showConfirmAlert({
-    title: 'Approve Purchase Order?',
-    text: `Purchase Order "${target.nomor_po}" akan disetujui.`,
-    confirmButtonText: 'Ya, approve',
-    cancelButtonText: 'Batal',
-  })
+  /*
+  |--------------------------------------------------------------------------
+  | Catatan bersifat opsional
+  |--------------------------------------------------------------------------
+  */
+  const notes
+    = approveNotes.value.trim() || null
 
-  if (!confirm.isConfirmed) return
+  /*
+  |--------------------------------------------------------------------------
+  | Dialog ini sekaligus menjadi konfirmasi
+  |--------------------------------------------------------------------------
+  | Tidak ada SweetAlert konfirmasi kedua.
+  |--------------------------------------------------------------------------
+  */
+  approveDialog.value = false
+
+  await nextTick()
 
   approveLoading.value = true
 
   try {
-    showLoadingAlert('Approve Purchase Order...', 'Mohon tunggu sebentar')
+    showLoadingAlert(
+      'Approve Purchase Order...',
+      'Mohon tunggu sebentar',
+    )
 
-    const response = await axios.patch(`/transaction/purchase-order/${target.public_id}/approve`, {
-      notes: approveNotes.value || null,
-    }, {
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
+    const response = await axios.patch(
+      `/transaction/purchase-order/${encodeURIComponent(target.public_id)}/approve`,
+      {
+        notes,
       },
-    })
+      {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+      },
+    )
 
-    const responseData = response.data?.data || {}
-    const newStatus = responseData.status || 'APPROVED'
-    const newNomorPO = responseData.nomor_po || target.nomor_po
+    const responseData
+      = response.data?.data || {}
+
+    /*
+    |--------------------------------------------------------------------------
+    | Jangan default ke APPROVED
+    |--------------------------------------------------------------------------
+    | Pada approval bertingkat, PO mungkin masih IN PROGRESS.
+    |--------------------------------------------------------------------------
+    */
+    const newStatus
+      = responseData.status
+        || target.status
+        || 'IN PROGRESS'
+
+    const newNomorPO
+      = responseData.nomor_po
+        || target.nomor_po
+
+    const isFinalApproved
+      = Boolean(
+        responseData.is_final_approved,
+      )
 
     rows.value = rows.value.map(item => {
-      if (item.public_id !== target.public_id) return item
+      if (
+        item.public_id
+        !== target.public_id
+      ) {
+        return item
+      }
 
       return {
         ...item,
+
         nomor_po: newNomorPO,
         status: newStatus,
-        approved_at: new Date().toISOString(),
+
+        /*
+         * approved_at hanya diisi jika PO
+         * benar-benar final approved.
+         */
+        approved_at: isFinalApproved
+          ? (
+              responseData.approved_at
+              || new Date().toISOString()
+            )
+          : item.approved_at,
       }
     })
 
@@ -859,21 +954,45 @@ const approvePurchaseOrder = async (): Promise<void> => {
 
     showSuccessToast({
       title: 'Berhasil',
-      text: response.data?.message || `Purchase Order "${target.nomor_po}" berhasil diapprove`,
-    })
 
-    await fetchPurchaseOrders()
+      text:
+        response.data?.message
+        || `Purchase Order "${target.nomor_po || '-'}" berhasil diapprove.`,
+    })
 
     approveNotes.value = ''
     selectedPo.value = null
-  } catch (error: unknown) {
+
+    /*
+     * Gunakan null jika tipe pendingAction
+     * memang string | null.
+     */
+    pendingAction.value = null
+
+    await fetchPurchaseOrders()
+  }
+  catch (error: unknown) {
     closeAlert()
+
+    /*
+    |--------------------------------------------------------------------------
+    | Tampilkan dialog kembali jika gagal
+    |--------------------------------------------------------------------------
+    | Catatan tidak dihapus agar user dapat mencoba lagi.
+    |--------------------------------------------------------------------------
+    */
+    approveDialog.value = true
 
     showErrorToast({
       title: 'Error',
-      text: getApiErrorMessage(error, 'Gagal approve Purchase Order'),
+
+      text: getApiErrorMessage(
+        error,
+        'Gagal approve Purchase Order.',
+      ),
     })
-  } finally {
+  }
+  finally {
     approveLoading.value = false
   }
 }
@@ -1870,6 +1989,89 @@ onBeforeUnmount(() => {
             class="text-none"
           >
             Simpan & Lanjutkan
+          </VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <VDialog
+      v-model="approveDialog"
+      max-width="560"
+      persistent
+    >
+      <VCard class="rounded-lg">
+        <VCardItem>
+          <template #prepend>
+            <VAvatar
+              color="success"
+              variant="tonal"
+              rounded
+            >
+              <VIcon icon="tabler-circle-check" />
+            </VAvatar>
+          </template>
+
+          <VCardTitle>
+            Approve Purchase Order?
+          </VCardTitle>
+
+          <VCardSubtitle>
+            Konfirmasi persetujuan Purchase Order
+          </VCardSubtitle>
+        </VCardItem>
+
+        <VDivider />
+
+        <VCardText class="pt-5">
+          <VAlert
+            color="success"
+            variant="tonal"
+            icon="tabler-info-circle"
+            class="mb-5"
+          >
+            Purchase Order
+            <strong>
+              "{{ selectedPo?.nomor_po || '-' }}"
+            </strong>
+            akan disetujui.
+          </VAlert>
+
+          <VTextarea
+            v-model="approveNotes"
+            label="Catatan Approval"
+            placeholder="Tambahkan catatan bila diperlukan..."
+            variant="outlined"
+            rows="4"
+            auto-grow
+            counter="2000"
+            maxlength="2000"
+            :disabled="approveLoading"
+            hint="Catatan bersifat opsional."
+            persistent-hint
+          />
+        </VCardText>
+
+        <VDivider />
+
+        <VCardActions class="px-6 py-4">
+          <VSpacer />
+
+          <VBtn
+            color="secondary"
+            variant="tonal"
+            :disabled="approveLoading"
+            @click="approveDialog = false"
+          >
+            Batal
+          </VBtn>
+
+          <VBtn
+            color="success"
+            prepend-icon="tabler-circle-check"
+            :loading="approveLoading"
+            @click="approvePurchaseOrder"
+          >
+            Ya, Approve
           </VBtn>
         </VCardActions>
       </VCard>

@@ -25,6 +25,13 @@ interface AxiosErrorShape {
   }
 }
 
+interface PermissionModuleResponse {
+  id: number
+  code: string
+  name: string
+  is_active?: boolean
+}
+
 interface DropdownOption {
   id: number
   value: number | string
@@ -55,6 +62,14 @@ interface ApprovalStepResponse {
 interface ApprovalFlowResponse {
   id?: number
   public_id?: string
+
+  permission_module_id?: number | null
+
+  permission_module?:
+    PermissionModuleResponse | null
+
+  legacy_module_name?: string | null
+
   document_type?: string
   document_type_label?: string
   module_name?: string
@@ -94,7 +109,11 @@ interface ApprovalStepForm {
 interface ApprovalFlowForm {
   public_id: string
   document_type: string
-  module_name: string
+
+  permission_module_id: number | null
+  permission_module_code: string
+  permission_module_name: string
+
   name: string
   description: string
   min_amount: number | null
@@ -229,7 +248,10 @@ const normalizeDocumentType = (value: unknown): string => {
 const form = reactive<ApprovalFlowForm>({
   public_id: '',
   document_type: 'PO',
-  module_name: '',
+  permission_module_id: null,
+  permission_module_code: '',
+  permission_module_name: '',
+
   name: '',
   description: '',
   min_amount: null,
@@ -568,7 +590,25 @@ const buildStepsFromResponse = (steps: ApprovalStepResponse[] = []): ApprovalSte
 const assignFlowToForm = (flow: ApprovalFlowResponse): void => {
   form.public_id = flow.public_id || publicId.value
   form.document_type = normalizeDocumentType(flow.document_type || route.query.document_type || 'PO')
-  form.module_name = flow.module_name || flow.module || 'System'
+  form.permission_module_id
+  = normalizeNumberInput(
+    flow.permission_module_id
+      ?? flow.permission_module?.id,
+  )
+
+  form.permission_module_code
+    = String(
+      flow.permission_module?.code
+        || '',
+    )
+
+  form.permission_module_name
+    = String(
+      flow.permission_module?.name
+        || flow.module
+        || flow.module_name
+        || '',
+    )
   form.name = flow.name || flow.approval_name || ''
   form.description = flow.description || flow.notes || ''
   form.min_amount = normalizeNumberInput(flow.min_amount)
@@ -759,10 +799,10 @@ const validateForm = (): boolean => {
     return false
   }
 
-  if (!form.module_name.trim()) {
+  if (!form.permission_module_id) {
     showErrorToast({
       title: 'Validasi Gagal',
-      text: 'Nama module wajib diisi.',
+      text: 'Module approval flow tidak ditemukan.',
     })
 
     return false
@@ -897,7 +937,7 @@ const validateForm = (): boolean => {
 const buildPayload = () => {
   return {
     document_type: form.document_type,
-    module_name: form.module_name || 'System',
+    permission_module_id: form.permission_module_id,
     name: form.name.trim(),
     description: form.description?.trim() || null,
     min_amount: form.min_amount !== null && form.min_amount !== undefined && Number(form.min_amount) > 0
@@ -1159,13 +1199,24 @@ const formatAmount = (value: number | string | null | undefined): string => {
                 md="6"
               >
                 <VTextField
-                  v-model="form.module_name"
-                  label="Module *"
-                  placeholder="Masukan nama moduke"
+                  :model-value="
+                    form.permission_module_name
+                  "
+                  label="Module"
                   density="comfortable"
+                  prepend-inner-icon="tabler-apps"
+                  readonly
                   :disabled="submitLoading"
-                  :error="isSubmitted && !form.module_name"
-                  :error-messages="isSubmitted && !form.module_name ? ['Nama module wajib diisi'] : []"
+                  :error="
+                    isSubmitted
+                      && !form.permission_module_id
+                  "
+                  :error-messages="
+                    isSubmitted
+                      && !form.permission_module_id
+                        ? ['Module tidak ditemukan']
+                        : []
+                  "
                 />
               </VCol>
 

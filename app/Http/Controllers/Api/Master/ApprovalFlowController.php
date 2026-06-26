@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
+use App\Models\PermissionModule;
+use Illuminate\Validation\ValidationException;
 
 class ApprovalFlowController extends Controller
 {
@@ -34,6 +36,7 @@ class ApprovalFlowController extends Controller
                     'steps.role',
                     'steps.user',
                     'creatorDepartment',
+                    'permissionModule',
                 ])
                 ->when($documentType !== '' && $documentType !== 'ALL' && $documentType !== 'SEMUA', function ($query) use ($documentType) {
                     $query->where('document_type', $documentType);
@@ -41,7 +44,27 @@ class ApprovalFlowController extends Controller
                 ->when($search !== '', function ($query) use ($search) {
                     $query->where(function ($subQuery) use ($search) {
                         $subQuery
-                            ->where('module_name', 'ILIKE', "%{$search}%")
+                            ->where(
+                                'module_name',
+                                'ILIKE',
+                                "%{$search}%",
+                            )
+                            ->orWhereHas(
+                                'permissionModule',
+                                function ($moduleQuery) use ($search) {
+                                    $moduleQuery
+                                        ->where(
+                                            'code',
+                                            'ILIKE',
+                                            "%{$search}%",
+                                        )
+                                        ->orWhere(
+                                            'name',
+                                            'ILIKE',
+                                            "%{$search}%",
+                                        );
+                                },
+                            )
                             ->orWhere('document_type', 'ILIKE', "%{$search}%")
                             ->orWhere('name', 'ILIKE', "%{$search}%")
                             ->orWhere('description', 'ILIKE', "%{$search}%")
@@ -127,8 +150,22 @@ class ApprovalFlowController extends Controller
                     'id' => $flow->id,
                     'public_id' => Crypt::encrypt($flow->id),
 
-                    'module' => $flow->module_name,
-                    'module_name' => $flow->module_name,
+                    'permission_module_id'
+                    => $flow->permission_module_id,
+
+                    'permission_module'
+                    => $this->getPermissionModuleData(
+                        $flow,
+                    ),
+
+                    'module'
+                    => $this->getModuleDisplayName($flow),
+
+                    'module_name'
+                    => $this->getModuleDisplayName($flow),
+
+                    'legacy_module_name'
+                    => $flow->module_name,
 
                     'document_type' => $flow->document_type,
                     'document_type_label' => $this->getDocumentTypeLabel($flow->document_type),
@@ -245,6 +282,11 @@ class ApprovalFlowController extends Controller
             $request->validate([
                 'document_type' => ['required', 'string', 'max:50'],
                 'module_name' => ['nullable', 'string', 'max:100'],
+                'permission_module_id' => [
+                    'nullable',
+                    'integer',
+                    'exists:permission_modules,id',
+                ],
                 'name' => ['required', 'string', 'max:255'],
                 'description' => ['nullable', 'string'],
 
@@ -297,16 +339,18 @@ class ApprovalFlowController extends Controller
         | Jangan dibatasi hanya PO / PR, karena Vendor juga akan masuk.
         |--------------------------------------------------------------------------
         */
-            $documentType = trim((string) $request->input('document_type'));
-            $documentTypeUpper = strtoupper($documentType);
+            $documentType = $this->normalizeDocumentType(
+                (string) $request->input('document_type'),
+            );
 
-            if ($documentTypeUpper === 'PO') {
-                $documentType = 'PO';
-            } elseif ($documentTypeUpper === 'PR') {
-                $documentType = 'PR';
-            } elseif ($documentTypeUpper === 'VENDOR') {
-                $documentType = 'Vendor';
-            }
+            $documentTypeUpper = strtoupper(
+                $documentType,
+            );
+
+            $permissionModule = $this->resolvePermissionModule(
+                request: $request,
+                documentType: $documentType,
+            );
 
             /*
         |--------------------------------------------------------------------------
@@ -454,7 +498,14 @@ class ApprovalFlowController extends Controller
         */
             $flow->update([
                 'document_type' => $documentType,
-                'module_name' => $moduleName,
+
+                'permission_module_id'
+                => $permissionModule->id,
+
+                'module_name' => $this->getLegacyModuleName(
+                    documentType: $documentType,
+                    permissionModule: $permissionModule,
+                ),
                 'name' => $request->input('name'),
                 'description' => $request->input('description'),
 
@@ -524,6 +575,7 @@ class ApprovalFlowController extends Controller
                 'steps.role',
                 'steps.user',
                 'creatorDepartment',
+                'permissionModule',
             ]);
 
             $stepsResponse = $flow->steps
@@ -577,8 +629,22 @@ class ApprovalFlowController extends Controller
                     'id' => $flow->id,
                     'public_id' => Crypt::encrypt($flow->id),
 
-                    'module' => $flow->module_name,
-                    'module_name' => $flow->module_name,
+                    'permission_module_id'
+                    => $flow->permission_module_id,
+
+                    'permission_module'
+                    => $this->getPermissionModuleData(
+                        $flow,
+                    ),
+
+                    'module'
+                    => $this->getModuleDisplayName($flow),
+
+                    'module_name'
+                    => $this->getModuleDisplayName($flow),
+
+                    'legacy_module_name'
+                    => $flow->module_name,
 
                     'document_type' => $flow->document_type,
                     'document_type_label' => $this->getDocumentTypeLabel($flow->document_type),
@@ -689,6 +755,11 @@ class ApprovalFlowController extends Controller
             $request->validate([
                 'document_type' => ['required', 'string', 'max:50'],
                 'module_name' => ['nullable', 'string', 'max:100'],
+                'permission_module_id' => [
+                    'nullable',
+                    'integer',
+                    'exists:permission_modules,id',
+                ],
                 'name' => ['required', 'string', 'max:255'],
                 'description' => ['nullable', 'string'],
 
@@ -733,23 +804,18 @@ class ApprovalFlowController extends Controller
                 ],
             ]);
 
-            $documentType = trim((string) $request->input('document_type'));
-            $documentTypeUpper = strtoupper($documentType);
+            $documentType = $this->normalizeDocumentType(
+                (string) $request->input('document_type'),
+            );
 
-            /*
-        |--------------------------------------------------------------------------
-        | Normalize Document Type
-        |--------------------------------------------------------------------------
-        | Jangan dibatasi cuma PO/PR, karena nanti Vendor juga masuk.
-        |--------------------------------------------------------------------------
-        */
-            if ($documentTypeUpper === 'PO') {
-                $documentType = 'PO';
-            } elseif ($documentTypeUpper === 'PR') {
-                $documentType = 'PR';
-            } elseif ($documentTypeUpper === 'VENDOR') {
-                $documentType = 'Vendor';
-            }
+            $documentTypeUpper = strtoupper(
+                $documentType,
+            );
+
+            $permissionModule = $this->resolvePermissionModule(
+                request: $request,
+                documentType: $documentType,
+            );
 
             $minAmount = $request->filled('min_amount')
                 ? (float) $request->input('min_amount')
@@ -884,7 +950,12 @@ class ApprovalFlowController extends Controller
         */
             $flow = ApprovalFlow::create([
                 'document_type' => $documentType,
-                'module_name' => $request->input('module_name') ?: 'Procurement',
+                'permission_module_id'
+                => $permissionModule->id,
+                'module_name' => $this->getLegacyModuleName(
+                    documentType: $documentType,
+                    permissionModule: $permissionModule,
+                ),
                 'name' => $request->input('name'),
                 'description' => $request->input('description'),
 
@@ -949,6 +1020,8 @@ class ApprovalFlowController extends Controller
             $flow->load([
                 'steps.role',
                 'steps.user',
+                'creatorDepartment',
+                'permissionModule',
             ]);
 
             return response()->json([
@@ -958,7 +1031,22 @@ class ApprovalFlowController extends Controller
                     'id' => $flow->id,
                     'public_id' => Crypt::encrypt($flow->id),
 
-                    'module_name' => $flow->module_name,
+                    'permission_module_id'
+                    => $flow->permission_module_id,
+
+                    'permission_module'
+                    => $this->getPermissionModuleData(
+                        $flow,
+                    ),
+
+                    'module'
+                    => $this->getModuleDisplayName($flow),
+
+                    'module_name'
+                    => $this->getModuleDisplayName($flow),
+
+                    'legacy_module_name'
+                    => $flow->module_name,
 
                     'document_type' => $flow->document_type,
                     'document_type_label' => $this->getDocumentTypeLabel($flow->document_type),
@@ -1048,11 +1136,14 @@ class ApprovalFlowController extends Controller
         try {
             $id = Crypt::decrypt($publicId);
 
-            $flow = ApprovalFlow::with([
-                'steps.role',
-                'steps.user',
-                'creatorDepartment',
-            ])->findOrFail($id);
+            $flow = ApprovalFlow::query()
+                ->with([
+                    'steps.role',
+                    'steps.user',
+                    'creatorDepartment',
+                    'permissionModule',
+                ])
+                ->findOrFail($id);
 
             $steps = $flow->steps
                 ->sortBy([
@@ -1105,8 +1196,22 @@ class ApprovalFlowController extends Controller
                     'id' => $flow->id,
                     'public_id' => Crypt::encrypt($flow->id),
 
-                    'module' => $flow->module_name,
-                    'module_name' => $flow->module_name,
+                    'permission_module_id'
+                    => $flow->permission_module_id,
+
+                    'permission_module'
+                    => $this->getPermissionModuleData(
+                        $flow,
+                    ),
+
+                    'module'
+                    => $this->getModuleDisplayName($flow),
+
+                    'module_name'
+                    => $this->getModuleDisplayName($flow),
+
+                    'legacy_module_name'
+                    => $flow->module_name,
 
                     'document_type' => $flow->document_type,
                     'document_type_label' => $this->getDocumentTypeLabel($flow->document_type),
@@ -1162,5 +1267,147 @@ class ApprovalFlowController extends Controller
             'Vendor' => 'Master Vendor',
             default => $documentType ?: '-',
         };
+    }
+
+    /**
+     * Menormalkan document type yang diterima API.
+     */
+    private function normalizeDocumentType(
+        string $documentType,
+    ): string {
+        $documentType = strtoupper(
+            trim($documentType),
+        );
+
+        return match ($documentType) {
+            'PR' => ApprovalFlow::DOCUMENT_TYPE_PR,
+            'PO' => ApprovalFlow::DOCUMENT_TYPE_PO,
+            'VENDOR' => 'Vendor',
+
+            default => throw ValidationException::withMessages([
+                'document_type' => [
+                    'Jenis dokumen approval flow tidak valid.',
+                ],
+            ]),
+        };
+    }
+
+    /**
+     * Menentukan code permission_modules berdasarkan document type.
+     */
+    private function getPermissionModuleCode(
+        string $documentType,
+    ): string {
+        return match (strtoupper(trim($documentType))) {
+            'PR' => 'purchase_request',
+            'PO' => 'purchase_order',
+            'VENDOR' => 'vendor',
+
+            default => throw ValidationException::withMessages([
+                'permission_module_id' => [
+                    'Module untuk jenis dokumen tersebut belum dikonfigurasi.',
+                ],
+            ]),
+        };
+    }
+
+    /**
+     * Mengambil module yang sesuai dengan jenis dokumen.
+     *
+     * permission_module_id dari frontend tetap diverifikasi.
+     * Frontend tidak dapat mengirim module Vendor untuk dokumen PR.
+     */
+    private function resolvePermissionModule(
+        Request $request,
+        string $documentType,
+    ): PermissionModule {
+        $expectedCode = $this->getPermissionModuleCode(
+            $documentType,
+        );
+
+        $query = PermissionModule::query()
+            ->where('code', $expectedCode)
+            ->where('is_active', true);
+
+        /*
+     * Selama masa transisi, permission_module_id dibuat
+     * opsional. Jika dikirim frontend, ID-nya harus sesuai
+     * dengan code yang diharapkan.
+     */
+        if ($request->filled('permission_module_id')) {
+            $query->whereKey(
+                (int) $request->input(
+                    'permission_module_id',
+                ),
+            );
+        }
+
+        $permissionModule = $query->first();
+
+        if (!$permissionModule) {
+            throw ValidationException::withMessages([
+                'permission_module_id' => [
+                    sprintf(
+                        'Module aktif dengan code "%s" tidak ditemukan atau tidak sesuai dengan jenis dokumen.',
+                        $expectedCode,
+                    ),
+                ],
+            ]);
+        }
+
+        return $permissionModule;
+    }
+
+    /**
+     * Nilai module_name lama tetap disimpan sementara
+     * untuk kompatibilitas code existing.
+     *
+     * Sumber utama modul tetap permission_module_id.
+     */
+    private function getLegacyModuleName(
+        string $documentType,
+        PermissionModule $permissionModule,
+    ): string {
+        return match (strtoupper(trim($documentType))) {
+            /*
+         * PR dan PO sebelumnya berada dalam kelompok Procurement.
+         */
+            'PR', 'PO' => 'Procurement',
+
+            'VENDOR' => 'Master Vendor',
+
+            default => $permissionModule->name,
+        };
+    }
+
+    /**
+     * Format module untuk response API.
+     */
+    private function getPermissionModuleData(
+        ApprovalFlow $flow,
+    ): ?array {
+        if (!$flow->permissionModule) {
+            return null;
+        }
+
+        return [
+            'id' => $flow->permissionModule->id,
+            'code' => $flow->permissionModule->code,
+            'name' => $flow->permissionModule->name,
+            'is_active' => (bool) $flow
+                ->permissionModule
+                ->is_active,
+        ];
+    }
+
+    /**
+     * Nama module yang ditampilkan frontend.
+     */
+    private function getModuleDisplayName(
+        ApprovalFlow $flow,
+    ): string {
+        return $flow->permissionModule?->name
+            ?? $flow->module_name
+            ?? '-';
     }
 }

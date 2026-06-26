@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Facades\Crypt;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class PurchaseRequest extends Model
 {
@@ -51,12 +52,16 @@ class PurchaseRequest extends Model
         'requester_signed_by',
         'requester_signature_path',
         'requester_signed_at',
+
+        'requester_role_id',
+        'requester_role_name_snapshot',
     ];
 
     protected $casts = [
         'tanggal_pr' => 'date',
         'submitted_at' => 'datetime',
         'requester_signed_at' => 'datetime',
+        'requester_role_id' => 'integer',
     ];
 
     public const HO_CABANG_ID = 1;
@@ -66,6 +71,14 @@ class PurchaseRequest extends Model
         return (string) $this->cabang === (string) self::HO_CABANG_ID
             ? 'HO'
             : 'CABANG';
+    }
+
+    public function requesterRole(): BelongsTo
+    {
+        return $this->belongsTo(
+            Role::class,
+            'requester_role_id',
+        );
     }
 
     protected static function booted()

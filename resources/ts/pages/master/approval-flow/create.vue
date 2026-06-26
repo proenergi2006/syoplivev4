@@ -24,6 +24,13 @@ interface AxiosErrorShape {
   }
 }
 
+interface PermissionModuleOption {
+  id: number
+  code: string
+  name: string
+  is_active?: boolean
+}
+
 interface MasterRoleOption {
   id: number
   name: string
@@ -63,7 +70,11 @@ interface ApprovalStepForm {
 
 interface ApprovalFlowForm {
   document_type: string
-  module_name: string
+
+  permission_module_id: number | null
+  permission_module_code: string
+  permission_module_name: string
+
   name: string
   description: string
   min_amount: number | null
@@ -86,6 +97,7 @@ const submitLoading = ref(false)
 const isLoadingRole = ref(false)
 const isLoadingUser = ref(false)
 const isLoadingDepartment = ref(false)
+const isLoadingPermissionModule = ref(false)
 
 const roleOptions = ref<MasterRoleOption[]>([])
 const userOptions = ref<MasterUserOption[]>([])
@@ -209,7 +221,10 @@ const makeLocalKey = (): string => {
 
 const form = reactive<ApprovalFlowForm>({
   document_type: getInitialDocumentType(),
-  module_name: '',
+  permission_module_id: null,
+  permission_module_code: '',
+  permission_module_name: '',
+
   name: '',
   description: '',
   min_amount: null,
@@ -236,6 +251,100 @@ const form = reactive<ApprovalFlowForm>({
     },
   ],
 })
+
+const expectedPermissionModuleCode = computed(() => {
+  return matchDocumentTypeToModuleCode(
+    form.document_type,
+  )
+})
+
+const matchDocumentTypeToModuleCode = (
+  documentType: string,
+): string => {
+  switch (String(documentType).toUpperCase()) {
+    case 'PR':
+      return 'purchase_request'
+
+    case 'PO':
+      return 'purchase_order'
+
+    case 'VENDOR':
+      return 'vendor'
+
+    default:
+      return ''
+  }
+}
+
+const loadPermissionModule = async (): Promise<void> => {
+  isLoadingPermissionModule.value = true
+
+  try {
+    const response = await axios.get(
+      '/master/permission-modules',
+      {
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+    )
+
+    const rawItems
+      = response.data?.data?.data
+        ?? response.data?.data
+        ?? response.data
+        ?? []
+
+    const modules: PermissionModuleOption[]
+      = Array.isArray(rawItems)
+        ? rawItems.map((item: any) => ({
+            id: Number(item.id),
+            code: String(item.code || ''),
+            name: String(item.name || ''),
+            is_active: Boolean(
+              item.is_active ?? true,
+            ),
+          }))
+        : []
+
+    const selectedModule = modules.find(module => {
+      return module.code
+          === expectedPermissionModuleCode.value
+        && module.is_active !== false
+    })
+
+    if (!selectedModule) {
+      form.permission_module_id = null
+      form.permission_module_code = ''
+      form.permission_module_name = ''
+
+      throw new Error(
+        `Module ${expectedPermissionModuleCode.value} tidak ditemukan.`,
+      )
+    }
+
+    form.permission_module_id
+      = selectedModule.id
+
+    form.permission_module_code
+      = selectedModule.code
+
+    form.permission_module_name
+      = selectedModule.name
+  }
+  catch (error: any) {
+    showErrorToast({
+      title: 'Gagal Memuat Module',
+      text: getApiErrorMessage(
+        error,
+        'Module approval flow tidak ditemukan.',
+      ),
+    })
+  }
+  finally {
+    isLoadingPermissionModule.value = false
+  }
+}
 
 const documentTypeUpper = computed(() => String(form.document_type || '').toUpperCase())
 const isPR = computed(() => documentTypeUpper.value === 'PR')
@@ -326,6 +435,7 @@ watch(
 
 onMounted(async () => {
   await Promise.all([
+    loadPermissionModule(),
     loadApproverOptions(),
     loadDepartmentOptions(),
   ])
@@ -563,10 +673,10 @@ const validateForm = (): boolean => {
     return false
   }
 
-  if (!form.module_name.trim()) {
+  if (!form.permission_module_id) {
     showErrorToast({
       title: 'Validasi Gagal',
-      text: 'Nama module wajib diisi.',
+      text: 'Module approval flow belum tersedia.',
     })
 
     return false
@@ -701,33 +811,64 @@ const validateForm = (): boolean => {
 const buildPayload = () => {
   return {
     document_type: form.document_type,
-    module_name: form.module_name || 'System',
+
+    permission_module_id:
+      form.permission_module_id,
+
     name: form.name.trim(),
-    description: form.description?.trim() || null,
-    min_amount: form.min_amount !== null && form.min_amount !== undefined && Number(form.min_amount) > 0
-      ? Number(form.min_amount)
-      : null,
-    max_amount: form.max_amount !== null && form.max_amount !== undefined && Number(form.max_amount) > 0
-      ? Number(form.max_amount)
-      : null,
+
+    description:
+      form.description?.trim() || null,
+
+    min_amount:
+      form.min_amount !== null
+      && form.min_amount !== undefined
+      && Number(form.min_amount) > 0
+        ? Number(form.min_amount)
+        : null,
+
+    max_amount:
+      form.max_amount !== null
+      && form.max_amount !== undefined
+      && Number(form.max_amount) > 0
+        ? Number(form.max_amount)
+        : null,
+
     is_active: Boolean(form.is_active),
 
-    area_type: isPR.value ? form.area_type : null,
-    cabang: null,
-    creator_department_id: isPR.value
-      ? form.creator_department_id
-      : null,
+    area_type:
+      isPR.value
+        ? form.area_type
+        : null,
 
-    steps: form.steps.map((step, stepIndex) => ({
-      step_order: stepIndex + 1,
-      label: step.label?.trim() || null,
-      approval_mode: step.approval_mode || 'ANY',
-      approvers: step.approvers.map(approver => ({
-        approver_type: approver.approver_type,
-        approver_id: Number(approver.approver_id),
-      })),
-      approver_scope: step.approver_scope ?? 'GLOBAL',
-    })),
+    cabang: null,
+
+    creator_department_id:
+      isPR.value
+        ? form.creator_department_id
+        : null,
+
+    steps: form.steps.map(
+      (step, stepIndex) => ({
+        step_order: stepIndex + 1,
+        label: step.label?.trim() || null,
+        approval_mode:
+          step.approval_mode || 'ANY',
+
+        approvers: step.approvers.map(
+          approver => ({
+            approver_type:
+              approver.approver_type,
+
+            approver_id:
+              Number(approver.approver_id),
+          }),
+        ),
+
+        approver_scope:
+          step.approver_scope ?? 'GLOBAL',
+      }),
+    ),
   }
 }
 
@@ -913,13 +1054,26 @@ const formatAmount = (value: number | string | null | undefined): string => {
                 md="6"
               >
                 <VTextField
-                  v-model="form.module_name"
-                  label="Module *"
-                  placeholder="Masukan nama module"
+                  :model-value="form.permission_module_name"
+                  label="Module"
                   density="comfortable"
-                  :disabled="submitLoading"
-                  :error="isSubmitted && !form.module_name"
-                  :error-messages="isSubmitted && !form.module_name ? ['Nama Module wajib diisi'] : []"
+                  prepend-inner-icon="tabler-apps"
+                  readonly
+                  :loading="isLoadingPermissionModule"
+                  :disabled="
+                    submitLoading
+                      || isLoadingPermissionModule
+                  "
+                  :error="
+                    isSubmitted
+                      && !form.permission_module_id
+                  "
+                  :error-messages="
+                    isSubmitted
+                      && !form.permission_module_id
+                        ? ['Module belum tersedia']
+                        : []
+                  "
                 />
               </VCol>
 

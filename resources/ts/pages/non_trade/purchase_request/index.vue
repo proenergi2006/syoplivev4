@@ -134,6 +134,7 @@ const pendingAction = ref<'submit' | 'approve' | null>(null)
 const selectedPr = ref<PurchaseRequestItem | null>(null)
 const approveLoading = ref(false)
 const approveNotes = ref('')
+const approveDialog = ref(false)
 
 /*
 |--------------------------------------------------------------------------
@@ -344,7 +345,8 @@ const saveSignatureAndContinue = async (): Promise<void> => {
     }
 
     if (pendingAction.value === 'approve') {
-      await approvePurchaseRequest()
+      showApprovePurchaseRequestDialog()
+      return
     }
   }
   catch (error: unknown) {
@@ -498,7 +500,15 @@ const openApprovePurchaseRequest = async (
       return
     }
 
-    await approvePurchaseRequest()
+    /*
+    |--------------------------------------------------------------------------
+    | Tanda tangan sudah tersedia
+    |--------------------------------------------------------------------------
+    | Tampilkan dialog approve + catatan opsional.
+    | Tidak langsung menjalankan API approve.
+    |--------------------------------------------------------------------------
+    */
+    showApprovePurchaseRequestDialog()
   }
   catch (error: unknown) {
     showErrorToast({
@@ -523,15 +533,23 @@ const approvePurchaseRequest = async (): Promise<void> => {
     ...selectedPr.value,
   }
 
-  const confirm = await showConfirmAlert({
-    title: 'Approve Purchase Requisition?',
-    text: `Purchase Requisition "${target.nomor_pr || '-'}" akan disetujui.`,
-    confirmButtonText: 'Ya, approve',
-    cancelButtonText: 'Batal',
-  })
+  /*
+  |--------------------------------------------------------------------------
+  | Catatan approval bersifat opsional
+  |--------------------------------------------------------------------------
+  */
+  const notes = approveNotes.value.trim() || null
 
-  if (!confirm.isConfirmed)
-    return
+  /*
+  |--------------------------------------------------------------------------
+  | Dialog ini sekaligus menjadi konfirmasi
+  |--------------------------------------------------------------------------
+  | Tidak ada SweetAlert konfirmasi kedua.
+  |--------------------------------------------------------------------------
+  */
+  approveDialog.value = false
+
+  await nextTick()
 
   approveLoading.value = true
 
@@ -544,7 +562,7 @@ const approvePurchaseRequest = async (): Promise<void> => {
     const response = await axios.patch(
       `/transaction/purchase-request/${encodeURIComponent(target.public_id)}/approve`,
       {
-        notes: approveNotes.value || null,
+        notes,
       },
       {
         headers: {
@@ -558,17 +576,28 @@ const approvePurchaseRequest = async (): Promise<void> => {
 
     showSuccessToast({
       title: 'Berhasil',
-      text: response.data?.message
+      text:
+        response.data?.message
         || `Purchase Requisition "${target.nomor_pr || '-'}" berhasil diapprove.`,
     })
 
     approveNotes.value = ''
     selectedPr.value = null
+    pendingAction.value = null
 
     await fetchPurchaseRequests()
   }
   catch (error: unknown) {
     closeAlert()
+
+    /*
+    |--------------------------------------------------------------------------
+    | Jika API gagal
+    |--------------------------------------------------------------------------
+    | Dialog dibuka kembali dan catatan tidak dihapus.
+    |--------------------------------------------------------------------------
+    */
+    approveDialog.value = true
 
     showErrorToast({
       title: 'Error',
@@ -581,6 +610,14 @@ const approvePurchaseRequest = async (): Promise<void> => {
   finally {
     approveLoading.value = false
   }
+}
+
+const showApprovePurchaseRequestDialog = (): void => {
+  if (!selectedPr.value)
+    return
+
+  approveNotes.value = ''
+  approveDialog.value = true
 }
 
 const openRejectPurchaseRequest = (
@@ -2364,6 +2401,89 @@ onBeforeUnmount(() => {
             @click="rejectPurchaseRequisition"
           >
             Reject
+          </VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <VDialog
+      v-model="approveDialog"
+      max-width="560"
+      persistent
+    >
+      <VCard class="rounded-lg">
+        <VCardItem>
+          <template #prepend>
+            <VAvatar
+              color="success"
+              variant="tonal"
+              rounded
+            >
+              <VIcon icon="tabler-circle-check" />
+            </VAvatar>
+          </template>
+
+          <VCardTitle>
+            Approve Purchase Requisition?
+          </VCardTitle>
+
+          <VCardSubtitle>
+            Konfirmasi persetujuan Purchase Requisition
+          </VCardSubtitle>
+        </VCardItem>
+
+        <VDivider />
+
+        <VCardText class="pt-5">
+          <VAlert
+            color="success"
+            variant="tonal"
+            icon="tabler-info-circle"
+            class="mb-5"
+          >
+            Purchase Requisition
+            <strong>
+              "{{ selectedPr?.nomor_pr || '-' }}"
+            </strong>
+            akan disetujui.
+          </VAlert>
+
+          <VTextarea
+            v-model="approveNotes"
+            label="Catatan Approval"
+            placeholder="Tambahkan catatan bila diperlukan..."
+            variant="outlined"
+            rows="4"
+            auto-grow
+            counter="2000"
+            maxlength="2000"
+            :disabled="approveLoading"
+            hint="Catatan bersifat opsional."
+            persistent-hint
+          />
+        </VCardText>
+
+        <VDivider />
+
+        <VCardActions class="px-6 py-4">
+          <VSpacer />
+
+          <VBtn
+            color="secondary"
+            variant="tonal"
+            :disabled="approveLoading"
+            @click="approveDialog = false"
+          >
+            Batal
+          </VBtn>
+
+          <VBtn
+            color="success"
+            prepend-icon="tabler-circle-check"
+            :loading="approveLoading"
+            @click="approvePurchaseRequest"
+          >
+            Ya, Approve
           </VBtn>
         </VCardActions>
       </VCard>

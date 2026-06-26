@@ -4,6 +4,8 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class ApprovalFlow extends Model
 {
@@ -17,6 +19,7 @@ class ApprovalFlow extends Model
         'area_type',
         'cabang',
         'creator_department_id',
+        'permission_module_id',
 
         'name',
         'description',
@@ -35,6 +38,7 @@ class ApprovalFlow extends Model
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
         'deleted_at' => 'datetime',
+        'permission_module_id' => 'integer',
     ];
 
     public const DOCUMENT_TYPE_PO = 'PO';
@@ -48,6 +52,22 @@ class ApprovalFlow extends Model
         return $this->hasMany(ApprovalFlowStep::class, 'approval_flow_id')
             ->orderBy('step_order')
             ->orderBy('id');
+    }
+
+    public function rules(): HasMany
+    {
+        return $this->hasMany(
+            ApprovalFlowRule::class,
+            'approval_flow_id',
+        );
+    }
+
+    public function permissionModule(): BelongsTo
+    {
+        return $this->belongsTo(
+            PermissionModule::class,
+            'permission_module_id',
+        );
     }
 
     public function activeSteps()

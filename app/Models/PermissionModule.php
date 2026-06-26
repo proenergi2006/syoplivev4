@@ -29,4 +29,12 @@ class PermissionModule extends Model
             'code',
         );
     }
+
+    public function approvalFlows(): HasMany
+    {
+        return $this->hasMany(
+            ApprovalFlow::class,
+            'permission_module_id',
+        );
+    }
 }

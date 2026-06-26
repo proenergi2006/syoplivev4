@@ -1855,7 +1855,11 @@ class PurchaseOrderController extends Controller
 
         try {
             $request->validate([
-                'notes' => ['nullable', 'string'],
+                'notes' => [
+                    'nullable',
+                    'string',
+                    'max:2000',
+                ],
             ]);
 
             $id = Crypt::decryptString($publicId);
@@ -1949,7 +1953,7 @@ class PurchaseOrderController extends Controller
                 ->approveCurrentStep(
                     $currentApproval,
                     $user,
-                    $request->notes,
+                    $request->input('notes')
                 );
 
             $stepCompleted = (bool) (
