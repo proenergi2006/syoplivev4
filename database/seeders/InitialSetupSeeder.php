@@ -63,7 +63,7 @@ class InitialSetupSeeder extends Seeder
             |--------------------------------------------------------------------------
             */
             $deptIT = $this->upsertAndGetId(
-                'departemen',
+                'departments',
                 ['kode' => 'DEP-IT'],
                 [
                     'nama' => 'IT',
