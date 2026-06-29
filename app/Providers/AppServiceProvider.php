@@ -2,8 +2,8 @@
 
 namespace App\Providers;
 
-use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Facades\URL;
+use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -20,7 +20,19 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        if (app()->environment('uat')) {
+        /*
+        |--------------------------------------------------------------------------
+        | Force HTTPS berdasarkan environment
+        |--------------------------------------------------------------------------
+        |
+        | Lokal:
+        | APP_FORCE_HTTPS=false
+        |
+        | Production:
+        | APP_FORCE_HTTPS=true
+        |
+        */
+        if (config('app.force_https')) {
             URL::forceScheme('https');
         }
     }

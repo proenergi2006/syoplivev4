@@ -56,6 +56,8 @@ return [
 
     'url' => env('APP_URL', 'http://localhost'),
 
+    'force_https' => env('APP_FORCE_HTTPS', false),
+
     'asset_url' => env('ASSET_URL'),
 
     'frontend_url' => env('FRONTEND_URL', env('APP_URL')),

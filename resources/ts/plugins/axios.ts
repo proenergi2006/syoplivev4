@@ -1,35 +1,58 @@
 import axios from 'axios'
 
+const apiBaseUrl = String(
+  import.meta.env.VITE_API_BASE_URL
+  || 'http://127.0.0.1:8000/api',
+).replace(/\/+$/, '')
 
 const axiosIns = axios.create({
-  baseURL: 'https://demov4.proenergi.com/api',
+  baseURL: apiBaseUrl,
   timeout: 15000,
+  headers: {
+    Accept: 'application/json',
+    'X-Requested-With': 'XMLHttpRequest',
+  },
 })
 
-axiosIns.defaults.headers.common.Accept = 'application/json'
-axiosIns.defaults.headers.common['X-Requested-With'] = 'XMLHttpRequest'
+/*
+|--------------------------------------------------------------------------
+| Auto Attach Bearer Token
+|--------------------------------------------------------------------------
+*/
+axiosIns.interceptors.request.use(
+  config => {
+    const token = localStorage.getItem('accessToken')
 
-// 🔐 Auto attach token
-axiosIns.interceptors.request.use(config => {
-  const token = localStorage.getItem('accessToken')
-  if (token) {
-    config.headers = config.headers || {}
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
-})
+    if (token) {
+      /*
+      |--------------------------------------------------------------------------
+      | Pastikan headers tidak undefined
+      |--------------------------------------------------------------------------
+      */
+      config.headers = config.headers ?? {}
+      config.headers.Authorization = `Bearer ${token}`
+    }
 
-// ❌ Handle unauthorized
+    return config
+  },
+  error => Promise.reject(error),
+)
+
+/*
+|--------------------------------------------------------------------------
+| Handle Unauthorized
+|--------------------------------------------------------------------------
+*/
 axiosIns.interceptors.response.use(
   response => response,
   error => {
     if (error.response?.status === 401) {
+      localStorage.removeItem('accessToken')
       localStorage.removeItem('access_token')
     }
+
     return Promise.reject(error)
   },
 )
-
-
 
 export default axiosIns
