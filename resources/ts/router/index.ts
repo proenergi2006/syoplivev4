@@ -9,6 +9,7 @@ import routes from '~pages'
 import { canNavigate } from '@layouts/plugins/casl'
 import { isUserLoggedIn } from '@/router/utils'
 import { usePermissionStore } from '@/stores/permission'
+import axios from '@axios'
 
 /*
 |--------------------------------------------------------------------------
@@ -153,12 +154,18 @@ const removeCookie = (name: string): void => {
 | Clear local authentication
 |--------------------------------------------------------------------------
 */
-const clearAuthSession = (): void => {
+export const clearAuthSession = (): void => {
   const authKeys = [
     'accessToken',
     'access_token',
     'userData',
+
+    // CASL
+    'userAbilities',
     'userAbilityRules',
+
+    // Dynamic navigation
+    'navItems',
   ]
 
   authKeys.forEach(key => {
@@ -167,6 +174,13 @@ const clearAuthSession = (): void => {
     localStorage.removeItem(key)
     sessionStorage.removeItem(key)
   })
+
+  /*
+  |--------------------------------------------------------------------------
+  | Hilangkan Bearer token yang sudah terpasang di Axios
+  |--------------------------------------------------------------------------
+  */
+  delete axios.defaults.headers.common.Authorization
 }
 
 /*
@@ -188,27 +202,36 @@ router.beforeEach(async to => {
   ]
 
   const routeName = String(to.name || '')
-  const isPublicRoute = publicRoutes.includes(routeName)
+  const isPublicRoute = Boolean(to.meta.public) || publicRoutes.includes(routeName)
 
   /*
-  |--------------------------------------------------------------------------
-  | 1. Public route
-  |--------------------------------------------------------------------------
-  | Permission tidak dimuat pada halaman login agar tidak terjadi loop.
-  |--------------------------------------------------------------------------
-  */
-  if (isPublicRoute) {
-    const loggedIn = isUserLoggedIn()
+|--------------------------------------------------------------------------
+| 1. Public route
+|--------------------------------------------------------------------------
+*/
+if (isPublicRoute) {
+  const loggedOut
+    = to.query.logged_out === '1'
+      || to.query.session_expired === '1'
 
-    if (loggedIn && routeName === 'login') {
-      return {
-        path: '/dashboards/crm',
-        replace: true,
-      }
-    }
-
+  /*
+   * Setelah logout, halaman login tetap harus dibuka meskipun
+   * masih ada state lama yang belum sepenuhnya terlepas.
+   */
+  if (routeName === 'login' && loggedOut)
     return true
+
+  const loggedIn = isUserLoggedIn()
+
+  if (loggedIn && routeName === 'login') {
+    return {
+      path: '/dashboards/crm',
+      replace: true,
+    }
   }
+
+  return true
+}
 
   /*
   |--------------------------------------------------------------------------
@@ -262,28 +285,28 @@ router.beforeEach(async to => {
     )
 
     /*
-    |--------------------------------------------------------------------------
-    | Session sudah tidak valid
-    |--------------------------------------------------------------------------
-    */
-    if (status === 401 || status === 419) {
-      permissionStore.clearPermissions()
-      clearAuthSession()
+  |--------------------------------------------------------------------------
+  | Session sudah tidak valid atau token hilang saat request berlangsung
+  |--------------------------------------------------------------------------
+  */
+  if (
+    !isUserLoggedIn()
+    || status === 401
+    || status === 419
+  ) {
+    permissionStore.clearPermissions()
+    clearAuthSession()
 
-      return {
-        name: 'login',
+    return {
+      name: 'login',
 
-        query: {
-          to: to.fullPath !== '/'
-            ? to.fullPath
-            : undefined,
+      query: {
+        session_expired: '1',
+      },
 
-          session_expired: '1',
-        },
-
-        replace: true,
-      }
+      replace: true,
     }
+  }
 
     /*
     |--------------------------------------------------------------------------
@@ -349,6 +372,28 @@ router.beforeEach(async to => {
     |--------------------------------------------------------------------------
     */
     return true
+  }
+
+  /*
+  |--------------------------------------------------------------------------
+  | Recheck autentikasi setelah proses async permission
+  |--------------------------------------------------------------------------
+  | Token bisa hilang ketika loadPermissions masih berjalan karena logout.
+  |--------------------------------------------------------------------------
+  */
+  if (!isUserLoggedIn()) {
+    permissionStore.clearPermissions()
+    clearAuthSession()
+
+    return {
+      name: 'login',
+
+      query: {
+        session_expired: '1',
+      },
+
+      replace: true,
+    }
   }
 
   /*

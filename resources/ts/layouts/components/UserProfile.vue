@@ -7,6 +7,7 @@ import { useAppAbility } from '@/plugins/casl/useAppAbility'
 import { showConfirmAlert, showErrorToast, showLoadingAlert, closeAlert } from '@/utils/alert'
 import { usePermissionStore } from '@/stores/permission'
 import { useNavigationStore } from '@/stores/navigation'
+import { clearAuthSession } from '@/router'
 
 const router = useRouter()
 const ability = useAppAbility()
@@ -42,86 +43,110 @@ const avatarUrl = computed(() => {
   return userData.value?.avatar || null
 })
 
-const clearAuthStorageAndRedirect = async (): Promise<void> => {
-  /*
-  |--------------------------------------------------------------------------
-  | Kosongkan menu dari memory dan localStorage
-  |--------------------------------------------------------------------------
-  */
-  navigationStore.clearNavigation()
 
+const clearAuthStorageAndRedirect = (): void => {
   /*
   |--------------------------------------------------------------------------
-  | Bersihkan state permission jika ada
+  | Bersihkan Pinia permission
   |--------------------------------------------------------------------------
   */
-  try {
-    permissionStore.$reset()
-  }
-  catch (error) {
-    console.warn('Gagal reset permission store:', error)
-  }
+  permissionStore.clearPermissions()
 
   /*
   |--------------------------------------------------------------------------
-  | Hapus data sesi akun lama
+  | Bersihkan ability CASL yang masih aktif di memory
   |--------------------------------------------------------------------------
   */
-  const keysToRemove = [
-    'accessToken',
-    'token',
-    'userData',
-    'userAbilities',
-    'navItems',
-  ]
+  ability.update([])
 
-  keysToRemove.forEach(key => {
-    localStorage.removeItem(key)
-    sessionStorage.removeItem(key)
-  })
+  /*
+  |--------------------------------------------------------------------------
+  | Bersihkan cookie, localStorage, sessionStorage,
+  | dan Authorization header Axios
+  |--------------------------------------------------------------------------
+  */
+  clearAuthSession()
 
-  delete axios.defaults.headers.common.Authorization
-
-  await router.replace('/login')
+  /*
+  |--------------------------------------------------------------------------
+  | Hard redirect
+  |--------------------------------------------------------------------------
+  | Hard redirect menghentikan polling, watcher, dan request
+  | dari halaman sebelumnya.
+  |--------------------------------------------------------------------------
+  */
+  window.location.replace('/login?logged_out=1')
 }
 
 const logout = async (): Promise<void> => {
-  if (logoutLoading.value) return
+  if (logoutLoading.value)
+    return
 
-  const confirm = await showConfirmAlert({
+  const confirmResult = await showConfirmAlert({
     title: 'Keluar dari sistem?',
     text: 'Anda yakin ingin keluar dari aplikasi?',
     confirmButtonText: 'Ya, keluar',
     cancelButtonText: 'Batal',
   })
 
-  if (!confirm.isConfirmed) return
+  if (!confirmResult.isConfirmed)
+    return
 
   logoutLoading.value = true
 
+  let logoutApiFailed = false
+
   try {
-    showLoadingAlert('Sedang keluar..', 'Mohon tunggu sebentar')
+    showLoadingAlert(
+      'Sedang keluar...',
+      'Mohon tunggu sebentar',
+    )
 
-    await axios.post('/auth/logout', {}, {
-      headers: {
-        Accept: 'application/json',
+    /*
+    |--------------------------------------------------------------------------
+    | Cabut token Sanctum dari backend
+    |--------------------------------------------------------------------------
+    */
+    await axios.post(
+      '/auth/logout',
+      {},
+      {
+        headers: {
+          Accept: 'application/json',
+        },
       },
-    })
+    )
+  }
+  catch (error) {
+    logoutApiFailed = true
 
+    console.error('LOGOUT ERROR:', error)
+  }
+  finally {
+    /*
+    |--------------------------------------------------------------------------
+    | Tutup loading alert sebelum aplikasi di-reload
+    |--------------------------------------------------------------------------
+    */
     closeAlert()
 
-    await clearAuthStorageAndRedirect()
-  } catch (error) {
-    console.error('LOGOUT ERROR:', error)
+    /*
+    |--------------------------------------------------------------------------
+    | Jika backend gagal, logout lokal tetap dilakukan.
+    |--------------------------------------------------------------------------
+    */
+    if (logoutApiFailed) {
+      console.warn(
+        'Logout backend gagal, tetapi session lokal tetap dibersihkan.',
+      )
+    }
 
-    showErrorToast({
-      title: 'Logout gagal',
-      text: 'Gagal menghubungi server. Anda tetap akan diarahkan ke halaman login.',
-    })
-
-    await clearAuthStorageAndRedirect()
-  } finally {
-    logoutLoading.value = false
+    /*
+    |--------------------------------------------------------------------------
+    | Cleanup lokal dan hard redirect
+    |--------------------------------------------------------------------------
+    */
+    clearAuthStorageAndRedirect()
   }
 }
 
