@@ -48,7 +48,8 @@ onMounted(async () => {
     | Simpan token Sanctum
     |--------------------------------------------------------------------------
     */
-    loadingStatus.value = 'Menyiapkan sesi pengguna...'
+   loadingStatus.value = 'Menyiapkan sesi pengguna...'
+   localStorage.setItem('authSource', 'syop-v3')
 
     localStorage.setItem(
       'accessToken',

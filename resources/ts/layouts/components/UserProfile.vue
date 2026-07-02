@@ -44,6 +44,15 @@ const userData = computed(() => {
   }
 })
 
+/*
+|--------------------------------------------------------------------------
+| Apakah user masuk melalui SSO SYOP v3
+|--------------------------------------------------------------------------
+*/
+const isLoginFromSyopV3 = computed(() => {
+  return localStorage.getItem('authSource') === 'syop-v3'
+})
+
 const displayName = computed(() => {
   return userData.value?.name
     || userData.value?.fullName
@@ -295,6 +304,7 @@ const avatarBadgeProps = {
 
           <!-- Kembali ke SYOP lama -->
           <VListItem
+            v-if="isLoginFromSyopV3"
             link
             :disabled="logoutLoading"
             @click="goToLegacySyop"

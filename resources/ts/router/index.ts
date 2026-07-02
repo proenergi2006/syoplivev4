@@ -166,6 +166,7 @@ export const clearAuthSession = (): void => {
 
     // Dynamic navigation
     'navItems',
+    'authSource',
   ]
 
   authKeys.forEach(key => {

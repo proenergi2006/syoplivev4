@@ -90,6 +90,7 @@ const login = async () => {
     /**
      * Simpan token dan pasang pada header Axios.
      */
+    localStorage.removeItem('authSource')
     localStorage.setItem('accessToken', token)
 
     axios.defaults.headers.common.Authorization = `Bearer ${token}`
