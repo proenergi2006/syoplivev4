@@ -1,25 +1,45 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { Anchor } from 'vuetify/lib/components'
-import axios from '@axios'
-import { initialAbility } from '@/plugins/casl/ability'
-import { useAppAbility } from '@/plugins/casl/useAppAbility'
-import { showConfirmAlert, showErrorToast, showLoadingAlert, closeAlert } from '@/utils/alert'
-import { usePermissionStore } from '@/stores/permission'
-import { useNavigationStore } from '@/stores/navigation'
-import { clearAuthSession } from '@/router'
 
-const router = useRouter()
+import axios from '@axios'
+import { useAppAbility } from '@/plugins/casl/useAppAbility'
+import { clearAuthSession } from '@/router'
+import { usePermissionStore } from '@/stores/permission'
+import {
+  closeAlert,
+  showConfirmAlert,
+  showErrorToast,
+  showLoadingAlert,
+} from '@/utils/alert'
+
 const ability = useAppAbility()
+const permissionStore = usePermissionStore()
 
 const logoutLoading = ref(false)
-const permissionStore = usePermissionStore()
-const navigationStore = useNavigationStore()
+
+/*
+|--------------------------------------------------------------------------
+| URL SYOP lama
+|--------------------------------------------------------------------------
+| Local:
+| VITE_SYOP_LEGACY_URL=http://localhost/proenergidemolive
+|
+| Production:
+| VITE_SYOP_LEGACY_URL=https://syop.proenergi.com
+|--------------------------------------------------------------------------
+*/
+const legacySyopUrl = String(
+  import.meta.env.VITE_SYOP_LEGACY_URL || '',
+).trim()
 
 const userData = computed(() => {
   try {
-    return JSON.parse(localStorage.getItem('userData') || '{}')
-  } catch {
+    return JSON.parse(
+      localStorage.getItem('userData') || '{}',
+    )
+  }
+  catch {
     return {}
   }
 })
@@ -43,6 +63,57 @@ const avatarUrl = computed(() => {
   return userData.value?.avatar || null
 })
 
+/*
+|--------------------------------------------------------------------------
+| Kembali ke SYOP lama
+|--------------------------------------------------------------------------
+| Tidak melakukan logout SYOP V4.
+| Session kedua aplikasi tetap tersimpan secara terpisah.
+|--------------------------------------------------------------------------
+*/
+const goToLegacySyop = (): void => {
+  if (!legacySyopUrl) {
+    showErrorToast({
+      title: 'URL belum dikonfigurasi',
+      text: 'Alamat SYOP lama belum tersedia pada konfigurasi aplikasi.',
+    })
+
+    return
+  }
+
+  try {
+    /*
+     * Mendukung URL absolut maupun path relatif.
+     */
+    const targetUrl = new URL(
+      legacySyopUrl,
+      window.location.origin,
+    )
+
+    if (
+      targetUrl.protocol !== 'http:'
+      && targetUrl.protocol !== 'https:'
+    ) {
+      throw new Error('Protocol URL tidak didukung.')
+    }
+
+    /*
+     * Menggunakan full browser navigation karena berpindah aplikasi.
+     */
+    window.location.assign(targetUrl.toString())
+  }
+  catch (error) {
+    console.error(
+      'INVALID LEGACY SYOP URL:',
+      error,
+    )
+
+    showErrorToast({
+      title: 'Gagal membuka SYOP lama',
+      text: 'Alamat SYOP lama tidak valid.',
+    })
+  }
+}
 
 const clearAuthStorageAndRedirect = (): void => {
   /*
@@ -120,7 +191,10 @@ const logout = async (): Promise<void> => {
   catch (error) {
     logoutApiFailed = true
 
-    console.error('LOGOUT ERROR:', error)
+    console.error(
+      'LOGOUT ERROR:',
+      error,
+    )
   }
   finally {
     /*
@@ -132,7 +206,7 @@ const logout = async (): Promise<void> => {
 
     /*
     |--------------------------------------------------------------------------
-    | Jika backend gagal, logout lokal tetap dilakukan.
+    | Jika backend gagal, logout lokal tetap dilakukan
     |--------------------------------------------------------------------------
     */
     if (logoutApiFailed) {
@@ -171,6 +245,7 @@ const avatarBadgeProps = {
         v-if="avatarUrl"
         :src="avatarUrl"
       />
+
       <VIcon
         v-else
         icon="mdi-account-outline"
@@ -183,6 +258,7 @@ const avatarBadgeProps = {
         offset="14px"
       >
         <VList>
+          <!-- User information -->
           <VListItem>
             <template #prepend>
               <VListItemAction start>
@@ -196,6 +272,7 @@ const avatarBadgeProps = {
                       v-if="avatarUrl"
                       :src="avatarUrl"
                     />
+
                     <VIcon
                       v-else
                       icon="mdi-account-outline"
@@ -216,19 +293,34 @@ const avatarBadgeProps = {
 
           <VDivider class="my-2" />
 
-          <!-- <VListItem :to="{ name: 'apps-user-view-id', params: { id: 21 } }">
+          <!-- Kembali ke SYOP lama -->
+          <VListItem
+            link
+            :disabled="logoutLoading"
+            @click="goToLegacySyop"
+          >
             <template #prepend>
               <VIcon
                 class="me-2"
-                icon="mdi-account-outline"
+                icon="mdi-arrow-left-circle-outline"
                 size="22"
               />
             </template>
 
-            <VListItemTitle>Profile</VListItemTitle>
-          </VListItem> -->
+            <VListItemTitle>
+              Kembali ke SYOP v3
+            </VListItemTitle>
+          </VListItem>
 
-          <VListItem :to="{ name: 'pages-account-settings-tab', params: { tab: 'account' } }">
+          <!-- Settings -->
+          <VListItem
+            :to="{
+              name: 'pages-account-settings-tab',
+              params: {
+                tab: 'account',
+              },
+            }"
+          >
             <template #prepend>
               <VIcon
                 class="me-2"
@@ -237,21 +329,12 @@ const avatarBadgeProps = {
               />
             </template>
 
-            <VListItemTitle>Settings</VListItemTitle>
+            <VListItemTitle>
+              Settings
+            </VListItemTitle>
           </VListItem>
 
-          <!-- <VListItem :to="{ name: 'pages-faq' }">
-            <template #prepend>
-              <VIcon
-                class="me-2"
-                icon="mdi-help-circle-outline"
-                size="22"
-              />
-            </template>
-
-            <VListItemTitle>FAQ</VListItemTitle>
-          </VListItem> -->
-
+          <!-- Logout -->
           <VListItem
             link
             :disabled="logoutLoading"
