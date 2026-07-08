@@ -81,12 +81,20 @@
         .signature-cell { height: 115px; padding: 7px 6px; background: #fff; text-align: center; vertical-align: top; word-wrap: break-word; word-break: break-word; }
         .signature-title { margin-bottom: 4px; color: #17365d; font-size: 9px; font-weight: bold; text-transform: uppercase; }
         .signature-area { height: 58px; line-height: 58px; text-align: center; }
-        .signature-img { display: inline-block; max-width: 110px; max-height: 52px; vertical-align: middle; }
+        .signature-img {
+            display: inline-block;
+            width: 200px;
+            max-height: 52px;
+            vertical-align: middle;
+        }
         .signature-name { margin-top: 3px; color: #243247; font-size: 10px; font-weight: bold; line-height: 1.3; }
         .signature-date { margin-top: 2px; color: #798698; font-size: 8px; }
         .signature-placeholder { color: #9aa5b4; font-size: 9px; font-style: italic; }
         .signature-merged .signature-cell { height: 104px; }
-        .signature-merged .signature-img { max-width: 100px; max-height: 48px; }
+        .signature-merged .signature-img {
+            width: 130px;
+            max-height: 48px;
+        }
     </style>
 </head>
 <body>

@@ -369,16 +369,16 @@
         }
 
         .signature-area {
-            height: 49px;
-            line-height: 49px;
-            margin: 3px 0 1px;
+            height: 66px;
+            line-height: 66px;
+            margin: 1px 0 0;
             text-align: center;
         }
 
         .signature-image {
             display: inline-block;
-            max-width: 105px;
-            max-height: 45px;
+            width: 200px;
+            max-height: 62px;
             vertical-align: middle;
         }
 
@@ -772,7 +772,7 @@
                                         alt="{{ __('purchase_request.signature') }}"
                                     >
                                 @else
-                                    <div style="height: 45px;"></div>
+                                    <div style="height: 62px;"></div>
                                 @endif
                             </div>
 
