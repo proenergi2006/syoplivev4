@@ -456,6 +456,7 @@ const printPurchaseRequisition = async (
     : 'Mohon tunggu sebentar'
 
   let printWindow: Window | null = null
+  let pdfObjectUrl: string | null = null
 
   try {
     showLoadingAlert(
@@ -465,8 +466,8 @@ const printPurchaseRequisition = async (
 
     /*
     |--------------------------------------------------------------------------
-    | Buka tab langsung agar tidak kena popup blocker
-    | Tapi jangan dibiarkan blank putih, isi dengan loading page
+    | Buka tab langsung agar tidak kena popup blocker.
+    | Isi dengan loading page dulu agar tidak blank putih.
     |--------------------------------------------------------------------------
     */
     printWindow = window.open('', '_blank')
@@ -540,6 +541,11 @@ const printPurchaseRequisition = async (
 
     printWindow.document.close()
 
+    /*
+    |--------------------------------------------------------------------------
+    | Ambil signed URL dari backend.
+    |--------------------------------------------------------------------------
+    */
     const response = await axios.post(
       `/transaction/purchase-request/${encodeURIComponent(publicId)}/print-url`,
       null,
@@ -547,8 +553,22 @@ const printPurchaseRequisition = async (
         params: {
           lang: language,
         },
+        headers: {
+          Accept: 'application/json',
+        },
       },
     )
+
+    if (response.data?.success === false) {
+      throw new Error(
+        response.data?.message
+          || (
+            language === 'en'
+              ? 'Failed to create print URL.'
+              : 'Gagal membuat URL cetak.'
+          ),
+      )
+    }
 
     const url = response.data?.url
 
@@ -560,12 +580,54 @@ const printPurchaseRequisition = async (
       )
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Ambil PDF sebagai blob.
+    | Ini mengatasi live server yang masih mengirim Content-Type text/html.
+    |--------------------------------------------------------------------------
+    */
+    const pdfResponse = await axios.get(
+      url,
+      {
+        responseType: 'blob',
+        headers: {
+          Accept: 'application/pdf',
+        },
+      },
+    )
+
+    const pdfBlob = new Blob(
+      [pdfResponse.data],
+      {
+        type: 'application/pdf',
+      },
+    )
+
+    pdfObjectUrl = URL.createObjectURL(pdfBlob)
+
     closeAlert()
 
-    printWindow.location.href = url
+    /*
+    |--------------------------------------------------------------------------
+    | Arahkan tab loading ke blob PDF.
+    |--------------------------------------------------------------------------
+    */
+    printWindow.location.href = pdfObjectUrl
+
+    window.setTimeout(() => {
+      if (pdfObjectUrl) {
+        URL.revokeObjectURL(pdfObjectUrl)
+        pdfObjectUrl = null
+      }
+    }, 300_000)
   }
   catch (error: unknown) {
     closeAlert()
+
+    if (pdfObjectUrl) {
+      URL.revokeObjectURL(pdfObjectUrl)
+      pdfObjectUrl = null
+    }
 
     if (printWindow)
       printWindow.close()

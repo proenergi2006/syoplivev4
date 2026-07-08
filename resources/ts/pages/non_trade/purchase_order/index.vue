@@ -691,6 +691,7 @@ const printPurchaseOrder = async (
     : 'Mohon tunggu sebentar'
 
   let printWindow: Window | null = null
+  let pdfObjectUrl: string | null = null
 
   try {
     showLoadingAlert(
@@ -700,8 +701,8 @@ const printPurchaseOrder = async (
 
     /*
     |--------------------------------------------------------------------------
-    | Buka tab langsung supaya tidak kena popup blocker
-    | Tapi isinya loading page, bukan blank putih
+    | Buka tab langsung supaya tidak kena popup blocker.
+    | Isinya loading page, bukan blank putih.
     |--------------------------------------------------------------------------
     */
     printWindow = window.open('', '_blank')
@@ -775,6 +776,11 @@ const printPurchaseOrder = async (
 
     printWindow.document.close()
 
+    /*
+    |--------------------------------------------------------------------------
+    | Ambil signed URL dari backend.
+    |--------------------------------------------------------------------------
+    */
     const response = await axios.post(
       `/transaction/purchase-order/${encodeURIComponent(publicId)}/print-url`,
       null,
@@ -782,8 +788,22 @@ const printPurchaseOrder = async (
         params: {
           lang: language,
         },
+        headers: {
+          Accept: 'application/json',
+        },
       },
     )
+
+    if (response.data?.success === false) {
+      throw new Error(
+        response.data?.message
+          || (
+            language === 'en'
+              ? 'Failed to create print URL.'
+              : 'Gagal membuat URL cetak.'
+          ),
+      )
+    }
 
     const url = response.data?.url
 
@@ -795,12 +815,54 @@ const printPurchaseOrder = async (
       )
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Ambil PDF sebagai blob.
+    | Ini mengatasi live server yang masih mengirim Content-Type text/html.
+    |--------------------------------------------------------------------------
+    */
+    const pdfResponse = await axios.get(
+      url,
+      {
+        responseType: 'blob',
+        headers: {
+          Accept: 'application/pdf',
+        },
+      },
+    )
+
+    const pdfBlob = new Blob(
+      [pdfResponse.data],
+      {
+        type: 'application/pdf',
+      },
+    )
+
+    pdfObjectUrl = URL.createObjectURL(pdfBlob)
+
     closeAlert()
 
-    printWindow.location.href = url
+    /*
+    |--------------------------------------------------------------------------
+    | Arahkan tab loading ke blob PDF.
+    |--------------------------------------------------------------------------
+    */
+    printWindow.location.href = pdfObjectUrl
+
+    window.setTimeout(() => {
+      if (pdfObjectUrl) {
+        URL.revokeObjectURL(pdfObjectUrl)
+        pdfObjectUrl = null
+      }
+    }, 300_000)
   }
   catch (error: unknown) {
     closeAlert()
+
+    if (pdfObjectUrl) {
+      URL.revokeObjectURL(pdfObjectUrl)
+      pdfObjectUrl = null
+    }
 
     if (printWindow)
       printWindow.close()
