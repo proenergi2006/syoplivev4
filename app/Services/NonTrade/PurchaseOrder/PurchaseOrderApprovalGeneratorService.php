@@ -8,19 +8,13 @@ use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderApproval;
 use App\Models\Role;
 use App\Models\User;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 class PurchaseOrderApprovalGeneratorService
 {
-
-    /**
-     * Generate snapshot approval Purchase Order.
-     *
-     * Semua approver pada step pertama akan menjadi WAITING.
-     * Semua approver pada step berikutnya akan menjadi PENDING.
-     */
     public function generate(
         PurchaseOrder $purchaseOrder,
     ): void {
@@ -46,7 +40,7 @@ class PurchaseOrderApprovalGeneratorService
 
         /*
         |--------------------------------------------------------------------------
-        | Hitung nominal Purchase Order
+        | Hitung nominal PO
         |--------------------------------------------------------------------------
         */
         $totalAmount = $this->calculateTotalAmount(
@@ -63,15 +57,21 @@ class PurchaseOrderApprovalGeneratorService
 
         /*
         |--------------------------------------------------------------------------
-        | Cari approval flow yang sesuai
+        | Ambil approval flow PO secara cumulative
+        |--------------------------------------------------------------------------
+        |
+        | Contoh:
+        | - 2 juta  = Semua Nilai
+        | - 30 juta = Semua Nilai + 10 sampai 50 juta
+        | - 60 juta = Semua Nilai + 10 sampai 50 juta + Di atas 50 juta
         |--------------------------------------------------------------------------
         */
-        $approvalFlow = $this->findMatchingFlow(
+        $approvalFlows = $this->findCumulativeFlows(
             $purchaseOrder,
             $totalAmount,
         );
 
-        if (!$approvalFlow) {
+        if ($approvalFlows->isEmpty()) {
             throw ValidationException::withMessages([
                 'approval_flow' => [
                     sprintf(
@@ -89,211 +89,278 @@ class PurchaseOrderApprovalGeneratorService
 
         /*
         |--------------------------------------------------------------------------
-        | Ambil seluruh step dari master approval flow
+        | Generate snapshot approval dengan step_order baru
         |--------------------------------------------------------------------------
         |
-        | Jangan memakai unique(step_order) atau first().
-        | Satu step boleh memiliki beberapa kandidat approver.
-        |
-        | Contoh:
-        | step 1 - ROLE Supervisor GA - ANY
-        | step 1 - USER Chris        - ANY
+        | Step di master flow masing-masing boleh mulai dari 1.
+        | Pada snapshot transaksi PO, step harus diurutkan ulang menjadi:
+        | 1, 2, 3, dst.
         |--------------------------------------------------------------------------
         */
-        $flowSteps = ApprovalFlowStep::query()
-            ->where(
-                'approval_flow_id',
-                $approvalFlow->id,
-            )
-            ->orderBy('step_order')
-            ->orderBy('id')
-            ->get();
+        $effectiveStepOrder = 0;
+        $createdApprovals = 0;
 
-        if ($flowSteps->isEmpty()) {
-            throw ValidationException::withMessages([
-                'approval_flow' => [
-                    'Approval flow ditemukan, tetapi belum memiliki approver.',
-                ],
-            ]);
-        }
+        foreach ($approvalFlows as $approvalFlow) {
+            $flowSteps = ApprovalFlowStep::query()
+                ->where(
+                    'approval_flow_id',
+                    $approvalFlow->id,
+                )
+                ->orderBy('step_order')
+                ->orderBy('id')
+                ->get();
 
-        /*
-        |--------------------------------------------------------------------------
-        | Tentukan step pertama
-        |--------------------------------------------------------------------------
-        */
-        $firstStepOrder = (int) $flowSteps
-            ->min('step_order');
+            if ($flowSteps->isEmpty()) {
+                Log::warning(
+                    '[PO Approval Generator] Flow aktif tidak memiliki step',
+                    [
+                        'purchase_order_id' => $purchaseOrder->id,
+                        'approval_flow_id' => $approvalFlow->id,
+                        'approval_flow_name' => $approvalFlow->name,
+                    ],
+                );
 
-        /*
-        |--------------------------------------------------------------------------
-        | Snapshot seluruh approver ke transaksi Purchase Order
-        |--------------------------------------------------------------------------
-        */
-        foreach ($flowSteps as $flowStep) {
-            $stepOrder = (int) $flowStep->step_order;
+                continue;
+            }
 
-            $approverType = strtoupper(
-                trim(
-                    (string) $flowStep->approver_type,
-                ),
-            );
+            /*
+            |--------------------------------------------------------------------------
+            | Group per logical step pada flow asal
+            |--------------------------------------------------------------------------
+            |
+            | Jika 1 step punya banyak approver, semua row tetap masuk
+            | ke effective step yang sama.
+            |--------------------------------------------------------------------------
+            */
+            $stepGroups = $flowSteps
+                ->groupBy(
+                    fn(ApprovalFlowStep $step): int => (int) $step->step_order,
+                )
+                ->sortKeys();
 
-            $approvalMode = strtoupper(
-                trim(
+            foreach ($stepGroups as $originalStepOrder => $groupedSteps) {
+                $effectiveStepOrder++;
+
+                $approvalMode = $this->normalizeApprovalMode(
                     (string) (
-                        $flowStep->approval_mode
+                        $groupedSteps->first()?->approval_mode
                         ?: PurchaseOrderApproval::MODE_ANY
                     ),
-                ),
-            );
+                );
 
-            /*
-            |--------------------------------------------------------------------------
-            | Validasi approver type
-            |--------------------------------------------------------------------------
-            */
-            if (!in_array(
-                $approverType,
-                [
-                    PurchaseOrderApproval::APPROVER_TYPE_USER,
-                    PurchaseOrderApproval::APPROVER_TYPE_ROLE,
-                ],
-                true,
-            )) {
-                throw ValidationException::withMessages([
-                    'approval_flow' => [
-                        sprintf(
-                            'Tipe approver "%s" pada step %s tidak valid.',
-                            $approverType,
-                            $stepOrder,
-                        ),
-                    ],
-                ]);
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Validasi approval mode
-            |--------------------------------------------------------------------------
-            */
-            if (!in_array(
-                $approvalMode,
-                [
-                    PurchaseOrderApproval::MODE_ANY,
-                    PurchaseOrderApproval::MODE_ALL,
-                ],
-                true,
-            )) {
-                throw ValidationException::withMessages([
-                    'approval_flow' => [
-                        sprintf(
-                            'Approval mode "%s" pada step %s tidak valid.',
-                            $approvalMode,
-                            $stepOrder,
-                        ),
-                    ],
-                ]);
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Validasi approver ID
-            |--------------------------------------------------------------------------
-            */
-            if (empty($flowStep->approver_id)) {
-                throw ValidationException::withMessages([
-                    'approval_flow' => [
-                        sprintf(
-                            'Approver pada step %s belum ditentukan.',
-                            $stepOrder,
-                        ),
-                    ],
-                ]);
-            }
-
-            PurchaseOrderApproval::create([
-                'purchase_order_id' => $purchaseOrder->id,
+                $status = $effectiveStepOrder === 1
+                    ? PurchaseOrderApproval::STATUS_WAITING
+                    : PurchaseOrderApproval::STATUS_PENDING;
 
                 /*
                 |--------------------------------------------------------------------------
-                | Referensi snapshot master approval flow
-                |--------------------------------------------------------------------------
-                */
-                'approval_flow_id' => $approvalFlow->id,
-
-                'approval_flow_step_id' => $flowStep->id,
-
-                /*
-                |--------------------------------------------------------------------------
-                | Informasi step
-                |--------------------------------------------------------------------------
-                */
-                'step_order' => $stepOrder,
-
-                'label' => $flowStep->label,
-
-                /*
-                |--------------------------------------------------------------------------
-                | Kandidat approver
-                |--------------------------------------------------------------------------
-                */
-                'approver_type' => $approverType,
-
-                'approver_id' => $flowStep->approver_id,
-
-                'approver_name_snapshot'
-                => $this->resolveApproverName(
-                    $flowStep,
-                ),
-
-                /*
-                |--------------------------------------------------------------------------
-                | ANY atau ALL
-                |--------------------------------------------------------------------------
-                */
-                'approval_mode' => $approvalMode,
-
-                /*
-                |--------------------------------------------------------------------------
-                | Status awal
+                | Deduplikasi approver pada logical step yang sama
                 |--------------------------------------------------------------------------
                 |
-                | Seluruh kandidat pada step pertama = WAITING.
-                | Seluruh kandidat pada step berikutnya = PENDING.
+                | ROLE-10 dan USER-10 tetap dianggap berbeda.
                 |--------------------------------------------------------------------------
                 */
-                'status' => $stepOrder === $firstStepOrder
-                    ? PurchaseOrderApproval::STATUS_WAITING
-                    : PurchaseOrderApproval::STATUS_PENDING,
+                $usedApproverKeys = [];
+
+                foreach ($groupedSteps as $flowStep) {
+                    $approverType = strtoupper(
+                        trim((string) $flowStep->approver_type),
+                    );
+
+                    $approverId = (int) $flowStep->approver_id;
+
+                    if (
+                        !in_array(
+                            $approverType,
+                            [
+                                PurchaseOrderApproval::APPROVER_TYPE_ROLE,
+                                PurchaseOrderApproval::APPROVER_TYPE_USER,
+                            ],
+                            true,
+                        )
+                        || $approverId <= 0
+                    ) {
+                        Log::warning(
+                            '[PO Approval Generator] Approver tidak valid',
+                            [
+                                'purchase_order_id' => $purchaseOrder->id,
+                                'approval_flow_id' => $approvalFlow->id,
+                                'approval_flow_step_id' => $flowStep->id,
+                                'approver_type' => $flowStep->approver_type,
+                                'approver_id' => $flowStep->approver_id,
+                            ],
+                        );
+
+                        continue;
+                    }
+
+                    $approverKey = $approverType . '-' . $approverId;
+
+                    if (isset($usedApproverKeys[$approverKey])) {
+                        continue;
+                    }
+
+                    $usedApproverKeys[$approverKey] = true;
+
+                    PurchaseOrderApproval::create([
+                        'purchase_order_id' => $purchaseOrder->id,
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Simpan sumber flow asal
+                        |--------------------------------------------------------------------------
+                        */
+                        'approval_flow_id' => $approvalFlow->id,
+
+                        'approval_flow_step_id' => $flowStep->id,
+
+                        /*
+                        |--------------------------------------------------------------------------
+                        | Step order hasil gabungan cumulative
+                        |--------------------------------------------------------------------------
+                        */
+                        'step_order' => $effectiveStepOrder,
+
+                        'label' => $flowStep->label,
+
+                        'approver_type' => $approverType,
+
+                        'approver_id' => $approverId,
+
+                        'approver_name_snapshot'
+                        => $this->resolveApproverName(
+                            $flowStep,
+                        ),
+
+                        'approval_mode' => $approvalMode,
+
+                        'status' => $status,
+                    ]);
+
+                    $createdApprovals++;
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Kalau grup step tidak menghasilkan approver valid,
+                | rollback nomor step agar tidak ada step kosong.
+                |--------------------------------------------------------------------------
+                */
+                if (empty($usedApproverKeys)) {
+                    $effectiveStepOrder--;
+                }
+            }
+        }
+
+        if ($createdApprovals <= 0) {
+            throw ValidationException::withMessages([
+                'approval_flow' => [
+                    'Approval flow Purchase Order ditemukan, tetapi tidak memiliki approver valid.',
+                ],
             ]);
         }
 
         Log::info(
-            '[PO Approval Generator] Approval berhasil dibuat',
+            '[PO Approval Generator] Approval snapshot berhasil dibuat',
             [
                 'purchase_order_id' => $purchaseOrder->id,
                 'nomor_po' => $purchaseOrder->nomor_po,
-                'approval_flow_id' => $approvalFlow->id,
-                'approval_flow_name' => $approvalFlow->name,
                 'total_amount' => $totalAmount,
-                'first_step_order' => $firstStepOrder,
-                'approval_rows' => $flowSteps->count(),
+                'approval_flow_ids' => $approvalFlows
+                    ->pluck('id')
+                    ->values()
+                    ->all(),
+                'created_approvals' => $createdApprovals,
+                'effective_step_count' => $effectiveStepOrder,
             ],
         );
     }
 
-    /**
-     * Hitung total Purchase Order.
-     */
-    private function calculateTotalAmount(
+    /*
+    |--------------------------------------------------------------------------
+    | Cari approval flow PO cumulative
+    |--------------------------------------------------------------------------
+    */
+    private function findCumulativeFlows(
         PurchaseOrder $purchaseOrder,
-    ): float {
-        $purchaseOrder->loadMissing('items');
+        float $totalAmount,
+    ): EloquentCollection {
+        Log::info(
+            '[PO Approval Generator] Cumulative flow parameters',
+            [
+                'purchase_order_id' => $purchaseOrder->id,
+                'nomor_po' => $purchaseOrder->nomor_po,
+                'document_type' => 'PO',
+                'total_amount' => $totalAmount,
+            ],
+        );
 
         /*
         |--------------------------------------------------------------------------
-        | Prioritaskan total pada header Purchase Order
+        | Konsep cumulative threshold:
+        |--------------------------------------------------------------------------
+        | - Flow dengan min_amount null / 0 = base flow / semua nilai.
+        | - Flow dengan min_amount <= total PO ikut masuk.
+        | - max_amount tidak dipakai sebagai pembatas untuk cumulative PO,
+        |   karena flow 10-50 juta tetap harus ikut pada PO > 50 juta.
+        |--------------------------------------------------------------------------
+        */
+        $flows = ApprovalFlow::query()
+            ->whereNull('deleted_at')
+            ->where('is_active', true)
+            ->whereRaw(
+                'UPPER(TRIM(document_type)) = ?',
+                ['PO'],
+            )
+            ->where(function ($query) use ($totalAmount) {
+                $query
+                    ->whereNull('min_amount')
+                    ->orWhere('min_amount', 0)
+                    ->orWhere(
+                        'min_amount',
+                        '<=',
+                        $totalAmount,
+                    );
+            })
+            ->orderByRaw(
+                'COALESCE(min_amount, 0) ASC',
+            )
+            ->orderByRaw(
+                'COALESCE(max_amount, 0) ASC',
+            )
+            ->orderBy('id')
+            ->get();
+
+        Log::info(
+            '[PO Approval Generator] Cumulative flow result',
+            [
+                'purchase_order_id' => $purchaseOrder->id,
+                'nomor_po' => $purchaseOrder->nomor_po,
+                'flow_ids' => $flows
+                    ->pluck('id')
+                    ->values()
+                    ->all(),
+                'flow_names' => $flows
+                    ->pluck('name')
+                    ->values()
+                    ->all(),
+            ],
+        );
+
+        return $flows;
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Hitung total PO
+    |--------------------------------------------------------------------------
+    */
+    private function calculateTotalAmount(
+        PurchaseOrder $purchaseOrder,
+    ): float {
+        /*
+        |--------------------------------------------------------------------------
+        | Gunakan total header jika tersedia
         |--------------------------------------------------------------------------
         */
         $headerTotal = (float) (
@@ -307,6 +374,8 @@ class PurchaseOrderApprovalGeneratorService
             return $headerTotal;
         }
 
+        $purchaseOrder->loadMissing('items');
+
         /*
         |--------------------------------------------------------------------------
         | Gunakan subtotal item jika tersedia
@@ -318,7 +387,6 @@ class PurchaseOrderApprovalGeneratorService
                 return (float) (
                     $item->subtotal
                     ?? $item->total
-                    ?? $item->total_nilai
                     ?? 0
                 );
             });
@@ -352,214 +420,44 @@ class PurchaseOrderApprovalGeneratorService
             });
     }
 
-    /**
-     * Cari approval flow yang sesuai dengan PO.
-     */
-    private function findMatchingFlow(
-        PurchaseOrder $purchaseOrder,
-        float $totalAmount,
-    ): ?ApprovalFlow {
-        Log::info(
-            '[PO Approval Generator] Matching flow parameters',
-            [
-                'purchase_order_id' => $purchaseOrder->id,
-                'nomor_po' => $purchaseOrder->nomor_po,
-                'document_type' => 'PO',
-
-                /*
-            |--------------------------------------------------------------------------
-            | Hanya sebagai informasi transaksi
-            |--------------------------------------------------------------------------
-            | Tidak digunakan untuk menentukan approval flow PO.
-            |--------------------------------------------------------------------------
-            */
-                'purchase_order_department_id'
-                => $purchaseOrder->id_department,
-
-                'purchase_order_cabang_id'
-                => $purchaseOrder->cabang,
-
-                'total_amount' => $totalAmount,
-            ],
-        );
-
-        $flow = ApprovalFlow::query()
-            ->whereNull('deleted_at')
-            ->where('is_active', true)
-
-            /*
-        |--------------------------------------------------------------------------
-        | Jenis dokumen
-        |--------------------------------------------------------------------------
-        */
-            ->whereRaw(
-                'UPPER(TRIM(document_type)) = ?',
-                ['PO'],
-            )
-
-            /*
-        |--------------------------------------------------------------------------
-        | Batas minimum nominal
-        |--------------------------------------------------------------------------
-        | NULL berarti berlaku mulai dari nilai terendah.
-        |--------------------------------------------------------------------------
-        */
-            ->where(function ($query) use ($totalAmount) {
-                $query
-                    ->whereNull('min_amount')
-                    ->orWhere(
-                        'min_amount',
-                        '<=',
-                        $totalAmount,
-                    );
-            })
-
-            /*
-        |--------------------------------------------------------------------------
-        | Batas maksimum nominal
-        |--------------------------------------------------------------------------
-        | NULL atau 0 berarti tidak memiliki batas maksimum.
-        |--------------------------------------------------------------------------
-        */
-            ->where(function ($query) use ($totalAmount) {
-                $query
-                    ->whereNull('max_amount')
-                    ->orWhere('max_amount', 0)
-                    ->orWhere(
-                        'max_amount',
-                        '>=',
-                        $totalAmount,
-                    );
-            })
-
-            /*
-        |--------------------------------------------------------------------------
-        | Prioritaskan flow nominal paling spesifik
-        |--------------------------------------------------------------------------
-        |
-        | Contoh nominal Rp20 juta:
-        | - Flow Semua Nilai ikut cocok
-        | - Flow Rp10.000.001–Rp50.000.000 ikut cocok
-        |
-        | Karena min_amount flow Rp10 juta lebih besar,
-        | flow tersebut dipilih.
-        |--------------------------------------------------------------------------
-        */
-            ->orderByDesc(
-                DB::raw('COALESCE(min_amount, 0)'),
-            )
-
-            /*
-        |--------------------------------------------------------------------------
-        | Flow dengan max tertentu lebih spesifik daripada tanpa batas
-        |--------------------------------------------------------------------------
-        */
-            ->orderByRaw(
-                '
-            CASE
-                WHEN max_amount IS NULL OR max_amount = 0
-                THEN 1
-                ELSE 0
-            END
-            ',
-            )
-            ->orderBy('max_amount')
-            ->orderByDesc('id')
-            ->first();
-
-        Log::info(
-            '[PO Approval Generator] Matching flow result',
-            [
-                'purchase_order_id' => $purchaseOrder->id,
-                'approval_flow_id' => $flow?->id,
-                'approval_flow_name' => $flow?->name,
-                'min_amount' => $flow?->min_amount,
-                'max_amount' => $flow?->max_amount,
-            ],
-        );
-
-        return $flow;
-    }
-
-    /**
-     * Tentukan area approval PO.
-     */
-    private function resolveApprovalAreaType(
-        PurchaseOrder $purchaseOrder,
+    /*
+    |--------------------------------------------------------------------------
+    | Normalisasi approval mode
+    |--------------------------------------------------------------------------
+    */
+    private function normalizeApprovalMode(
+        string $approvalMode,
     ): string {
+        $approvalMode = strtoupper(
+            trim($approvalMode),
+        );
+
         if (
-            method_exists(
-                $purchaseOrder,
-                'getApprovalAreaType',
+            !in_array(
+                $approvalMode,
+                [
+                    PurchaseOrderApproval::MODE_ANY,
+                    PurchaseOrderApproval::MODE_ALL,
+                ],
+                true,
             )
         ) {
-            $areaType = strtoupper(
-                trim(
-                    (string) $purchaseOrder
-                        ->getApprovalAreaType(),
-                ),
-            );
-
-            if (in_array(
-                $areaType,
-                ['HO', 'CABANG'],
-                true,
-            )) {
-                return $areaType;
-            }
+            return PurchaseOrderApproval::MODE_ANY;
         }
 
-        $cabangId = $this->resolveCabangId(
-            $purchaseOrder,
-        );
-
-        return (int) $cabangId === 1
-            ? 'HO'
-            : 'CABANG';
+        return $approvalMode;
     }
 
-    /**
-     * Ambil ID cabang dengan beberapa kemungkinan nama kolom.
-     */
-    private function resolveCabangId(
-        PurchaseOrder $purchaseOrder,
-    ): ?int {
-        $cabangId = $purchaseOrder->cabang
-            ?? $purchaseOrder->id_cabang
-            ?? $purchaseOrder->cabang_id
-            ?? null;
-
-        return $cabangId !== null
-            ? (int) $cabangId
-            : null;
-    }
-
-    /**
-     * Ambil ID department dengan beberapa kemungkinan nama kolom.
-     */
-    private function resolveDepartmentId(
-        PurchaseOrder $purchaseOrder,
-    ): ?int {
-        $departmentId = $purchaseOrder->id_department
-            ?? $purchaseOrder->department_id
-            ?? $purchaseOrder->id_departemen
-            ?? null;
-
-        return $departmentId !== null
-            ? (int) $departmentId
-            : null;
-    }
-
-    /**
-     * Snapshot nama approver.
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | Resolve nama approver untuk snapshot
+    |--------------------------------------------------------------------------
+    */
     private function resolveApproverName(
         ApprovalFlowStep $flowStep,
     ): ?string {
         $approverType = strtoupper(
-            trim(
-                (string) $flowStep->approver_type,
-            ),
+            trim((string) $flowStep->approver_type),
         );
 
         if (
@@ -577,7 +475,10 @@ class PurchaseOrderApprovalGeneratorService
         ) {
             return Role::query()
                 ->whereKey($flowStep->approver_id)
-                ->value('nama');
+                ->value('nama')
+                ?? Role::query()
+                ->whereKey($flowStep->approver_id)
+                ->value('name');
         }
 
         return null;
