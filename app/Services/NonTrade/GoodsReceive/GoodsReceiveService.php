@@ -24,15 +24,6 @@ class GoodsReceiveService
             $payload,
             $userId,
         ) {
-
-            Log::info(
-                '[GR DEBUG] createDraftFromPurchaseOrder terpanggil',
-                [
-                    'class' => static::class,
-                    'file' => __FILE__,
-                    'po_id' => $po->id,
-                ],
-            );
         /*
         |--------------------------------------------------------------------------
         | Lock Purchase Order
