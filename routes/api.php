@@ -59,6 +59,7 @@ use Illuminate\Support\Facades\Mail;
 use App\Http\Controllers\Api\GoodsReturnController;
 use App\Http\Controllers\Api\Dashboard\DashboardModuleController;
 use App\Http\Controllers\Api\Dashboard\PurchaseOrderDashboardController;
+use App\Http\Controllers\Monitoring\LogViewerController;
 
 Route::post('/auth/login', [AuthController::class, 'login']);
 // routes/api.php
@@ -135,6 +136,14 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('/units/dropdown-select', [UnitController::class, 'dropdownSelect']);
     Route::apiResource('/units', UnitController::class);
+
+    Route::prefix('monitoring')
+        ->group(function () {
+            Route::get(
+                '/logs',
+                [LogViewerController::class, 'index'],
+            );
+        });
 
 
     // ===================== DATA DASHBOARD =====================
@@ -299,6 +308,11 @@ Route::middleware('auth:sanctum')->group(function () {
             |--------------------------------------------------------------------------
             */
 
+            Route::post(
+                'purchase-request/{publicId}/print-url',
+                [PurchaseRequestController::class, 'generatePrintUrl']
+            );
+
             Route::get(
                 'purchase-request/dropdown-approved',
                 [PurchaseRequestController::class, 'dropdownApproved'],
@@ -341,6 +355,11 @@ Route::middleware('auth:sanctum')->group(function () {
             | PURCHASE ORDER
             |--------------------------------------------------------------------------
             */
+
+            Route::post(
+                'purchase-order/{publicId}/print-url',
+                [PurchaseOrderController::class, 'generatePrintUrl']
+            );
 
             Route::get(
                 'purchase-order/dropdown-receivable',
@@ -497,3 +516,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('shipping-instruction/print/{id}', [ShippingInstructionController::class, 'print']);
     });
 });
+Route::get(
+    '/transaction/purchase-request/{publicId}/print-signed',
+    [PurchaseRequestController::class, 'printSigned']
+)->name('transaction.purchase-request.print-signed')->middleware('signed');
+
+Route::get(
+    '/transaction/purchase-order/{publicId}/print-signed',
+    [PurchaseOrderController::class, 'printSigned']
+)->name('transaction.purchase-order.print-signed')->middleware('signed');
