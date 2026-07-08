@@ -2644,15 +2644,16 @@ class PurchaseRequestController extends Controller
                 strtoupper($lang),
             );
 
-            return response($pdfOutput, 200, [
-                'Content-Type' => 'application/pdf',
-                'Content-Disposition' => 'inline; filename="' . $downloadFileName . '"',
-                'Content-Length' => strlen($pdfOutput),
-                'Cache-Control' => 'private, no-store, no-cache, must-revalidate, max-age=0',
-                'Pragma' => 'no-cache',
-                'Expires' => '0',
-                'X-Content-Type-Options' => 'nosniff',
-            ]);
+            return response()
+                ->make($pdfOutput, 200)
+                ->withHeaders([
+                    'Content-Type' => 'application/pdf',
+                    'Content-Disposition' => 'inline; filename="' . $downloadFileName . '"',
+                    'Cache-Control' => 'private, no-store, no-cache, must-revalidate, max-age=0',
+                    'Pragma' => 'no-cache',
+                    'Expires' => '0',
+                    'X-Content-Type-Options' => 'nosniff',
+                ]);
         } catch (\Throwable $e) {
             Log::error(
                 '[Purchase Requisition] Print error',
