@@ -848,18 +848,45 @@ const canDeletePurchaseRequest = computed(() => {
 })
 
 const statusItems = [
-  { title: 'Semua', value: '' },
-  { title: 'Draft', value: 'Draft' },
-  { title: 'In Progress', value: 'In Progress' },
-  { title: 'Approved', value: 'Approved' },
-  { title: 'Rejected', value: 'Rejected' },
+  {
+    title: 'Semua',
+    value: '',
+  },
+  {
+    title: 'Draft',
+    value: 'DRAFT',
+  },
+  {
+    title: 'In Progress',
+    value: 'IN PROGRESS',
+  },
+  {
+    title: 'Approved',
+    value: 'APPROVED',
+  },
+  {
+    title: 'Rejected',
+    value: 'REJECTED',
+  },
 ]
 
 const statusPOItems = [
-  { title: 'Semua', value: '' },
-  { title: 'Open', value: 'Open' },
-  { title: 'Partial PO', value: 'Partial' },
-  { title: 'Completed', value: 'Completed' },
+  {
+    title: 'Semua',
+    value: '',
+  },
+  {
+    title: 'Open',
+    value: 'OPEN',
+  },
+  {
+    title: 'Partial',
+    value: 'PARTIAL',
+  },
+  {
+    title: 'Completed',
+    value: 'COMPLETED',
+  },
 ]
 
 const paginationData = computed(() => {
@@ -943,6 +970,27 @@ const getStatusPOColor = (status: string | null): string => {
   return 'secondary'
 }
 
+let filterTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(
+  [
+    searchQuery,
+    tanggalMulai,
+    tanggalSelesai,
+    selectedStatus,
+    selectedStatusPO,
+  ],
+  () => {
+    if (filterTimer)
+      clearTimeout(filterTimer)
+
+    filterTimer = setTimeout(() => {
+      currentPage.value = 1
+      fetchPurchaseRequests()
+    }, 350)
+  },
+)
+
 const fetchPurchaseRequests = async (): Promise<void> => {
   loading.value = true
   loadError.value = false
@@ -955,13 +1003,14 @@ const fetchPurchaseRequests = async (): Promise<void> => {
           Accept: 'application/json',
         },
         params: {
-          search: searchQuery.value || undefined,
-          status: selectedStatus.value || undefined,
-          status_po: selectedStatusPO.value || undefined,
-          tanggal_mulai: tanggalMulai.value || undefined,
-          tanggal_selesai: tanggalSelesai.value || undefined,
           page: currentPage.value,
           per_page: rowPerPage.value,
+
+          search: searchQuery.value || undefined,
+          tanggal_mulai: tanggalMulai.value || undefined,
+          tanggal_selesai: tanggalSelesai.value || undefined,
+          status: selectedStatus.value || undefined,
+          status_po: selectedStatusPO.value || undefined,
         },
       },
     )
@@ -1031,10 +1080,11 @@ usePolling(fetchPurchaseRequests, {
 
 const resetFilters = async (): Promise<void> => {
   searchQuery.value = ''
-  selectedStatus.value = ''
-  selectedStatusPO.value = ''
   tanggalMulai.value = null
   tanggalSelesai.value = null
+  selectedStatus.value = ''
+  selectedStatusPO.value = ''
+
   currentPage.value = 1
 
   await fetchPurchaseRequests()
@@ -1341,7 +1391,7 @@ onBeforeUnmount(() => {
           <VCol cols="12" md="4">
             <VTextField
               v-model="searchQuery"
-              label="Cari kode PR"
+              label="Cari data"
               placeholder="Cari purchase requisition..."
               density="compact"
               clearable

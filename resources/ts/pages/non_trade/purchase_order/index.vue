@@ -1871,7 +1871,7 @@ onBeforeUnmount(() => {
                   <VCardText>
                     <div class="d-flex align-center justify-space-between mb-3">
                       <div class="text-caption text-medium-emphasis">
-                        Purchase Request Terkait
+                        Purchase Requisition Terkait
                       </div>
 
                       <VChip
@@ -1963,7 +1963,7 @@ onBeforeUnmount(() => {
                       variant="tonal"
                       density="compact"
                     >
-                      Tidak ada Purchase Request terkait.
+                      Tidak ada Purchase Requisition terkait.
                     </VAlert>
                   </VCardText>
                 </VCard>
