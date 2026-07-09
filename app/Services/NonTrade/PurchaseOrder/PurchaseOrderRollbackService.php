@@ -86,10 +86,10 @@ class PurchaseOrderRollbackService
             ->where('purchase_request_id', $purchaseRequestId)
             ->whereNull('deleted_at')
             ->selectRaw('
-                COALESCE(SUM(qty), 0) as total_qty_request,
-                COALESCE(SUM(qty_po), 0) as total_qty_po,
-                COALESCE(SUM(qty_outstanding), 0) as total_qty_outstanding
-            ')
+            COALESCE(SUM(qty), 0) as total_qty_request,
+            COALESCE(SUM(qty_po), 0) as total_qty_po,
+            COALESCE(SUM(qty_outstanding), 0) as total_qty_outstanding
+        ')
             ->first();
 
         $totalQtyRequest = (float) ($summary->total_qty_request ?? 0);
@@ -101,7 +101,12 @@ class PurchaseOrderRollbackService
         } elseif ($totalQtyOutstanding > 0 && $totalQtyPo < $totalQtyRequest) {
             $statusPo = 'PARTIAL';
         } else {
-            $statusPo = 'COMPLETED';
+            /*
+        |--------------------------------------------------------------------------
+        | PO dibuat penuh bukan berarti PR selesai/closed.
+        |--------------------------------------------------------------------------
+        */
+            $statusPo = 'OPEN';
         }
 
         $pr->update([

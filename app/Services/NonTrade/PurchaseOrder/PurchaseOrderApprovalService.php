@@ -4,6 +4,8 @@ namespace App\Services\NonTrade\PurchaseOrder;
 
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderApproval;
+use App\Models\PurchaseRequest;
+use App\Models\PurchaseRequestItem;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
@@ -547,6 +549,24 @@ class PurchaseOrderApprovalService
 
                 'updated_at' => now(),
             ]);
+
+        /*
+    |--------------------------------------------------------------------------
+    | Refresh status_po PR setelah PO final approved
+    |--------------------------------------------------------------------------
+    | Saat create/update draft PO, PR tidak boleh langsung COMPLETED.
+    | PR baru boleh COMPLETED ketika PO sudah final approved.
+    |--------------------------------------------------------------------------
+    */
+        $purchaseRequestIds = $this->getPurchaseRequestIdsByPurchaseOrder(
+            $purchaseOrder,
+        );
+
+        foreach ($purchaseRequestIds as $purchaseRequestId) {
+            $this->refreshPurchaseRequestPOStatusAfterApproval(
+                (int) $purchaseRequestId,
+            );
+        }
     }
 
     /*
@@ -559,6 +579,91 @@ class PurchaseOrderApprovalService
     ): void {
         $purchaseOrder->update([
             'status' => 'REJECTED',
+        ]);
+    }
+
+    private function getPurchaseRequestIdsByPurchaseOrder(
+        PurchaseOrder $purchaseOrder,
+    ) {
+        /*
+    |--------------------------------------------------------------------------
+    | Ambil dari relation jika tersedia
+    |--------------------------------------------------------------------------
+    */
+        $purchaseRequestIds = $purchaseOrder
+            ->purchaseRequests()
+            ->pluck('purchase_requests.id')
+            ->map(fn($purchaseRequestId): int => (int) $purchaseRequestId)
+            ->filter(fn($purchaseRequestId): bool => $purchaseRequestId > 0)
+            ->unique()
+            ->values();
+
+        if ($purchaseRequestIds->isNotEmpty()) {
+            return $purchaseRequestIds;
+        }
+
+        /*
+    |--------------------------------------------------------------------------
+    | Fallback table pivot po_pr
+    |--------------------------------------------------------------------------
+    */
+        if (Schema::hasTable('po_pr')) {
+            return DB::table('po_pr')
+                ->where('purchase_order_id', $purchaseOrder->id)
+                ->pluck('purchase_request_id')
+                ->map(fn($purchaseRequestId): int => (int) $purchaseRequestId)
+                ->filter(fn($purchaseRequestId): bool => $purchaseRequestId > 0)
+                ->unique()
+                ->values();
+        }
+
+        return collect();
+    }
+
+    private function refreshPurchaseRequestPOStatusAfterApproval(
+        int $purchaseRequestId,
+    ): void {
+        $pr = PurchaseRequest::query()
+            ->where('id', $purchaseRequestId)
+            ->lockForUpdate()
+            ->first();
+
+        if (!$pr) {
+            return;
+        }
+
+        $summary = PurchaseRequestItem::query()
+            ->where('purchase_request_id', $purchaseRequestId)
+            ->whereNull('deleted_at')
+            ->selectRaw('
+            COALESCE(SUM(qty), 0) as total_qty_request,
+            COALESCE(SUM(qty_po), 0) as total_qty_po,
+            COALESCE(SUM(qty_outstanding), 0) as total_qty_outstanding
+        ')
+            ->first();
+
+        $totalQtyRequest = (float) ($summary->total_qty_request ?? 0);
+        $totalQtyPo = (float) ($summary->total_qty_po ?? 0);
+        $totalQtyOutstanding = (float) ($summary->total_qty_outstanding ?? 0);
+
+        if ($totalQtyPo <= 0) {
+            $statusPo = 'OPEN';
+        } elseif (
+            $totalQtyOutstanding > 0
+            && $totalQtyPo < $totalQtyRequest
+        ) {
+            $statusPo = 'PARTIAL';
+        } else {
+            /*
+        |--------------------------------------------------------------------------
+        | PO sudah final approved dan seluruh qty PR sudah dibuatkan PO.
+        |--------------------------------------------------------------------------
+        */
+            $statusPo = 'COMPLETED';
+        }
+
+        $pr->update([
+            'status_po' => $statusPo,
         ]);
     }
 
