@@ -4,17 +4,17 @@ import { computed, ref, watch, watchEffect } from 'vue'
 
 type Cabang = {
   id: number
-  kode: string
-  nama: string
-  wilayah_id: number
+  inisial_cabang: string
+  nama_cabang: string
+  grup_cabang_id: number
   is_active: boolean
 }
 
 type CabangForm = {
   id?: number
-  kode: string
-  nama: string
-  wilayah_id: number | null
+  inisial_cabang: string
+  nama_cabang: string
+  grup_cabang_id: number | null
   is_active: boolean
 }
 
@@ -302,14 +302,14 @@ fetchWilayahOptions()
 
         <tbody>
           <tr v-for="c in rows" :key="c.id">
-            <td class="text-medium-emphasis">{{ c.kode }}</td>
-            <td class="text-medium-emphasis">{{ c.nama }}</td>
+            <td class="text-medium-emphasis">{{ c.inisial_cabang }}</td>
+            <td class="text-medium-emphasis">{{ c.nama_cabang }}</td>
 
             <td class="text-medium-emphasis">
               <!-- tampilkan label wilayah dari options -->
               {{
-                wilayahOptions.find(w => w.value === c.wilayah_id)?.title
-                || `#${c.wilayah_id}`
+                wilayahOptions.find(w => w.value === c.grup_cabang_id)?.title
+                || `#${c.grup_cabang_id}`
               }}
             </td>
 

@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services;
+namespace App\Services\Trade\ShippingInstruction;
 
 use App\Models\InventoryVendorPoShip;
 use Illuminate\Support\Facades\DB;

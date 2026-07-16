@@ -4,7 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\InventoryVendorPoShip;
-use App\Services\ShippingInstructionService;
+use App\Services\Trade\ShippingInstruction\ShippingInstructionService;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;

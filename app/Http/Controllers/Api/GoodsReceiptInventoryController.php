@@ -5,7 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\InventoryVendorReceive;
 use App\Models\InventoryVendorReceiveHistory;
-use App\Services\GoodsReceiptInventoryService;
+use App\Services\Trade\GoodsReceiptInventoryService;
 use Illuminate\Http\Request;
 
 class GoodsReceiptInventoryController extends Controller

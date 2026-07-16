@@ -74,13 +74,43 @@ class InventoryVendorPoHistory extends Model
         'internal_notes',
     ];
 
-    // FK Vendor
+    // FK PO
     public function po_supplier()
     {
         return $this->belongsTo(
             InventoryVendorPo::class,
             'id_po_supplier',
             'id_master'
+        );
+    }
+
+     // FK Vendor
+    public function vendor()
+    {
+        return $this->belongsTo(
+            MasterVendor::class,
+            'id_vendor',
+            'id'
+        );
+    }
+
+    // FK -> pro_master_produk.id_master
+    public function produk()
+    {
+        return $this->belongsTo(
+            Produk::class,
+            'id_produk',
+            'id'
+        );
+    }
+
+    // FK -> pro_master_terminal.id_master
+    public function terminal()
+    {
+        return $this->belongsTo(
+            Terminal::class,
+            'id_terminal',
+            'id'
         );
     }
 }

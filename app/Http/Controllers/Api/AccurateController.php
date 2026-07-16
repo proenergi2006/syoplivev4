@@ -177,6 +177,7 @@ class AccurateController extends Controller
             $no = data_get($expense, 'account.no');
             $notes = data_get($expense, 'expenseNotes');
             $allocate = data_get($expense, 'allocateToItemCost', false);
+            $jumlah_biaya = data_get($expense, 'expenseAmount');
 
             if (
                 $name === 'PBBKB'
@@ -198,7 +199,7 @@ class AccurateController extends Controller
                 $response['biaya_lain_oa'] = $no;
                 $response['alokasi_biaya_lain_oa'] = $allocate;
                 $response['ket_biaya_lain_oa'] = $notes;
-
+                $response['jumlah_biaya'] = $jumlah_biaya;
             } elseif (
                 str_contains(strtolower($notes), 'iuran')
                 || str_contains(strtolower($name), 'iuran')
@@ -213,6 +214,7 @@ class AccurateController extends Controller
                 $response['biaya_oa'] = $no;
                 $response['alokasi_biaya_oa'] = $allocate;
                 $response['keterangan_biaya_oa'] = $notes;
+               
             }
         }
 

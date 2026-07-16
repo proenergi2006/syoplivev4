@@ -26,6 +26,7 @@ type InventoryPO = {
   tanggal_inven: string
   volume_po: number
   harga_tebus: number
+  harga_po: number
   disposisi_po?: number
   status_label?: string
   cfo_result: 0,
@@ -39,6 +40,8 @@ type InventoryPO = {
   ceo_tanggal: '',
   is_resubmission:number,
   resubmission_count:number,
+    total_bl: number,
+  total_ri: number,
 
 
   vendor?: { nama_vendor: string }
@@ -78,9 +81,9 @@ const getProfile = async () => {
   try {
     const res = await axios.get('/auth/me')
 
-    userRoles.value = res.data.role
+    userRoles.value = res.data.data.role
 
-    // console.log('ROLE:', res)
+    // console.log('ROLE:', res.data.role)
   } catch (err) {
     console.error(err)
   }
@@ -170,16 +173,39 @@ const goToEdit = (public_id: number): void => {
 }
 const getRowClass = (item: any) => {
   // CFO role
-  if (userRoles.value.includes('CFO') && item.disposisi_po === 1 && item.cfo_result === 0) {
+  // if (userRoles.value.includes('CFO') && item.disposisi_po === 1 && item.cfo_result === 0) {
+  //   return 'bg-grey-100'
+  // }
+
+  // // CEO role
+  // if (userRoles.value.includes('CEO') &&item.disposisi_po === 2 && item.ceo_result === 0) {
+  //   return 'bg-grey-100'
+  // }
+
+  const isCFO = ['CFO', 'Chief Financial Officer']
+    .some(role =>userRoles.value.includes(role))
+
+  const isCEO = ['CEO', 'Chief Executive Officer']
+    .some(role => userRoles.value.includes(role))
+
+  if (isCFO && item.disposisi_po === 1 && item.cfo_result === 0) {
     return 'bg-grey-100'
   }
 
-  // CEO role
-  if (userRoles.value.includes('CEO') &&item.disposisi_po === 2 && item.ceo_result === 0) {
+  if (isCEO && item.disposisi_po === 2 && item.ceo_result === 0) {
     return 'bg-grey-100'
   }
 
   return ''
+}
+
+const refreshTable = async () => {
+  loading.value = true
+  try {
+    await getData()
+  } finally {
+    loading.value = false
+  }
 }
 
 // AUTO FETCH
@@ -272,7 +298,20 @@ const statusItems = [
     <!-- Table -->
     <VCard>
       <VCardText class="d-flex flex-wrap gap-4 align-center">
+      <VTooltip location="bottom">
+          <template #activator="{ props }">
+            <VBtn
+              v-bind="props"
+              icon="mdi-refresh"
+              variant="tonal"
+              size="small"
+              :loading="loading"
+              @click="refreshTable"
+            />
+          </template>
 
+          Refresh Table
+        </VTooltip>
         <VSpacer />
 
         <VChip v-if="loading" size="small" variant="tonal">
@@ -286,7 +325,7 @@ const statusItems = [
         <thead>
          <tr>
            <th>No </th>
-           <th>No PO</th>
+           <th>Nomor PO</th>
            <th>Tanggal</th>
            <th>Vendor / Terminal</th>
            <th>Produk</th>
@@ -328,9 +367,17 @@ const statusItems = [
 
             <td class="text-no-wrap">{{ v.produk?.jenis_produk +' - '+v.produk?.merk_dagang  || '-' }}</td>
 
-            <td>{{ formatNumber(v.volume_po) }}</td>
+             <td class="text-end text-no-wrap">
+              PO : {{ formatNumber(v.volume_po ?? 0) }}
+              <br>
+              BL : {{ formatNumber(v.total_bl ?? 0) }}
+              <br>
+              RI : {{ formatNumber(v.total_ri ?? 0) }}
+            </td>
 
-            <td>{{ formatNumber(v.harga_tebus) }}</td>
+            <td class="text-right text-no-wrap">PO: {{ formatNumber(v.harga_po) }}
+              <br> RI: {{ formatNumber(v.harga_tebus) }}
+            </td>
 
             <td>
               <VChip size="small"  :color="chipColor[v.disposisi_po??0]">

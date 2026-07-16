@@ -17,7 +17,7 @@ class TerminalController extends Controller
     {
         $q = Terminal::query()
             ->with([
-                'cabang:id,kode,nama',
+                'cabang:id,inisial_cabang,nama_cabang',
                 'area:id,nama_area', // sesuaikan kolom area kamu
             ]);
     
