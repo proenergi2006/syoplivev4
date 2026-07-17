@@ -511,9 +511,9 @@ Route::middleware(['auth:sanctum', 'auth.token.idle'])->group(function () {
         });
 
     //API ACCURATE
-    // Route::get('accurate/products', [AccurateController::class, 'products']);
-    // Route::get('accurate/accounts', [AccurateController::class, 'accounts']);
-    // Route::get('accurate/detail-po', [AccurateController::class, 'getDetailPO']);
+    Route::get('accurate/products', [AccurateController::class, 'products']);
+    Route::get('accurate/accounts', [AccurateController::class, 'accounts']);
+    Route::get('accurate/detail-po', [AccurateController::class, 'getDetailPO']);
 
     // ===================== PURCHASE ORDER INVENTORY =========================
     Route::prefix('inventory')->name('inventory.')->group(function () {

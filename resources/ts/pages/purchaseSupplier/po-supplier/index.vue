@@ -12,6 +12,10 @@ import {
 } from '@/utils/alert'
 import { useRouter } from 'vue-router'
 import Swal from 'sweetalert2'
+import { usePermissionStore } from '@/stores/permission'
+import {
+  onlyNumberKeypress,
+} from '@/utils/textFormatter'
 
 const router = useRouter()
 const onEdit = (item: any) => {
@@ -44,6 +48,9 @@ type InventoryPO = {
   tanggal_inven: string
   volume_po: number
   is_resubmission: number
+  is_close: number
+  volume_close: number
+  tanggal_close: string
   resubmission_count: number
   harga_tebus: number
   harga_po: number
@@ -53,6 +60,10 @@ type InventoryPO = {
   jenis_harga: number
   cfo_tanggal: number
   ceo_tanggal: number
+  ceo_result: number
+  revert_ceo: number
+  revert_cfo: number
+  cfo_result: number
   disposisi_po?: number
   status_label?: string
 
@@ -114,7 +125,7 @@ const getData = async () => {
       },
     })
 
-    console.log(res)
+    // console.log(res)
     rows.value = res.data?.data ?? []
     totalData.value = res.data?.total ?? 0
     totalPage.value = res.data?.last_page ?? 1
@@ -155,7 +166,14 @@ const getVendor = async (): Promise<void> => {
 
 const getTerminal = async () => {
   const res = await axios.get('/terminal')
-  terminalList.value = res.data.map((p: any) => ({
+
+  const items = Array.isArray(res.data)
+    ? res.data
+    : Array.isArray(res.data?.data)
+      ? res.data.data
+      : []
+
+  terminalList.value = items.map((p: any) => ({
     id: p.id,
     nama_terminal: p.nama_terminal,
     lokasi_terminal: p.lokasi_terminal,
@@ -200,7 +218,7 @@ const canShowShipping = (v: any) => {
 }
 
 const canShowGR = (v: any) => {
-  if (v.disposisi_po != 4) return false
+  if (v.disposisi_po != 4)  return false
 
   // Truck langsung bisa GR
   if (v.jenis_kirim == 1) return true
@@ -208,7 +226,26 @@ const canShowGR = (v: any) => {
   // Ship harus sudah approve Shipping
   // return v.status == 1
 }
+const histories = ref<any[]>([])
+const historyDialog = ref(false)
+const loadingHistory = ref(false)
 
+const fetchHistory = async (id: any) => {
+  loadingHistory.value = true
+
+  try {
+    const res = await axios.get(`/inventory/purchase-order/${id}/history`)
+    console.log(res)
+    histories.value = res.data.history || []
+  } finally {
+    loadingHistory.value = false
+  }
+}
+
+const onHistory = async (id: any) => {
+  await fetchHistory(id)
+  historyDialog.value = true
+}
 const onCancel = async (id: number) => {
   const { value: reason } = await Swal.fire({
     title: 'Cancel PO',
@@ -228,12 +265,12 @@ const onCancel = async (id: number) => {
     },
   })
 
-  if (!reason) return
+  // if (!reason) return
 
   try {
     showLoadingAlert('Menyimpan...', 'Mohon menunggu')
 
-    await axios.post(`/inventory/purchase-order/${id}/cancel`, {
+    const res = await axios.post(`/inventory/purchase-order/${id}/cancel`, {
       cancel_reason: reason,
     })
 
@@ -244,6 +281,8 @@ const onCancel = async (id: number) => {
 
     await getData()
   } catch (err) {
+        console.log(err)
+
     await showErrorAlert({
       title: 'Error',
       text: getApiErrorMessage(err, 'Gagal cancel PO'),
@@ -252,59 +291,54 @@ const onCancel = async (id: number) => {
     closeAlert()
   }
 }
+const dialogClose = ref(false)
+const closeId = ref<number | null>(null)
+const isClosing = ref(false)
 
-const onClose = async (id: number) => {
-  const { value: formValues } = await Swal.fire({
-    title: 'Close PO',
-    html: `
-      <div style="text-align:left">
-        <label>Tanggal Close</label>
-        <input id="swal-tanggal" type="date" class="swal2-input">
+const closeForm = reactive({
+  tanggal_close: '',
+  volume_close: 0,
+})
 
-        <label>Volume Close</label>
-        <input id="swal-volume" type="number" class="swal2-input" placeholder="Volume Close">
-      </div>
-    `,
-    focusConfirm: false,
-    showCancelButton: true,
-    confirmButtonText: 'Simpan',
-    cancelButtonText: 'Batal',
+const openCloseDialog = (id: number) => {
+  closeId.value = id
+  closeForm.tanggal_close = new Date().toISOString().slice(0, 10)
+  closeForm.volume_close = 0
+  dialogClose.value = true
+}
 
-    preConfirm: () => {
-      const tanggal = (
-        document.getElementById('swal-tanggal') as HTMLInputElement
-      )?.value
+const submitClosePO = async () => {
+  if (!closeForm.tanggal_close) {
+    await showWarningAlert({
+      title: 'Validasi',
+      text: 'Tanggal close wajib diisi',
+    })
 
-      const volume = (
-        document.getElementById('swal-volume') as HTMLInputElement
-      )?.value
+    return
+  }
 
-      if (!tanggal) {
-        Swal.showValidationMessage('Tanggal Close wajib diisi')
-        return false
-      }
+  if (!closeForm.volume_close || Number(closeForm.volume_close) <= 0) {
+    await showWarningAlert({
+      title: 'Validasi',
+      text: 'Volume close wajib diisi dan harus lebih dari 0',
+    })
 
-      if (!volume || Number(volume) <= 0) {
-        Swal.showValidationMessage('Volume Close wajib diisi')
-        return false
-      }
+    return
+  }
 
-      return {
-        tanggal_close: tanggal,
-        volume_close: Number(volume),
-      }
-    },
-  })
+  if (!closeId.value) return
 
-  if (!formValues) return
+  isClosing.value = true
 
   try {
-    showLoadingAlert('Menyimpan...', 'Mohon menunggu')
+    const res = await axios.post(
+      `/inventory/purchase-order/${closeId.value}/close`,
+      {
+        tanggal_close: closeForm.tanggal_close,
+        volume_close: Number(closeForm.volume_close),
+      })
 
-    await axios.post(
-      `/inventory/purchase-order/${id}/close`,
-      formValues,
-    )
+    dialogClose.value = false
 
     await showSuccessAlert({
       title: 'Berhasil',
@@ -318,9 +352,10 @@ const onClose = async (id: number) => {
       text: getApiErrorMessage(err, 'Gagal close PO'),
     })
   } finally {
-    closeAlert()
+    isClosing.value = false
   }
 }
+
 const loadingExport = ref(false)
 
 const exportExcel = async () => {
@@ -367,6 +402,97 @@ const exportExcel = async () => {
     closeAlert()
   }
 }
+
+
+const permissionStore = usePermissionStore()
+const isCheckingPermission = ref(true)
+
+const canView = computed(() => {
+  return permissionStore.can('purchase_order_trade.view')
+})
+
+const canCreate = computed(() => {
+  return permissionStore.can('purchase_order_trade.create')
+})
+
+const canUpdate = computed(() => {
+  return permissionStore.can('purchase_order_trade.edit')
+})
+
+const canExport = computed(() => {
+  return permissionStore.can('purchase_order_trade.export')
+})
+
+const canClose = computed(() => {
+  return permissionStore.can('purchase_order_trade.close')
+})
+
+const canClosePO = (v: any) => {
+  return (
+    canClose.value &&
+    Number(v.ceo_result) === 1 &&
+    Number(v.is_close) === 0
+  )
+}
+const canGR = computed(() => {
+  return permissionStore.can('goods_receipt_trade.view')
+})
+// const loadCurrentUser = async (): Promise<void> => {
+//   try {
+//     const res = await axios.get('/auth/me', {
+//       headers: { Accept: 'application/json' },
+//     })
+
+//     currentUser.value = res.data?.data || null
+
+//     console.log('CURRENT USER', currentUser.value)
+//   } catch (error) {
+//     console.error('[AUTH] Failed load current user', error)
+//     currentUser.value = null
+//   }
+// }
+// onMounted(async () => {
+//   await permissionStore.loadPermissions()
+
+//   if (!canView.value) {
+//     await router.replace('/forbidden')
+//     return
+//   }
+
+//   isCheckingPermission.value = false
+
+//   await getData()
+//   await loadCurrentUser()
+
+
+//   getData()
+
+
+//   const success = route.query.success
+
+//   if (success) {
+//     await router.replace({
+//       path: '/non_trade/purchase_order',
+//       query: {},
+//     })
+
+//     setTimeout(() => {
+//       if (success === 'created') {
+//         showSuccessToast({
+//           title: 'Berhasil',
+//           text: 'Purchase Order berhasil disimpan.',
+//         })
+//       }
+
+//       if (success === 'updated') {
+//         showSuccessToast({
+//           title: 'Berhasil',
+//           text: 'Purchase Order berhasil diperbarui.',
+//         })
+//       }
+//     }, 300)
+//   }
+// })
 // AUTO FETCH
 onMounted(() => {
   getData()
@@ -429,7 +555,26 @@ const chipColor: Record<number, string> = {
   5: 'error',
 }
 
+const formatMoney = (value: number | null): string => {
+   if (value === null || value === undefined) return '0'
+  return new Intl.NumberFormat('id-ID').format(value)
+}
 
+const onlyNumber = (e: KeyboardEvent): void => {
+  onlyNumberKeypress(e)
+}
+
+const parse = (val: string) =>
+  Number(val.replace(/[^\d]/g, ""))
+
+const requiredNotZero = (label: string)=> {
+  return (v: any) =>
+    v !== null &&
+    v !== undefined &&
+    v !== '' && v !== '0' &&
+    v !== 0
+      || `${label} wajib diisi dan tidak boleh 0`
+}
 </script>
 <template>
   <section>
@@ -497,6 +642,7 @@ const chipColor: Record<number, string> = {
 
       <div class="d-flex gap-2 mt-4">
         <VBtn
+          v-if="canExport"
           color="success"
           prepend-icon="mdi-file-excel"
           :loading="loadingExport"
@@ -517,7 +663,7 @@ const chipColor: Record<number, string> = {
     <!-- Table -->
     <VCard>
       <VCardText class="d-flex flex-wrap gap-4 align-center">
-       <VBtn
+       <VBtn v-if="canCreate"
         to="po-supplier/add"
         >
         <VIcon start icon="ri-add-circle-line"/> Tambah Data
@@ -575,6 +721,16 @@ const chipColor: Record<number, string> = {
                 >
                    Pengajuan ulang ke - {{ v.resubmission_count }}
                 </VChip>
+                <div>
+                  <VChip v-if="v.is_close == 1"
+                    size="small"
+                    color="error"
+                    class="mb-0"
+                  >
+                     Close PO : Rp {{ formatNumber(v.volume_close) }}
+                  </VChip>
+
+                </div>
             </td>
 
             <td>{{ formatDate(v.tanggal_inven) }}</td>
@@ -637,7 +793,7 @@ const chipColor: Record<number, string> = {
                   </VMenu>
                 </VBtn>
                 <VBtn
-                  v-if="canShowShipping(v)"
+                  v-if="canShowShipping(v) && v.is_close !=1"
                   size="x-small"
                   color="info"
                   variant="tonal"
@@ -648,7 +804,7 @@ const chipColor: Record<number, string> = {
                   <VTooltip activator="parent">Shipping Instruction</VTooltip>
                 </VBtn>
                 <VBtn
-                  v-if="canShowGR(v)"
+                  v-if="canShowGR(v) && canGR && v.is_close !=1"
                   size="x-small"
                   color="primary"
                   variant="tonal"
@@ -658,7 +814,7 @@ const chipColor: Record<number, string> = {
                   <VIcon icon="mdi-truck" />
                   <VTooltip activator="parent" location="bottom">Goods Receipt</VTooltip>
                 </VBtn>
-                <VBtn size="small" color="default" variant="plain" icon>
+                <VBtn size="small" color="default" variant="plain" icon v-if="v.is_close !=1">
                   <VIcon icon="mdi-dots-vertical" />
 
                   <VMenu activator="parent">
@@ -670,24 +826,30 @@ const chipColor: Record<number, string> = {
                         <VListItemTitle class="text-sm">Lihat Detail</VListItemTitle>
                       </VListItem> -->
 
-                      <VListItem @click="onEdit(v.id_master)">
+                      <VListItem @click="onHistory(v.id_master)" v-if="v.resubmission_count>0" >
+                        <template #prepend>
+                          <VIcon icon="mdi-history" :size="20" class="me-3" />
+                        </template>
+                        <VListItemTitle class="text-sm">History</VListItemTitle>
+                      </VListItem>
+                      <VListItem @click="onEdit(v.id_master)" v-if="canUpdate" >
                         <template #prepend>
                           <VIcon icon="mdi-pencil-outline" :size="20" class="me-3" />
                         </template>
                         <VListItemTitle class="text-sm">Edit</VListItemTitle>
                       </VListItem>
-                      <VListItem @click="onClose(v.id_master)"  v-if="v.disposisi_po==4">
+                      <VListItem @click="openCloseDialog(v.id_master)" v-if="canClosePO(v)">
                         <template #prepend>
                           <VIcon icon="mdi-window-close" :size="20" class="me-3" />
                         </template>
                         <VListItemTitle class="text-sm">Close</VListItemTitle>
                       </VListItem>
-                      <VListItem @click="onCancel(v.id_master)">
+                      <!-- <VListItem @click="onCancel(v.id_master)" v-if="v.disposisi_po==4">
                         <template #prepend>
                           <VIcon icon="mdi-cancel" :size="20" class="me-3" />
                         </template>
                         <VListItemTitle class="text-sm">Cancel</VListItemTitle>
-                      </VListItem>
+                      </VListItem> -->
                       <!-- <VListItem @click="onShip(v.id_master)" v-if="canShowShipping(v)">
                         <template #prepend>
                           <VIcon icon="mdi-cargo-ship" :size="20" class="me-3" />
@@ -746,6 +908,300 @@ const chipColor: Record<number, string> = {
         </div>
       </VCardText>
     </VCard>
+    <VDialog
+    v-model="historyDialog"
+    max-width="900">
+    
+  <VCard>
+    <VCardTitle class="d-flex align-center">
+      <VIcon icon="tabler-history" class="me-2" />
+      Riwayat Pengajuan PO
+    </VCardTitle>
+
+    <VDivider />
+
+    <VCardText>
+      <template v-if="histories.length">
+
+        <VExpansionPanels variant="accordion">
+
+          <VExpansionPanel
+            v-for="(h,index) in histories"
+            :key="index"
+          >
+
+            <VExpansionPanelTitle>
+
+              <div class="d-flex justify-space-between w-100 align-center me-4">
+
+                <div>
+                  <div class="font-weight-bold">
+                    Pengajuan #{{ histories.length - index }}
+                  </div>
+
+                  <div class="text-caption text-medium-emphasis">
+                    {{ h.lastupdate_time }}
+                  </div>
+                </div>
+
+                <VChip
+                  color="primary"
+                  size="small"
+                >
+                  {{ h.lastupdate_by }}
+                </VChip>
+
+              </div>
+
+            </VExpansionPanelTitle>
+
+            <VExpansionPanelText>
+
+              <VTable density="compact">
+
+                <tbody>
+
+                  <tr>
+                    <td width="220">Tanggal PO</td>
+                    <td>{{ h.tanggal_inven || '-' }}</td>
+                  </tr>
+                  <tr>
+                    <td width="220">Vendor</td>
+                    <td>{{ h.vendor?.nama_vendor || '-' }}</td>
+                  </tr>
+
+                  <tr>
+                    <td>Produk</td>
+                    <td>{{ h.produk?.jenis_produk +' - '+h.produk?.merk_dagang  || '-' }}</td>
+                  </tr>
+
+                  <tr>
+                    <td>Terminal</td>
+                    <td> {{ h.terminal?.nama_terminal+' - '+ h.terminal?.lokasi_terminal|| '-' }}</td>
+                  </tr>
+
+                  <tr>
+                    <td>Volume</td>
+                    <td>{{ formatNumber(h.volume_po) }} Liter</td>
+                  </tr>
+
+                  <tr>
+                    <td>Jenis Kirim</td>
+                    <td>  {{  h.jenis_kirim === 1 ? 'Truck'
+                        : h.jenis_kirim === 2
+                          ? 'Ship'
+                          : '-' }}</td>
+                  </tr>
+                  <tr>
+                    <td>Jenis Harga</td>
+                    <td>  {{  h.jenis_harga === 1 ? 'Final' : 'Sementara' }}</td>
+                  </tr>
+                  <tr>
+                    <td>Terms</td>
+                    <td> {{  h.terms  }}  {{  h.terms == 'NET' ? h.terms_day:'' }}</td>
+                  </tr>
+
+                  <tr>
+                    <td>Kode Tax</td>
+                    <td>{{ h.kd_tax }}</td>
+                  </tr>
+                  <tr>
+                    <td>Harga Dasar</td>
+                    <td>Rp {{ formatNumber(h.harga_tebus) }}</td>
+                  </tr>
+                  <div v-if="h.kategori_oa==2">
+                    <tr>
+                      <td>Ongkos Angkut</td>
+                      <td>Rp {{ formatNumber(h.ongkos_angkut) }}</td>
+                    </tr>
+                    <tr>
+                      <td>Kategori Plat</td>
+                      <td>Rp {{ h.kategori_plat }}</td>
+                    </tr>
+                  </div>
+                   <tr>
+                    <td>PPBKB</td>
+                    <td class="font-weight-bold">
+                       {{ (h.nilai_pbbkb) }} % <span v-if="h.pbbkb>0">Rp {{ formatNumber(h.pbbkb) }}</span>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>PPH 22</td>
+                    <td class="font-weight-bold">
+                      Rp {{ formatNumber(h.pph_22) }}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>Iuran Migas</td>
+                    <td class="font-weight-bold">
+                      Rp {{ formatNumber(h.nominal_migas) }}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>Sub Total</td>
+                    <td class="font-weight-bold">
+                      Rp {{ formatNumber(h.subtotal) }}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>DPP 11/12</td>
+                    <td class="font-weight-bold">
+                      Rp {{ formatNumber(h.dpp_11_12) }}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>PPN 12%</td>
+                    <td class="font-weight-bold">
+                      Rp {{ formatNumber(h.ppn_12) }}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>Total Order</td>
+                    <td class="font-weight-bold text-primary">
+                      Rp {{ formatNumber(h.total_order) }}
+                    </td>
+                  </tr>
+
+                  <tr>
+                    <td>Catatan PO</td>
+                    <td>{{ h.keterangan || '-' }}</td>
+                  </tr>
+                  <tr>
+                    <td>Internal Notes</td>
+                    <td>{{ h.internal_notes || '-' }}</td>
+                  </tr>
+
+                  <tr v-if="h.keterangan_resubmission">
+                    <td>Alasan Pengajuan Ulang</td>
+                    <td>
+                      {{ h.keterangan_resubmission }}
+                    </td>
+                  </tr>
+
+                </tbody>
+
+              </VTable>
+
+            </VExpansionPanelText>
+
+          </VExpansionPanel>
+
+        </VExpansionPanels>
+
+      </template>
+
+      <VAlert
+        v-else
+        type="info"
+        variant="tonal"
+      >
+        Belum ada riwayat pengajuan.
+      </VAlert>
+
+    </VCardText>
+    <VCardActions>
+        <VSpacer />
+
+        <VBtn
+          color="secondary"
+          variant="flat"
+          @click="historyDialog = false"
+        >
+          Tutup
+        </VBtn>
+      </VCardActions>
+  </VCard>
+    </VDialog>
+
+    <VDialog
+      v-model="dialogClose"
+      max-width="520"
+      persistent
+    >
+      <VCard rounded="lg">
+        <VCardTitle class="d-flex align-center gap-3 px-5 pt-5">
+          <VAvatar
+            color="warning"
+            variant="tonal"
+            size="42"
+          >
+            <VIcon icon="tabler-lock-check" />
+          </VAvatar>
+
+          <div>
+            <div class="text-h6 font-weight-bold">
+              Close PO
+            </div>
+
+            <div class="text-caption text-medium-emphasis">
+              Konfirmasi penutupan Purchase Order
+            </div>
+          </div>
+        </VCardTitle>
+
+        <VDivider class="mt-4" />
+
+        <VCardText class="pa-5">
+          <VAlert
+            color="warning"
+            variant="tonal"
+            border="start"
+            class="mb-5"
+          >
+            Pastikan tanggal dan volume close sudah benar sebelum disimpan.
+          </VAlert>
+
+          <VRow>
+            <VCol cols="12" md="6">
+              <VTextField
+                v-model="closeForm.tanggal_close"
+                label="Tanggal Close *"
+                type="date"
+                variant="outlined"
+                density="comfortable"
+              />
+            </VCol>
+
+            <VCol cols="12" md="6">
+              <VTextField
+                label="Volume Close *"
+                 @keypress="onlyNumber"
+                  inputmode="numeric"
+                  class="text-end"
+                  :model-value="formatMoney(closeForm.volume_close)"
+                  @update:modelValue="(val: string) => closeForm.volume_close = parse(val) || 0"
+                  suffix="Liter"
+                  :rules="[requiredNotZero('Volume PO')]"
+              />
+            </VCol>
+          </VRow>
+        </VCardText>
+
+        <VDivider />
+
+        <VCardActions class="pa-5">
+          <VSpacer />
+
+          <VBtn
+            variant="tonal"
+            color="secondary"
+            :disabled="isClosing"
+            @click="dialogClose = false"
+          >
+            Batal
+          </VBtn>
+
+          <VBtn
+            color="primary"
+            variant="flat"
+            :loading="isClosing"
+            @click="submitClosePO"
+          >
+            Ya, Close PO
+          </VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
   </section>
 </template>
 <style>
@@ -753,4 +1209,7 @@ const chipColor: Record<number, string> = {
   .custom-table td {
     padding: 12px 16px;
   }
+.swal2-container.swal2-center {
+  z-index: 99999 !important;
+}
 </style>

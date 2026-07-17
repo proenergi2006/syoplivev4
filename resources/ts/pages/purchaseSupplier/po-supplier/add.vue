@@ -18,6 +18,7 @@ import {
   closeAlert,
 } from '@/utils/alert'
 
+
 const dialogSubmit = ref(false)
 const route = useRoute()
 const router = useRouter()
@@ -69,11 +70,12 @@ const form = reactive({
   biaya_oa: null,
   keterangan_biaya_oa: '',
   alokasi_biaya_oa: false,
+  total_biaya_oa: 0,
 
   //biaya lain
   biaya_lain_oa: null,
   ket_biaya_lain_oa: '',
-  alokasi_barang_oa_lain: false,
+  alokasi_biaya_oa_lain: false,
   jumlah_biaya: 0,
 
   //biaya pph
@@ -98,13 +100,14 @@ const form = reactive({
   total_order: 0,
   catatan_po: '',
   internal_notes: '',
+  catatan_resubmit:'',
 
   // approval
   disposisi_po : 0,
   revert_cfo:0,
   revert_ceo:0,
-  revert_cfo_summary:0,
-  revert_ceo_summary:0,
+  revert_cfo_summary:'',
+  revert_ceo_summary:'',
 })
 const produkAccList = ref<any[]>([])
 const akunAccList = ref<any[]>([])
@@ -115,9 +118,9 @@ let controller: AbortController | null = null
 const safe =  (val: any) => Number(val) || 0
 const val = ''
 
-const showBiayaOA = ref(false)
-const showKodeItemOA = ref(false)
-const showKodeAkunOA = ref(false)
+// const showBiayaOA = ref(false)
+// const showKodeItemOA = ref(false)
+// const showKodeAkunOA = ref(false)
 const showpph = computed(() => form.kd_tax === 'EC')
 const showpbbkb = computed(() => Number(form.pbbkb) > 0)
 const showNetInput = ref(false)
@@ -166,6 +169,13 @@ const totalPO = computed(() => {
   return safe(subtotal.value)+safe(ppn.value)+safe(pph22.value)+safe(pbbkbval.value)
 })
 
+watch(
+  oaValue,
+  value => {
+    form.total_biaya_oa = value
+  },
+  { immediate: true },
+)
 const isSaving = ref(false)
 //API AOL Produk
 const page = ref(1)
@@ -189,7 +199,7 @@ const getAccProduk = async (
     })
 
     const items = res.data.data || []
-
+    // console.log(res)
     if (reset) {
       produkAccList.value = items
     } else {
@@ -320,17 +330,20 @@ const onScroll = (e: any) => {
       kd_tax: data.kd_tax,
       terms: data.terms,
       terms_day: data.terms_day,
-      volume_po: data.volume_po,
+      volume_po: data.volume_po, 
+      kategori_oa: Number(data.kategori_oa), 
+      jenis_oa: Number(data.is_biaya), 
       harga_tebus: data.harga_tebus,
       ongkos_angkut: data.ongkos_angkut,
       iuran_migas: data.iuran_migas,
       nominal_migas: data.nominal_migas,
       catatan_po: data.keterangan,
       internal_notes: data.internal_notes,
+      disposisi_po: Number(data.disposisi_po),
       revert_cfo: data.revert_cfo,
       revert_ceo: data.revert_ceo,
       revert_ceo_summary: data.revert_ceo_summary,
-      revert_cfo_Summary: data.revert_cfo_Summary,
+      revert_cfo_summary: data.revert_cfo_summary,
     })
 
        // DETAIL ACCURATE
@@ -344,6 +357,7 @@ const onScroll = (e: any) => {
       
 
         Object.assign(form, acc.data.data)
+        console.log(form)
       }
 
   } catch (err) {
@@ -425,25 +439,36 @@ const requiredNotZero = (label: string)=> {
       || `${label} wajib diisi dan tidak boleh 0`
 }
 
-watch(
-  () => form.kategori_oa,
-  (val) => {
-    showBiayaOA.value = val === 2
-  }
-)
+const showBiayaOA = computed(() => {
+  return Number(form.kategori_oa) === 2
+})
 
-watch(
-  () => form.jenis_oa,
-  (val) => {
-    showKodeItemOA.value = val === 0
-  }
-)
-watch(
-  () => form.jenis_oa,
-  (val) => {
-    showKodeAkunOA.value = val === 1
-  }
-)
+const showKodeItemOA = computed(() => {
+  return Number(form.kategori_oa) === 2 && Number(form.jenis_oa) === 0
+})
+
+const showKodeAkunOA = computed(() => {
+  return Number(form.kategori_oa) === 2 && Number(form.jenis_oa) === 1
+})
+// watch(
+//   () => form.kategori_oa,
+//   (val) => {
+//     showBiayaOA.value = val === 2
+//   }
+// )
+
+// watch(
+//   () => form.jenis_oa,
+//   (val) => {
+//     showKodeItemOA.value = val === 0
+//   }
+// )
+// watch(
+//   () => form.jenis_oa,
+//   (val) => {
+//     showKodeAkunOA.value = val === 1
+//   }
+// )
 
 watch(
   () => form.terms,
@@ -477,7 +502,55 @@ watch(() => form.iuran_migas, (val) => {
 //   },
 //   { immediate: true }
 // )
+watch(
+  () => form.kategori_oa,
+  (val) => {
+    if (Number(val) !== 2) {
+      form.jenis_oa = 0
+      form.kode_item_oa = null
+      form.keterangan_item_oa = ''
+      form.alokasi_item_oa = false
 
+      form.biaya_oa = null
+      form.keterangan_biaya_oa = ''
+      form.alokasi_biaya_oa = false
+
+      form.biaya_lain_oa = null
+      form.ket_biaya_lain_oa = ''
+      form.alokasi_biaya_oa_lain = false
+      form.jumlah_biaya = 0
+
+      form.ongkos_angkut = 0
+      form.kategori_plat = ''
+    }
+  }
+)
+
+const selectedAccText = reactive({
+  kode_item: '',
+  kode_item_oa: '',
+
+  biaya_oa: '',
+  biaya_lain_oa: '',
+  biaya_pph22: '',
+  biaya_pbbkb: '',
+  biaya_migas: '',
+})
+const setSelectedAccText = (
+  list: any[],
+  selectedId: any,
+  targetKey: keyof typeof selectedAccText,
+  labelKey = 'text',
+) => {
+  if (!selectedId) {
+    selectedAccText[targetKey] = ''
+    return
+  }
+
+  const item = list.find(i => String(i.id) === String(selectedId))
+
+  selectedAccText[targetKey] = item?.[labelKey] || ''
+}
 const showAkun = computed(() => {
   return (
     showpph.value ||
@@ -735,8 +808,7 @@ const submit = async () => {
 
             <VSheet
               rounded="lg"
-              color="surface"
-              class="pa-3"
+              class="pa-3 bg-white"
             >
               <div class="text-caption text-medium-emphasis mb-1">
                 Alasan Pengembalian :
@@ -1001,7 +1073,7 @@ const submit = async () => {
                             :rules="[required('Kode Tax')]"
                           />
                         </VCol>
-                        <VCol cols="12" md="2">
+                        <VCol cols="12" md="3">
                           <VSelect
                             v-model="form.terms"
                             label="Terms *"
@@ -1053,7 +1125,7 @@ const submit = async () => {
                           />
                         </VCol>
     
-                        <VCol cols="12" md="3">
+                        <VCol cols="12" md="4">
                           <VSelect
                             label="Kategori OA"
                             v-model="form.kategori_oa"
@@ -1462,6 +1534,7 @@ const submit = async () => {
                           attach: 'body' }"
                           placeholder="Pilih akun biaya lain Accurate"
                           @update:search="onSearchAkun"
+                          @update:model-value="val => setSelectedAccText(akunAccList, val, 'biaya_lain_oa')"
                           :rules="[required('akun biaya lain Accurate')]"
                         >
                           <template #prepend-item>
@@ -1515,7 +1588,7 @@ const submit = async () => {
                     <VCol cols="12" md="2">
                       <div class="d-flex align-center h-100">
                         <VCheckbox
-                         v-model="form.alokasi_barang_oa_lain"
+                         v-model="form.alokasi_biaya_oa_lain"
                           label="Alokasi ke Barang"
                           hide-details
                         />
@@ -1789,6 +1862,15 @@ const submit = async () => {
                     label="Internal Notes"
                     rows="4"
                     variant="outlined"
+                    class="mb-4"
+                  />
+
+                  <VTextarea
+                    v-if="form.disposisi_po==4"
+                    v-model="form.catatan_resubmit"
+                    label="Catatan Pengajuan Ulang"
+                    rows="4"
+                    variant="outlined"
                   />
     
                 </VCardText>
@@ -1987,7 +2069,7 @@ const submit = async () => {
         </VRow>
         <VDivider class="mt-2" />
          <!-- OA -->
-        <div v-if="showBiayaOA" class="mt-2">
+        <div v-if="showKodeItemOA" class="mt-2">
           <VRow dense>
             <VCol cols="12" md="4">
               <div class="text-caption">Kode Item OA Accurate</div>
@@ -2003,6 +2085,48 @@ const submit = async () => {
               <div class="text-caption">Alokasi</div>
               <VChip size="small" :color="form.alokasi_item_oa ? 'success' : 'error'">
                 {{ form.alokasi_item_oa ? 'Yes' : 'No' }}
+              </VChip>
+            </VCol>
+          </VRow>
+          </div>
+        <div v-if="showKodeAkunOA" class="mt-2">
+          <VRow dense>
+            <VCol cols="12" md="4">
+              <div class="text-caption">Akun biaya OA Accurate</div>
+              <div class="text-body-2">{{ form.biaya_oa || '-' }}</div>
+            </VCol>
+
+            <VCol cols="12" md="4">
+              <div class="text-caption">Keterangan</div>
+              <div class="text-body-2">{{ form.keterangan_biaya_oa || '-' }}</div>
+            </VCol>
+
+            <VCol cols="12" md="2">
+              <div class="text-caption">Alokasi</div>
+              <VChip size="small" :color="form.alokasi_biaya_oa ? 'success' : 'error'">
+                {{ form.alokasi_biaya_oa ? 'Yes' : 'No' }}
+              </VChip>
+            </VCol>
+          </VRow>
+
+          <VDivider class="mt-2" />
+          <VRow dense>
+            <VCol cols="12" md="4">
+              <div class="text-caption">Akun biaya lain Accurate</div>
+              <div class="text-body-2">
+                {{  form.biaya_lain_oa +' -'+selectedAccText.biaya_lain_oa ||'-' }}
+              </div>
+            </VCol>
+
+            <VCol cols="12" md="4">
+              <div class="text-caption">Keterangan</div>
+              <div class="text-body-2">{{ form.ket_biaya_lain_oa || '-' }}</div>
+            </VCol>
+
+            <VCol cols="12" md="2">
+              <div class="text-caption">Alokasi</div>
+              <VChip size="small" :color="form.alokasi_biaya_oa_lain ? 'success' : 'error'">
+                {{ form.alokasi_biaya_oa_lain ? 'Yes' : 'No' }}
               </VChip>
             </VCol>
           </VRow>
@@ -2185,6 +2309,12 @@ const submit = async () => {
               {{ form.internal_notes || '-' }}
             </div>
             </VCol>
+            <VCol cols="12" md="6" v-if="form.disposisi_po==4">
+              <div class="text-black">Catatan Pengajuan Ulang :</div>
+             <div class="text-black font-weight-semibold">
+               {{ form.catatan_resubmit || '-' }}
+             </div>
+             </VCol>
           </VRow>
 
         </VCard>

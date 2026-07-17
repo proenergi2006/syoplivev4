@@ -1,5 +1,5 @@
 <?php
-namespace App\Services;
+namespace App\Services\Trade\PurchaseOrder;
 
 use App\Models\Cabang;
 use App\Models\InventoryVendorPo;
@@ -11,6 +11,8 @@ use Exception;
 use Illuminate\Support\Facades\Log;
 use App\Mail\POTradingMail;
 use App\Models\InventoryVendorPoOld;
+use App\Models\User;
+use App\Services\AccurateApiService;
 use Illuminate\Support\Facades\Mail;
 use Throwable;
 
@@ -18,7 +20,7 @@ class PurchaseOrderInventoryService
 {
     public function create(array $form, array $user)
     {
-         return DB::transaction(function () use ($form, $user) {
+       return DB::transaction(function () use ($form, $user) {
 
         // $last = DB::table('inventory_vendor_po')->count();
 
@@ -45,7 +47,7 @@ class PurchaseOrderInventoryService
         $dpp = $form['dpp'] ?? 0;
         $pph22 = $form['pph22'] ?? 0;
 
-        $total = $subtotal + $ppn - $pph22;
+        // $total = $subtotal + $ppn - $pph22;
 
         $dataPo = [
             'id_master' => $idMaster,
@@ -61,12 +63,15 @@ class PurchaseOrderInventoryService
             'ppn_12' => $ppn,
             'dpp_11_12' => $dpp,
             'pph_22' => $pph22,
-            'total_order' => $total,
+            'total_order' => $form['total_order'],
             'terms' => $form['terms'],
             'terms_day' => $form['terms_day'],
             'jenis_harga' => $form['jenis_harga'],
             'jenis_kirim' => $form['jenis_kirim'],
             'kategori_plat' => $form['kategori_plat'],
+            'kategori_oa' => $form['kategori_oa'],
+            'ongkos_angkut' => $form['ongkos_angkut'],
+            'is_biaya' => $form['jenis_oa'],
             'keterangan' => $form['catatan_po'],
             'internal_notes' => $form['internal_notes'],
             'iuran_migas' => $form['iuran_migas'],
@@ -100,7 +105,7 @@ class PurchaseOrderInventoryService
         }
 
         $idAccurate = $res['r']['id'] ?? null;
-        $res2=$this->closeAccurate($idAccurate, $form);
+        $res2=$this->closeAccurate($idAccurate, $form, 'Menunggu Approve');
         
         if (!$res2 || ($res2['s'] ?? false) == false) {
 
@@ -120,10 +125,12 @@ class PurchaseOrderInventoryService
         ]);
         DB::connection('mysql_old')
         ->table('new_pro_inventory_vendor_po')
+        ->where('id_master', $idMaster)
         ->update([
             'id_accurate' => $idAccurate
         ]);
 
+        
         DB::afterCommit(function () use ($nomorPO, $form, $user) {
             Mail::to('gary.salsabilla@proenergi.com')
                 ->send(new POTradingMail(
@@ -150,9 +157,14 @@ class PurchaseOrderInventoryService
             $data[] = ['kode' => $form['kode_item'], 'keterangan' => 'kode_item'];
         }
 
-        if (!empty($form['kode_item2'])) {
-            $data[] = ['kode' => $form['kode_item2'], 'keterangan' => 'kode_oa'];
+        if (!empty($form['kode_item_oa'])) {
+            $data[] = ['kode' => $form['kode_item_oa'], 'keterangan' => 'kode_oa'];
         }
+
+        $terminal = Terminal::where('id', $form['terminal'])
+        ->first();
+        $cabang = Cabang::where('id', $terminal->id_cabang)
+        ->first();
 
         foreach ($data as $item) {
 
@@ -184,8 +196,9 @@ class PurchaseOrderInventoryService
                 'quantity' => $quantity,
                 'unitPrice' => $unitprice,
                 'useTax1' => $ppninclude,
-                'jenis' => $jenis,
+                'warehouseName' => $cabang->inisial_cabang,
                 'detailNotes' => $detailNotes,
+                'departmentName' => $cabang->nama_cabang,
             ];
         }
 
@@ -198,8 +211,8 @@ class PurchaseOrderInventoryService
         if (!empty($form['biaya_oa'])) {
             $detailExpenses[] = [
                 'accountNo' => $form['biaya_oa'],
-                'expenseAmount' => $form['jumlah_biaya_oa'] ?? 0,
-                'allocateToItemCost' => (bool) $form['alokasi_barang_oa'],
+                'expenseAmount' => $form['total_biaya_oa'] ?? 0,
+                'allocateToItemCost' => (bool) $form['alokasi_biaya_oa'],
                 'expenseNotes' => $form['keterangan_biaya_oa'] ?? '',
             ];
         }
@@ -207,8 +220,8 @@ class PurchaseOrderInventoryService
         if (!empty($form['biaya_lain_oa'])) {
             $detailExpenses[] = [
                 'accountNo' => $form['biaya_lain_oa'],
-                'expenseAmount' => $form['jumlah_biaya_lain'] ?? 0,
-                'allocateToItemCost' => (bool) $form['alokasi_barang_oa_lain'],
+                'expenseAmount' => $form['jumlah_biaya'] ?? 0,
+                'allocateToItemCost' => (bool) $form['alokasi_biaya_oa_lain'],
                 'expenseNotes' => $form['ket_biaya_lain_oa'] ?? '',
             ];
         }
@@ -239,6 +252,7 @@ class PurchaseOrderInventoryService
                 'expenseNotes' => $form['keterangan_migas'] ?? '',
             ];
         }
+
 
         return $detailExpenses;
     }
@@ -284,7 +298,7 @@ class PurchaseOrderInventoryService
 
         return str_pad($next, 3, '0', STR_PAD_LEFT)
             . '/' . strtoupper($vendor->inisial_vendor)
-            . '/' . strtoupper($cabang->kode)
+            . '/' . strtoupper($cabang->inisial_cabang)
             . '/' . $bulan
             . '/' . $tahun;
     }
@@ -296,11 +310,10 @@ class PurchaseOrderInventoryService
         ->first();
         $vendor = MasterVendor::where('id', $form['vendor'])
         ->first();
-        $cabang = Cabang::where('id', $form['vendor'])
-        ->first();
         $terminal = $terminal->terminal;
         $tgl = Carbon::parse($form['tanggal_inven'])->format('d/m/Y');
 
+        $user = auth()->user()->load('cabang');
 
         
         if ($form['terms'] == 'NET') {
@@ -313,14 +326,14 @@ class PurchaseOrderInventoryService
                 'transDate' => $tgl,
                 'vendorNo' => $vendor->kode_vendor,
                 'number' => $nomorPO,
-                'branchName' => $cabang->nama === 'Kantor Pusat'
+                'branchName' => $user->cabang->nama_cabang === 'Kantor Pusat'
                     ? 'Head Office'
-                    : $cabang->nama,
+                    : $user->cabang->nama_cabang,
 
                 'paymentTermName' =>$payment ,
                 'description' => $form['catatan_po'],
 
-                'toAddress' => 'Graha Irama Lt 6 ...',
+                'toAddress' => 'Graha Irama Lt 6 Jl. HR Rasuna Said Kota Administrasi Jakarta Selatan DKI Jakarta Indonesia',
 
                 'detailItem' => $items,
                 'detailExpense' => $expenses,
@@ -332,29 +345,30 @@ class PurchaseOrderInventoryService
         );
         
     }
-    public function closeAccurate($id, $form)
+    public function closeAccurate($id, $form ,$reason)
     {
-
-        $cabang = Cabang::where('id', $form['vendor'])
+        $terminal = Terminal::where('id', $form['terminal'])
         ->first();
-        
+        $cabang = Cabang::where('id', $terminal->id_cabang)
+        ->first();
 
         return app(AccurateApiService::class)->post(
             config('services.accurate.base_url') . '/accurate/api/purchase-order/save.do',
             [
                 'id' => $id,
-                'branchName' => $cabang->nama === 'Kantor Pusat'
+                'branchName' => $cabang->nama_cabang === 'Kantor Pusat'
                     ? 'Head Office'
-                    : $cabang->nama,
+                    : $cabang->nama_cabang,
                 'manualClosed' => true,
-                'closeReason' => 'Menunggu Approve',
+                'closeReason' => $reason,
             ]
         );
     }
     public function openAccurate($id, $form)
     {
-
-        $cabang = Cabang::where('id', $form)
+        $terminal = Terminal::where('id', $form)
+        ->first();
+        $cabang = Cabang::where('id', $terminal->id_cabang)
         ->first();
         
 
@@ -362,9 +376,9 @@ class PurchaseOrderInventoryService
             config('services.accurate.base_url') . '/accurate/api/purchase-order/save.do',
             [
                 'id' => $id,
-                'branchName' => $cabang->nama === 'Kantor Pusat'
+                'branchName' => $cabang->nama_cabang === 'Kantor Pusat'
                     ? 'Head Office'
-                    : $cabang->nama,
+                    : $cabang->nama_cabang,
                 'manualClosed' => false
             ]
         );
@@ -395,9 +409,9 @@ class PurchaseOrderInventoryService
  
             $subtotal = $form['volume_po'] * $form['harga_tebus'];
 
-            $total = $subtotal
-                + ($form['ppn12'] ?? 0)
-                - ($form['pph22'] ?? 0);
+            // $total = $subtotal
+            //     + ($form['ppn12'] ?? 0)
+            //     - ($form['pph22'] ?? 0);
 
             $updateData = [
                 'id_terminal' => $form['terminal'],
@@ -408,14 +422,16 @@ class PurchaseOrderInventoryService
                 'ppn_12' => $form['ppn12'] ?? 0,
                 'dpp_11_12' => $form['dpp'] ?? 0,
                 'pph_22' => $form['pph22'] ?? 0,
-                'total_order' => $total,
+                'total_order' => $form['total_order'],
                 'kd_tax' => $form['kd_tax'],
                 'terms' => $form['terms'],
                 'terms_day' => $form['terms_day'],
+                'kategori_oa' => $form['kategori_oa'],
                 'kategori_plat' => $form['kategori_plat'],
                 'jenis_kirim' => $form['jenis_kirim'],
                 'jenis_harga' => $form['jenis_harga'],
                 'ongkos_angkut' => $form['ongkos_angkut'],
+                'is_biaya' => $form['jenis_oa'],
                 'internal_notes' => $form['internal_notes'],
                 'keterangan' => $form['catatan_po'],
                 'iuran_migas' => $form['iuran_migas'],
@@ -439,7 +455,7 @@ class PurchaseOrderInventoryService
                 $po->revert_ceo == 0 &&
                 ($po->resubmission_count ?? 0) < 3
             ) {
-                $this->saveHistory($po);
+                $this->saveHistory($po,$form['catatan_resubmit']);
 
                 $po->resubmission_count = ($po->resubmission_count ?? 0) + 1;
                 $po->is_resubmission = 1;
@@ -491,16 +507,27 @@ class PurchaseOrderInventoryService
 
                 $close = $this->closeAccurate(
                     $newId,
-                    $form
+                    $form,
+                    'Menunggu Approve'
                 );
 
                 if (($close['s'] ?? false) == false) {
                     throw new Exception('Gagal close Accurate');
                 }
-                DB::afterCommit(function () use ($po, $form, $user) { 
-                    Mail::to('gary.salsabilla@proenergi.com')->send( new POTradingMail( $po->nomor_po, $form, $user, 'resubmit' ) ); 
-                });
 
+                if ($po->disposisi_po>1){
+                
+                    DB::afterCommit(function () use ($po, $form, $user) { 
+                        $emails = User::whereHas('roles', function ($q) {
+                           $q->where('nama', 'Chief Executive Officer');
+                       })
+                       ->pluck('email')
+                       ->toArray();
+    
+                        Mail::to($emails)->send( new POTradingMail( $po->nomor_po, $form, $user, 'resubmit' ) ); 
+                    });
+                }
+                
                 DB::table('inventory_vendor_po')
                     ->where('id_master', $id)
                     ->update([
@@ -572,13 +599,19 @@ class PurchaseOrderInventoryService
 
 
                 }
+                
 
                 // 🔥 EMAIL SETELAH COMMIT
                 DB::afterCommit(function () use ($po, $form, $user) {
 
+                    $emails = User::whereHas('roles', function ($q) {
+                        $q->where('nama', 'Chief Executive Officer');
+                    })
+                    ->pluck('email')
+                    ->toArray();
                     $type = $form['decision'] == 1 ? 'need_ceo' : 'rejected';
 
-                    Mail::to('gary.salsabilla@proenergi.com')->send(
+                    Mail::to($emails)->send(
                         new POTradingMail(
                             $po->nomor_po,
                             [
@@ -671,24 +704,29 @@ class PurchaseOrderInventoryService
                 ]);
             }
 
+            $res=$this->openAccurate($po->id_accurate,  $po->id_terminal);
+                
+            if (!$res || ($res['s'] ?? false) == false) {
+
+                Log::info('Accurate response ', $res);
+
+                $message = is_array($res['d'])
+                    ? ($res['d']['message'] ?? json_encode($res['d']))
+                    : $res['d'];
+
+                throw new \Exception($message);
+            }
             DB::afterCommit(function () use ($po, $form, $user) {
 
-               $res=$this->openAccurate($po->id_accurate,  $po->id_vendor);
-                 
-                if (!$res || ($res['s'] ?? false) == false) {
-
-                    Log::info('Accurate response ', $res);
-
-                    $message = is_array($res['d'])
-                        ? ($res['d']['message'] ?? json_encode($res['d']))
-                        : $res['d'];
-
-                    throw new \Exception($message);
-                }
+                $emails = User::whereHas('departemen', function ($q) {
+                    $q->where('kode', 'PROC');
+                })
+                ->pluck('email')
+                ->toArray();
 
                 $type = $form['decision'] == 1 ? 'approved' : 'rejected';
 
-                Mail::to('gary.salsabilla@proenergi.com')->send(
+                Mail::to($emails)->send(
                     new POTradingMail(
                         $po->nomor_po,
                         [
@@ -716,15 +754,20 @@ class PurchaseOrderInventoryService
     //         ->pluck('email')
     //         ->toArray();
     // }
-   private function saveHistory($po): void
+   private function saveHistory($po,$catatan_resubmit): void
     {
         $data = (array) $po;
 
         unset($data['id']);
+        unset($data['id_master']);
 
         $data['id_po_supplier'] = $po->id_master;
+        $data['keterangan_resubmission'] = $catatan_resubmit;
 
         DB::table('inventory_vendor_po_history')->insert($data);
+        DB::connection('mysql_old')
+        ->table('new_pro_inventory_vendor_po_history')
+        ->insert($data);
     }
 
 
@@ -742,21 +785,25 @@ class PurchaseOrderInventoryService
                 'is_cancel' => 1,
                 'keterangan_cancel' => $cancelReason,
             ]);
+
+             DB::connection('mysql_old')
+            ->table('new_pro_inventory_vendor_po')
+            ->where('id_master', $id)
+            ->update([
+                'is_cancel' => 1,
+                'keterangan_cancel' => $cancelReason,
+            ]);
           
             // kalau tidak ada accurate id langsung commit
             if (!$po->id_accurate) {
                 return true;
             }
 
-            $payload = [
-                "id" => $po->id_accurate,
-                "toAddress" => $this->getTerminalAddress($po),
-                "branchName" => $this->getBranchName(),
-                "manualClosed" => true,
-                "closeReason" => $cancelReason,
-            ];
-
-            $res = $this->closeAccurate($po->id_accurate,$payload);
+           $res = $this->closeAccurate(
+                $po->id_accurate,
+                ['terminal' => $po->id_terminal],
+                $cancelReason
+            );
             
             if (!$res['s']) {
                 throw new Exception($res['d'][0] ?? 'Accurate Error');
@@ -766,86 +813,74 @@ class PurchaseOrderInventoryService
         });
     }
 
-    // public function close($id, $tglClose, $volumeClose)
-    // {
-    //     if (!$tglClose) {
-    //         throw new Exception("KOSONG");
-    //     }
-
-    //     return DB::transaction(function () use ($id, $tglClose, $volumeClose) {
-
-    //         $po = InventoryVendorPo::findOrFail($id);
-
-    //         $po->update([
-    //             'is_close' => 1,
-    //             'tanggal_close' => $tglClose,
-    //             'volume_close' => $volumeClose,
-    //         ]);
-
-    //         if (!$po->id_accurate) {
-    //             return true;
-    //         }
-
-    //         $alamat = $this->getTerminalAddress($po);
-
-    //         // CASE 1: full close → delete PO di Accurate
-    //         if ($volumeClose == $po->volume_po) {
-
-    //             $res = $this->callAccurateDelete([
-    //                 "id" => $po->id_accurate
-    //             ]);
-
-    //             if (!$res['s']) {
-    //                 throw new Exception($res['d'][0] ?? 'Accurate Delete Error');
-    //             }
-
-    //             return true;
-    //         }
-
-    //         // CASE 2: partial close → update manual close
-    //         $payload = [
-    //             "id" => $po->id_accurate,
-    //             "toAddress" => $alamat,
-    //             "branchName" => $this->getBranchName(),
-    //             "manualClosed" => true,
-    //             "closeReason" => "CLOSE PO {$tglClose} - volume close = {$volumeClose}",
-    //         ];
-
-    //         $res = $this->closeAccurate($po->id_accurate,$payload);
-
-    //         if (!$res['s']) {
-    //             throw new Exception($res['d'][0] ?? 'Accurate Error');
-    //         }
-
-    //         return true;
-    //     });
-    // }
-
-    // -------------------------
-    // helper function
-    // -------------------------
-
-    private function getTerminalAddress($po)
+    public function close($id, $tglClose, $volumeClose)
     {
-        $terminal = DB::table('terminal')
-            ->where('id_master', $po->id_terminal)
-            ->first();
 
-        return strtoupper($terminal->nama_terminal . " - " . $terminal->lokasi_terminal);
+        if (!$tglClose) {
+            throw new Exception("KOSONG");
+        }
+
+        return DB::transaction(function () use ($id, $tglClose, $volumeClose) {
+            $po = InventoryVendorPo::findOrFail($id);
+
+            $po->update([
+                'is_close' => 1,
+                'tanggal_close' => $tglClose,
+                'volume_close' => $volumeClose,
+            ]);
+
+            
+            DB::connection('mysql_old')
+            ->table('new_pro_inventory_vendor_po')
+            ->where('id_master', $id)
+            ->update([
+                'is_close' => 1,
+                'tanggal_close' => $tglClose,
+                'volume_close' => $volumeClose,
+            ]);
+
+            if (!$po->id_accurate) {
+                return true;
+            }
+
+            // CASE 1: full close → delete PO di Accurate
+            if ($volumeClose == $po->volume_po) {
+
+                $res = $this->deleteAccuratePO([
+                    "id" => $po->id_accurate
+                ]);
+
+                if (!$res['s']) {
+                    throw new Exception($res['d'][0] ?? 'Accurate Delete Error');
+                }
+
+                return true;
+            }else{
+                // CASE 2: partial close → update manual close
+                // $payload = [
+                //     "id" => $po->id_accurate,
+                //     'toAddress' => 'Graha Irama Lt 6 Jl. HR Rasuna Said Kota Administrasi Jakarta Selatan DKI Jakarta Indonesia',
+                //     'branchName' => $user->cabang->nama_cabang === 'Kantor Pusat'
+                //     ? 'Head Office'
+                //     : $user->cabang->nama_cabang,
+                //     "manualClosed" => true,
+                //     "closeReason" => "CLOSE PO {$tglClose} - volume close = {$volumeClose}",
+                // ];
+
+                $res = $this->closeAccurate( $po->id_accurate,['terminal' => $po->id_terminal], "CLOSE PO {$tglClose} - volume close = {$volumeClose}");
+
+                if (!$res['s']) {
+                    throw new Exception($res['d'][0] ?? 'Accurate Error');
+                }
+
+                return true;
+            }
+
+         
+        });
     }
 
-    private function getBranchName()
-    {
-        $idCabang = session('id_wilayah');
 
-        $cabang = DB::table('cabang')
-            ->where('id_master', $idCabang)
-            ->first();
-
-        return $cabang->nama_cabang == 'Kantor Pusat'
-            ? 'Head Office'
-            : $cabang->nama_cabang;
-    }    
 
 
 }

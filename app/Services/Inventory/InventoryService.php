@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services;
+namespace App\Services\Inventory;
 
 use App\Models\InventoryDepot;
 use Illuminate\Support\Facades\DB;

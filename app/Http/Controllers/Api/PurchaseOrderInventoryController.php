@@ -6,10 +6,11 @@ use App\Exports\PurchaseOrderInventoryExport;
 use App\Http\Controllers\Controller;
 use App\Models\InventoryGainLoss;
 use App\Models\InventoryVendorPo;
+use App\Models\InventoryVendorPoHistory;
 use App\Models\InventoryVendorPoOld;
 use App\Models\InventoryVendorReceive;
 use App\Services\AccurateApiService;
-use App\Services\PurchaseOrderInventoryService;
+use App\Services\Trade\PurchaseOrder\PurchaseOrderInventoryService;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -239,7 +240,11 @@ class PurchaseOrderInventoryController extends Controller
 
     public function history($id)
     {
-        $histories = DB::table('inventory_vendor_po_history')
+        $histories = InventoryVendorPoHistory::with([
+                'vendor',
+                'produk',
+                'terminal'
+            ])
             ->where('id_po_supplier', $id)
             ->get();
 
@@ -251,41 +256,45 @@ class PurchaseOrderInventoryController extends Controller
         ]);
     }
     
-    public function cancel(Request $request, $id)
+   public function cancel(Request $request, $id)
     {
         try {
             $this->poService->cancel($id, $request->cancel_reason);
 
-            return redirect()
-                ->back()
-                ->with('success', 'PO berhasil dicancel');
+            return response()->json([
+                'success' => true,
+                'message' => 'PO berhasil dicancel',
+            ]);
 
         } catch (\Exception $e) {
-            return redirect()
-                ->back()
-                ->with('error', $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 400);
         }
     }
 
-    // public function close(Request $request, $id)
-    // {
-    //     try {
-    //         $this->poService->close(
-    //             $id,
-    //             $request->tanggal_close,
-    //             $request->volume_close
-    //         );
+    public function close(Request $request, $id)
+    {
+        try {
+            $this->poService->close(
+                $id,
+                $request->tanggal_close,
+                $request->volume_close
+            );
 
-    //         return redirect()
-    //             ->back()
-    //             ->with('success', 'PO berhasil close');
+            return response()->json([
+                'success' => true,
+                'message' => 'PO berhasil diclose',
+            ]);
 
-    //     } catch (\Exception $e) {
-    //         return redirect()
-    //             ->back()
-    //             ->with('error', $e->getMessage());
-    //     }
-    // }
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 400);
+        }
+    }
     
     public function export(Request $request)
     {

@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services;
+namespace App\Services\Trade;
 
 use App\Models\Cabang;
 use App\Models\InventoryDepot;
@@ -8,6 +8,8 @@ use App\Models\InventoryVendorPo;
 use App\Models\InventoryVendorReceive;
 use App\Models\InventoryVendorReceiveHistory;
 use App\Models\MasterVendor;
+use App\Services\AccurateApiService;
+use App\Services\Inventory\InventoryService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;

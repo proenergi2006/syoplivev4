@@ -2255,6 +2255,7 @@ class MasterVendorController extends Controller
         try {
             $query = MasterVendor::query()
                 ->where('is_active', true)
+                ->where('status_approval', 'APPROVED')
                 ->orderBy('nama_vendor', 'ASC');
 
             // if ($request->filled('id_department')) {

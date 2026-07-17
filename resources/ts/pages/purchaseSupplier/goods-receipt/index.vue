@@ -12,7 +12,7 @@ import {
 } from '@/utils/alert'
 import { getApiErrorMessage } from '@/utils/apiHelper'
 import { onlyNumberKeypress } from '@/utils/textFormatter'
-
+import { usePermissionStore } from '@/stores/permission'
 
 const pageLoading = ref(false)
 const route = useRoute()
@@ -499,6 +499,21 @@ const submitGainLoss = async () => {
     closeAlert()
   }
 }
+
+const permissionStore = usePermissionStore()
+const isCheckingPermission = ref(true)
+
+const canAddGR = computed(() => {
+  return permissionStore.can('goods_receipt_trade.create')
+})
+
+const canUpdateGR = computed(() => {
+  return permissionStore.can('goods_receipt_trade.update')
+})
+
+const canDeleteGR = computed(() => {
+  return permissionStore.can('goods_receipt_trade.delete')
+})
 </script>
 
 <template>
@@ -614,8 +629,8 @@ const submitGainLoss = async () => {
         <VCardTitle class="d-flex justify-space-between align-center">
     
           <span>List GR</span>
-          <VBtn color="primary" prepend-icon="mdi-plus" size="small" variant="outlined" @click="dialog = true">
-            Add Receive
+          <VBtn v-if="canAddGR" color="primary" prepend-icon="mdi-plus" size="small" variant="outlined" @click="dialog = true">
+            Tambah Data
           </VBtn>
     
         </VCardTitle>
@@ -678,7 +693,7 @@ const submitGainLoss = async () => {
               </td>
     
               <td>
-                <VBtn v-if="Number(item.updated_count) < 3 " icon="mdi-file-document-edit-outline" size="small" variant="text" @click="openEdit(item)"/>
+                <VBtn v-if="(Number(item.updated_count) < 3) && canUpdateGR" icon="mdi-file-document-edit-outline" size="small" variant="text" @click="openEdit(item)"/>
               <VBtn
                 type="button"
                 icon="mdi-delete"
@@ -687,7 +702,7 @@ const submitGainLoss = async () => {
                 color="error"
                 @click.stop.prevent="deleteGR(item.id_po_receive)"
               />
-                <VBtn v-if="item.is_updated" icon="mdi-information" size="small" color="info" variant="text"   @click="fetchGRHistory(item.id_po_receive)"></VBtn>
+                <VBtn v-if="item.is_updated && canDeleteGR" icon="mdi-information" size="small" color="info" variant="text"   @click="fetchGRHistory(item.id_po_receive)"></VBtn>
               </td>
     
             </tr>

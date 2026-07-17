@@ -77,6 +77,7 @@ const fetchCabangOptions = async () => {
   try {
     // ambil banyak supaya dropdown lengkap
     const { data } = await axios.get('/master/cabang', { params: { per_page: 9999 } })
+    console.log(data)
     cabangOptions.value = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : [])
   } catch (e: any) {
     console.error('[Terminal] fetchCabangOptions error:', e?.response?.status, e?.response?.data || e)
@@ -450,7 +451,7 @@ const save = async () => {
             </td>
 
             <td class="text-medium-emphasis">{{ t.kategori_terminal }}</td>
-            <td class="text-medium-emphasis">{{ t.cabang?.nama ?? '-' }}</td>
+            <td class="text-medium-emphasis">{{ t.cabang?.nama_cabang ?? '-' }}</td>
             <td class="text-medium-emphasis">{{ t.area?.nama_area ?? '-' }}</td>
 
             <td>
@@ -549,7 +550,7 @@ const save = async () => {
                 v-model="form.id_cabang"
                 label="Cabang"
                 :items="cabangOptions"
-                item-title="nama"
+                item-title="nama_cabang"
                 item-value="id"
                 :loading="optLoading"
                 clearable

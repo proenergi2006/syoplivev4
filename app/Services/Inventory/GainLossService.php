@@ -11,8 +11,8 @@ use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use App\Services\AccurateApiService;
-use App\Services\PurchaseOrderInventoryService;
-use App\Services\GoodsReceiptInventoryService;
+use App\Services\Trade\GoodsReceiptInventoryService;
+use App\Services\Trade\PurchaseOrder\PurchaseOrderInventoryService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Mail;
 
