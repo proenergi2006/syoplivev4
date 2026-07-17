@@ -69,32 +69,32 @@ class MenuManagementSeeder extends Seeder
         */
         $permissions = [
             [
-                'module' => 'menu_management',
+                'module' => 'auth_menu',
                 'action' => 'view',
-                'code' => 'menu_management.view',
-                'name' => 'View Menu Management',
-                'description' => 'Melihat halaman Menu Management.',
+                'code' => 'auth_menu.view',
+                'name' => 'Lihat list menu',
+                'description' => 'Melihat daftar menu.',
             ],
             [
-                'module' => 'menu_management',
+                'module' => 'auth_menu',
                 'action' => 'create',
-                'code' => 'menu_management.create',
-                'name' => 'Create Menu Management',
-                'description' => 'Membuat menu aplikasi.',
+                'code' => 'auth_menu.create',
+                'name' => 'Create menu baru',
+                'description' => 'Membuat menu baru.',
             ],
             [
-                'module' => 'menu_management',
+                'module' => 'auth_menu',
                 'action' => 'update',
-                'code' => 'menu_management.update',
-                'name' => 'Update Menu Management',
-                'description' => 'Mengubah menu aplikasi.',
+                'code' => 'auth_menu.update',
+                'name' => 'Update menu',
+                'description' => 'Mengubah menu.',
             ],
             [
-                'module' => 'menu_management',
+                'module' => 'auth_menu',
                 'action' => 'delete',
-                'code' => 'menu_management.delete',
-                'name' => 'Delete Menu Management',
-                'description' => 'Menghapus atau menonaktifkan menu aplikasi.',
+                'code' => 'auth_menu.delete',
+                'name' => 'Delete menu',
+                'description' => 'Menghapus menu.',
             ],
         ];
 

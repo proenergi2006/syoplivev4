@@ -3,7 +3,7 @@ import Swal from 'sweetalert2'
 
 const apiBaseUrl = String(
   import.meta.env.VITE_API_BASE_URL
-  || 'https://syopv4.proenergi.com/api',
+  || 'https://demov4.proenergi.com/api',
 ).replace(/\/+$/, '')
 
 const axiosIns = axios.create({
