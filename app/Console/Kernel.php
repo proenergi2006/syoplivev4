@@ -13,9 +13,11 @@ class Kernel extends ConsoleKernel
      * @param  \Illuminate\Console\Scheduling\Schedule  $schedule
      * @return void
      */
-    protected function schedule(Schedule $schedule)
+    protected function schedule(Schedule $schedule): void
     {
-        // $schedule->command('inspire')->hourly();
+        $schedule->command('po-supplier:auto-approve-cfo')
+            ->everyTenMinutes()
+            ->withoutOverlapping();
     }
 
     /**
@@ -29,4 +31,5 @@ class Kernel extends ConsoleKernel
 
         require base_path('routes/console.php');
     }
+    
 }

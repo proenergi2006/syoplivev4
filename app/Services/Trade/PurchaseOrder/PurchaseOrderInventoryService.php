@@ -880,7 +880,100 @@ class PurchaseOrderInventoryService
         });
     }
 
+    public function autoApproveCfo()
+    {
+    try {
+        $result = DB::transaction(function () {
 
+            $pos = InventoryVendorPo::where('disposisi_po', '>', 0)
+                ->where('ceo_result', 0)
+                ->where('cfo_result', 0)
+                ->whereYear('tanggal_inven', '>=', 2024)
+                ->where('created_time', '<=', now()->subMinutes(20))
+                ->get();
 
+            if ($pos->isEmpty()) {
+                return [
+                    'success' => true,
+                    'message' => 'Tidak ada PO yang perlu auto approve',
+                    'total' => 0,
+                ];
+            }
+
+            $systemUser = [
+                'name' => 'Syop System',
+                'email' => null,
+            ];
+
+            foreach ($pos as $po) {
+                $po->update([
+                    'cfo_result'   => 1,
+                    'cfo_summary'  => 'Approved By System Automatically',
+                    'cfo_pic'      => $systemUser['name'],
+                    'cfo_tanggal'  => now(),
+                    'disposisi_po' => 2,
+                ]);
+
+                InventoryVendorPoOld::where('id_master', $po->id_master)
+                    ->update([
+                        'cfo_result'   => 1,
+                        'cfo_summary'  => 'Approved By System Automatically',
+                        'cfo_pic'      => $systemUser['name'],
+                        'cfo_tanggal'  => now(),
+                        'disposisi_po' => 2,
+                    ]);
+            }
+
+            DB::afterCommit(function () use ($pos, $systemUser) {
+                $emails = User::whereHas('roles', function ($q) {
+                        $q->where('nama', 'Chief Executive Officer');
+                    })
+                    ->whereNotNull('email')
+                    ->pluck('email')
+                    ->filter()
+                    ->toArray();
+
+                if (empty($emails)) {
+                    return;
+                }
+
+                foreach ($pos as $po) {
+                    Mail::to($emails)->send(
+                        new POTradingMail(
+                            $po->nomor_po,
+                            [
+                                'vendor' => $po->id_vendor,
+                                'produk' => $po->id_produk,
+                                'volume_po' => $po->volume_po,
+                                'harga_tebus' => $po->harga_tebus,
+                            ],
+                            $systemUser,
+                            'need_ceo'
+                        )
+                    );
+                }
+            });
+
+            return [
+                'success' => true,
+                'message' => 'Auto approval CFO berhasil',
+                'total' => $pos->count(),
+            ];
+        });
+
+        return $result;
+
+    } catch (Throwable $e) {
+        Log::error('Auto Approve CFO PO Supplier Error', [
+            'message' => $e->getMessage(),
+        ]);
+
+        return [
+            'success' => false,
+            'message' => $e->getMessage(),
+            'total' => 0,
+        ];
+    }
+}
 
 }

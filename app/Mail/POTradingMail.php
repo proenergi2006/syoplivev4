@@ -37,6 +37,11 @@ class POTradingMail extends Mailable
                 'message' => 'Purchase Order telah dibuat oleh Procurement dan memerlukan persetujuan dari CFO. Mohon melakukan review terhadap detail Purchase Order berikut sebelum dilakukan proses selanjutnya.',
             ],
 
+            'auto_cfo' => [
+                'title' => 'Permintaan Approval PO['.$this->nomorPO.']',
+                'message' => 'Persetujuan Purchase Order selanjutnya. PO ini telah melewati batas waktu approval CFO selama 20 menit, sehingga sistem melakukan approval CFO secara otomatis.',
+            ],
+
             'need_ceo' => [
                 'title' => 'PO['.$this->nomorPO.']  Menunggu Approval CEO',
                 'message' => 'CFO sudah melakukan approval PO dengan keterangan berikut.',
