@@ -1913,31 +1913,31 @@ class PurchaseOrderController extends Controller
                     /*
                  * Sesuaikan jika rule PPN aplikasi berubah.
                  */
-                    $ppnRate = 0.11;
+                    $subtotalAmount = round(
+                        $subTotalItems,
+                        2,
+                    );
 
                     if ($isPkpVendor) {
                         $dppAmount = round(
-                            $subTotalItems,
+                            $subtotalAmount * 11 / 12,
                             2,
                         );
 
                         $ppnAmount = round(
-                            $dppAmount * $ppnRate,
+                            $dppAmount * 0.12,
                             2,
                         );
 
                         $totalPoAmount = round(
-                            $dppAmount + $ppnAmount,
+                            $subtotalAmount + $ppnAmount,
                             2,
                         );
                     } else {
                         $dppAmount = 0.0;
                         $ppnAmount = 0.0;
 
-                        $totalPoAmount = round(
-                            $subTotalItems,
-                            2,
-                        );
+                        $totalPoAmount = $subtotalAmount;
                     }
 
                     /*
@@ -2397,10 +2397,10 @@ class PurchaseOrderController extends Controller
         $user = $request->user();
 
         /*
-    |--------------------------------------------------------------------------
-    | Permission Update
-    |--------------------------------------------------------------------------
-    */
+        |--------------------------------------------------------------------------
+        | Permission Update
+        |--------------------------------------------------------------------------
+        */
         if (
             !$user
             || !$user->hasPermission(
@@ -2414,10 +2414,10 @@ class PurchaseOrderController extends Controller
         }
 
         /*
-    |--------------------------------------------------------------------------
-    | Decrypt Public ID
-    |--------------------------------------------------------------------------
-    */
+        |--------------------------------------------------------------------------
+        | Decrypt Public ID
+        |--------------------------------------------------------------------------
+        */
         try {
             $id = (int) Crypt::decryptString(
                 $publicId,
@@ -2430,12 +2430,12 @@ class PurchaseOrderController extends Controller
         }
 
         /*
-    |--------------------------------------------------------------------------
-    | Validation
-    |--------------------------------------------------------------------------
-    | subtotal, jenis_pembayaran, dan top tidak divalidasi karena hanya UI FE.
-    |--------------------------------------------------------------------------
-    */
+        |--------------------------------------------------------------------------
+        | Validation
+        |--------------------------------------------------------------------------
+        | subtotal, jenis_pembayaran, dan top tidak divalidasi karena hanya UI FE.
+        |--------------------------------------------------------------------------
+        */
         $validated = $request->validate([
             'tanggal_po' => [
                 'required',
@@ -2558,10 +2558,10 @@ class PurchaseOrderController extends Controller
         ]);
 
         /*
-    |--------------------------------------------------------------------------
-    | Permission Department
-    |--------------------------------------------------------------------------
-    */
+        |--------------------------------------------------------------------------
+        | Permission Department
+        |--------------------------------------------------------------------------
+        */
         $departmentPermissionCode = 'purchase_order.create';
 
         $requestedDepartmentId = (int) (
@@ -2581,10 +2581,10 @@ class PurchaseOrderController extends Controller
         }
 
         /*
-    |--------------------------------------------------------------------------
-    | Sanitizer
-    |--------------------------------------------------------------------------
-    */
+        |--------------------------------------------------------------------------
+        | Sanitizer
+        |--------------------------------------------------------------------------
+        */
         $clean = static function (mixed $value): string {
             if ($value === null) {
                 return '';
@@ -2724,10 +2724,10 @@ class PurchaseOrderController extends Controller
         };
 
         /*
-    |--------------------------------------------------------------------------
-    | Normalize PR IDs
-    |--------------------------------------------------------------------------
-    */
+        |--------------------------------------------------------------------------
+        | Normalize PR IDs
+        |--------------------------------------------------------------------------
+        */
         $purchaseRequestIds = collect(
             $validated['purchase_request_ids'],
         )
@@ -2741,10 +2741,10 @@ class PurchaseOrderController extends Controller
         )->values();
 
         /*
-    |--------------------------------------------------------------------------
-    | PR IDs dari Items
-    |--------------------------------------------------------------------------
-    */
+        |--------------------------------------------------------------------------
+        | PR IDs dari Items
+        |--------------------------------------------------------------------------
+        */
         $itemPurchaseRequestIds = $itemPayloads
             ->pluck('purchase_request_id')
             ->map(fn($prId): int => (int) $prId)
