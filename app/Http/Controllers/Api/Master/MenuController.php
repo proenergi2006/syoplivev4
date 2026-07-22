@@ -1069,6 +1069,16 @@ class MenuController extends Controller
                     'master-vendor',
                 ],
             ],
+            'inventory_po' => [
+                'menu_keywords' => [
+                    'inventory purchase order',
+                    'inventory po',
+                    'vendor po',
+                    'PO Supplier',
+                    'po-supplier',
+                ],
+
+            ],
         ];
     }
 
@@ -1077,7 +1087,14 @@ class MenuController extends Controller
         $badges = [];
 
         foreach ($this->approvalBadgeModules() as $moduleKey => $config) {
-            $badges[$moduleKey] = $this->countWaitingMyApprovalByConfig($user, $config);
+            if ($moduleKey === 'inventory_po') {
+                // Badge Inventory PO
+                $badges[$moduleKey] = $this->countInventoryPOBadge($user);
+            } else {
+                $badges[$moduleKey] = $this->countWaitingMyApprovalByConfig($user, $config);
+            }
+            // $badges[$moduleKey] = $this->countWaitingMyApprovalByConfig($user, $config);
+
         }
 
         return $badges;
@@ -1218,5 +1235,34 @@ class MenuController extends Controller
                     });
             })
             ->count();
+    }
+    private function countInventoryPOBadge($user): int
+    {
+        $roleIds = DB::table('user_roles')
+            ->where('user_id', $user->id)
+            ->pluck('role_id');
+
+        // Contoh cek role berdasarkan kode
+        $role = DB::table('roles')
+            ->whereIn('id', $roleIds)
+            ->value('kode');
+
+        $query = DB::table('inventory_vendor_po');
+
+        switch ($role) {
+            case 'CEO':
+                $query->where('disposisi_po', 2)
+                    ->where('cfo_result', 1);
+                break;
+
+            case 'CFO':
+                $query->where('disposisi_po', 1);
+                break;
+
+            default:
+                return 0;
+        }
+
+        return $query->count();
     }
 }

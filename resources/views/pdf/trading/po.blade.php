@@ -159,7 +159,9 @@
                 <tr>
                     <td>
                         {{ $po->terms }}
-                        {{ $po->terms_day }}
+                        <?php if($po->terms == 'NET'){?>
+                            {{ $po->terms_day }}
+                        <?php }?>
                     </td>
                 </tr>
 

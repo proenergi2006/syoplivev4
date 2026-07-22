@@ -66,6 +66,7 @@ class PurchaseOrderInventoryController extends Controller
                 $request->tanggal_akhir
             ]);
         }
+        
 
         foreach ($query as $item) {
 
@@ -79,9 +80,16 @@ class PurchaseOrderInventoryController extends Controller
 
             $item->status_label = $map[$item->disposisi_po] ?? '-';
         }
-        $data = $query
-            ->orderByDesc('tanggal_inven')
-            ->paginate($request->per_page ?? 25);
+        if ($request->approval) {
+            $data = $query
+                ->orderBy('disposisi_po')
+                ->orderByDesc('tanggal_inven');
+        } else {
+            $data = $query
+                ->orderByDesc('tanggal_inven');
+        }
+
+           $data =  $data->paginate($request->per_page ?? 25);
 
         return response()->json($data);
     }
@@ -147,7 +155,10 @@ class PurchaseOrderInventoryController extends Controller
             'vendor',
             'terminal',
             'produk'
-        ])->where('id_master', $id)->firstOrFail();
+        ])
+        ->withSum('goodReceipt as total_bl', 'volume_bol')
+        ->withSum('goodReceipt as total_ri', 'volume_terima')
+        ->where('id_master', $id)->firstOrFail();
 
         return response()->json($po);
     }
@@ -296,6 +307,26 @@ class PurchaseOrderInventoryController extends Controller
         }
     }
     
+    public function changePrice($id)
+    {
+        try {
+            $this->poService->changePrice(
+                $id
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Jenis Harga berhasil diubah',
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 400);
+        }
+    }
+
     public function export(Request $request)
     {
         return Excel::download(

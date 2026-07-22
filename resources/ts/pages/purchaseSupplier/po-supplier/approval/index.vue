@@ -42,6 +42,8 @@ type InventoryPO = {
   resubmission_count:number,
     total_bl: number,
   total_ri: number,
+  is_close: number,
+  volume_close: number,
 
 
   vendor?: { nama_vendor: string }
@@ -104,10 +106,10 @@ const getData = async () => {
         per_page: rowPerPage.value,
         search: search.value.search,
         status: search.value.status,
+        approval: 1
       },
     })
 
-    // 🔥 SAFE MAPPING (anti undefined error)
     rows.value = res.data?.data ?? []
     totalData.value = res.data?.total ?? 0
     totalPage.value = res.data?.last_page ?? 1
@@ -354,6 +356,15 @@ const statusItems = [
                 >
                    Pengajuan ulang ke - {{ v.resubmission_count }}
                 </VChip>
+
+                  <VChip v-if="v.is_close == 1"
+                    size="small"
+                    color="error"
+                    class="mb-0"
+                  >
+                     Close PO : Rp {{ formatNumber(v.volume_close) }}
+                  </VChip>
+
             </td>
 
             <td>{{ formatDate(v.tanggal_inven) }}</td>

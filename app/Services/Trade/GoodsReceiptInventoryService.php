@@ -126,9 +126,9 @@ class GoodsReceiptInventoryService
             "number" => $form['no_terima'],
             "transDate" => $tgl,
             "vendorNo" => $poDetail['d']['vendor']['vendorNo'],
-            'branchName' =>$cabang->nama === 'Kantor Pusat'
+            'branchName' =>  $namaCabang === 'Kantor Pusat'
                     ? 'Head Office'
-                    : $cabang->nama,
+                    :   $namaCabang,
             "description" => "GR PO " . $nomor_po,
             "toAddress" => $poDetail['d']['toAddress'],
             "detailItem" => [[

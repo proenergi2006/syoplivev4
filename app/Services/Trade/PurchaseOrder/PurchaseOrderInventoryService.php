@@ -14,6 +14,7 @@ use App\Models\InventoryVendorPoOld;
 use App\Models\User;
 use App\Services\AccurateApiService;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Validation\ValidationException;
 use Throwable;
 
 class PurchaseOrderInventoryService
@@ -23,13 +24,12 @@ class PurchaseOrderInventoryService
        return DB::transaction(function () use ($form, $user) {
 
         // $last = DB::table('inventory_vendor_po')->count();
-
         // $idMaster = now()->format('Ym') . str_pad(
         //     ($last + 1),
         //     9,
         //     '0',
         //     STR_PAD_LEFT
-        // );
+        // )
         $lastOld = DB::connection('mysql_old')
             ->table('new_pro_inventory_vendor_po')
             ->selectRaw("COALESCE(MAX(CAST(SUBSTRING(id_master, 7, 9) AS UNSIGNED)), 0) as last_id")
@@ -72,6 +72,8 @@ class PurchaseOrderInventoryService
             'kategori_oa' => $form['kategori_oa'],
             'ongkos_angkut' => $form['ongkos_angkut'],
             'is_biaya' => $form['jenis_oa'],
+            'nilai_pbbkb' => $form['nilai_pbbkb'],
+            'pbbkb' => $form['pbbkb'],
             'keterangan' => $form['catatan_po'],
             'internal_notes' => $form['internal_notes'],
             'iuran_migas' => $form['iuran_migas'],
@@ -281,12 +283,21 @@ class PurchaseOrderInventoryService
         $year = date('Y', strtotime($form['tanggal'] ?? now()));
 
         // ambil nomor terakhir
-        $lastNumber = DB::table('inventory_vendor_po')
-            ->where('id_vendor', $form['vendor'])
-            ->whereYear('tanggal_inven', $year)
-            ->max(DB::raw("CAST(SUBSTRING(nomor_po,1,3) AS INTEGER)"));
-
+        // $lastNumber = DB::table('inventory_vendor_po')
+        //     ->where('id_vendor', $form['vendor'])
+        //     ->whereYear('tanggal_inven', $year)
+        //     ->max(DB::raw("CAST(SUBSTRING(nomor_po,1,3) AS INTEGER)"));
+       $lastNumber = DB::connection('mysql_old')
+                ->table('new_pro_inventory_vendor_po as a')
+                ->join('pro_master_terminal as b', 'a.id_terminal', '=', 'b.id_master')
+                ->join('pro_master_cabang as c', 'b.id_cabang', '=', 'c.id_master')
+                ->join('pro_master_vendor as d', 'a.id_vendor', '=', 'd.id_master')
+                ->where('d.id_master', $form['vendor'])
+                ->where('c.id_master', $terminal->id_cabang)
+                ->whereYear('a.tanggal_inven',$year)
+                ->max(DB::raw("CAST(SUBSTRING(a.nomor_po, 1, 3) AS UNSIGNED)"));
         $next = ($lastNumber ?? 0) + 1;
+        
 
         $romawi = [
             1=>'I','II','III','IV','V','VI',
@@ -301,6 +312,7 @@ class PurchaseOrderInventoryService
             . '/' . strtoupper($cabang->inisial_cabang)
             . '/' . $bulan
             . '/' . $tahun;
+
     }
 
     public function sendToAccurate($form, $items, $expenses, $nomorPO)
@@ -406,6 +418,20 @@ class PurchaseOrderInventoryService
             if (!$po) {
                 throw new Exception('PO tidak ditemukan');
             }
+
+            $isPriceChanged = (float)$po->harga_tebus !== (float)$form['harga_tebus'];
+
+            /*
+            |--------------------------------------------------------------------------
+            | Validasi Perubahan Harga
+            |--------------------------------------------------------------------------
+            */
+
+            if ($isPriceChanged && $form['jenis_harga'] != 2) {
+                throw ValidationException::withMessages([
+                    'harga_tebus' => 'Perubahan harga hanya diperbolehkan untuk Jenis Harga Sementara.'
+                ]);
+            }
  
             $subtotal = $form['volume_po'] * $form['harga_tebus'];
 
@@ -436,6 +462,8 @@ class PurchaseOrderInventoryService
                 'keterangan' => $form['catatan_po'],
                 'iuran_migas' => $form['iuran_migas'],
                 'nominal_migas' => $form['nominal_migas'],
+                'nilai_pbbkb' => $form['nilai_pbbkb'],
+                'pbbkb' => $form['pbbkb'],
 
                 // reset approval
                 'disposisi_po' => 1,
@@ -444,6 +472,7 @@ class PurchaseOrderInventoryService
                 'revert_cfo' => 0,
                 'revert_ceo' => 0,
 
+                'is_price_changed' => $isPriceChanged ? 1 : 0,
                 'lastupdate_time' => now(),
                 'lastupdate_by' => $user['name'],
                 'lastupdate_ip' => request()->ip(),
@@ -515,7 +544,7 @@ class PurchaseOrderInventoryService
                     throw new Exception('Gagal close Accurate');
                 }
 
-                if ($po->disposisi_po>1){
+                if ($isPriceChanged && $po->disposisi_po>1){
                 
                     DB::afterCommit(function () use ($po, $form, $user) { 
                         $emails = User::whereHas('roles', function ($q) {
@@ -654,8 +683,13 @@ class PurchaseOrderInventoryService
     {
         return DB::transaction(function () use ($id, $form, $user) {
 
+        
             $po = InventoryVendorPo::where('id_master', $id)
                 ->firstOrFail();
+            if ($po->is_price_changed == 1) {
+               $sync= $this->syncPriceAfterApprove($po);
+
+            }
 
             $po_old = InventoryVendorPoOld::where('id_master', $id)
                 ->firstOrFail();
@@ -741,6 +775,7 @@ class PurchaseOrderInventoryService
                 );
             });
 
+           
             return [
                 'success' => true,
                 'message' => 'Approval CFO berhasil disimpan',
@@ -975,5 +1010,143 @@ class PurchaseOrderInventoryService
         ];
     }
 }
+
+private function syncPriceAfterApprove(InventoryVendorPo $po)
+{
+    $mysql = DB::connection('mysql_old');
+
+    // =========================
+    // PR Detail
+    // =========================
+    $prs = $mysql->table('pro_pr_detail as pr')
+        ->join('new_pro_inventory_vendor_po as po', 'po.id_master', '=', 'pr.id_po_supplier')
+        ->where('pr.id_po_supplier', $po->id_master)
+        ->select('pr.*', 'po.harga_tebus')
+        ->get();
+        
+    foreach ($prs as $pr) {
+
+        if ($pr->pr_harga_beli == 0) {
+            continue;
+        }
+
+        $mysql->table('pro_pr_detail_harga_log')->insert([
+            'id_prd'         => $pr->id_prd,
+            'id_po_supplier' => $po->id_master,
+            'pr_harga_beli'  => $pr->pr_harga_beli,
+            'new_harga_beli' => $pr->harga_tebus,
+            'no_do_syop'     => $pr->no_do_syop,
+            'updated_at'     => now(),
+        ]);
+
+        $mysql->table('pro_pr_detail')
+            ->where('id_prd', $pr->id_prd)
+            ->update([
+                'pr_harga_beli' => $pr->harga_tebus
+            ]);
+    }
+
+    // =========================
+    // Potongan Stock
+    // =========================
+    $stocks = $mysql->table('new_pro_inventory_potongan_stock as ps')
+        ->join('pro_pr_detail as pr', 'pr.id_prd', '=', 'ps.id_prd')
+        ->join('new_pro_inventory_vendor_po as po', 'po.id_master', '=', 'ps.id_po_supplier')
+        ->where('ps.id_po_supplier', $po->id_master)
+        ->select(
+            'ps.*',
+            'pr.no_do_syop',
+            'po.harga_tebus'
+        )
+        ->get();
+
+    foreach ($stocks as $stock) {
+
+        if ($stock->pr_harga_beli == 0) {
+            continue;
+        }
+
+        $mysql->table('pro_pr_detail_harga_log')->insert([
+            'id_prd'         => $stock->id_prd,
+            'id_po_supplier' => $po->id_master,
+            'pr_harga_beli'  => $stock->pr_harga_beli,
+            'new_harga_beli' => $stock->harga_tebus,
+            'no_do_syop'     => $stock->no_do_syop,
+            'updated_at'     => now(),
+        ]);
+
+        $mysql->table('new_pro_inventory_potongan_stock')
+            ->where('id_stock', $stock->id_stock)
+            ->update([
+                'pr_harga_beli' => $stock->harga_tebus
+            ]);
+    }
+
+    // =========================
+    // Receive
+    // =========================
+    $mysql->table('new_pro_inventory_vendor_po_receive')
+    ->where('id_po_supplier', $po->id_master)
+    ->update([
+        'harga_tebus' => $po->harga_tebus
+    ]);
+
+    // =========================
+    // Update Status PO
+    // =========================
+    $po->update([
+        'jenis_harga'      => 1,
+        'is_price_changed' => 2,
+    ]);
+
+    $mysql->table('new_pro_inventory_vendor_po')
+        ->where('id_master', $po->id_master)
+        ->update([
+            'jenis_harga'      => 1,
+            'is_price_changed' => 2,
+        ]);
+}
+
+    public function changePrice($id)
+    {
+        try {
+
+            $result = DB::transaction(function () use ($id) {
+
+                $po = InventoryVendorPo::where('id_master', $id)
+                    ->firstOrFail();
+                    
+                $po_old = InventoryVendorPoOld::where('id_master', $id)
+                    ->firstOrFail();
+
+                $po->update([
+                    'jenis_harga' => 2
+                ]);
+                $po_old->update([
+                    'jenis_harga' => 2
+                ]);
+
+                return [
+                    'success' => true,
+                    'message' => 'Ubah jenis harga PO berhasil',
+                ];
+            });
+
+            return $result;
+            dd($result);
+
+        } catch (Throwable $e) {
+
+            Log::error('Perubahan Jenis Harga Error', [
+                'id' => $id,
+                'message' => $e->getMessage(),
+            ]);
+
+            return [
+                'success' => false,
+                'message' => $e->getMessage(),
+            ];
+        }
+    }
 
 }

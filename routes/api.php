@@ -119,6 +119,7 @@ Route::middleware(['auth:sanctum', 'auth.token.idle'])->group(function () {
     Route::get('/terminal', [TerminalController::class, 'terminal']);
     Route::get('/transportir', [TransportirController::class, 'transportir']);
     Route::get('/oa-kapal', [OngkosAngkutKapalController::class, 'oaKapal']);
+    Route::get('/pbbkb', [PbbkbController::class, 'pbbkb']);
 
     Route::get('master/transportir-mobil', [TransportirMobilController::class, 'index']);
     Route::post('master/transportir-mobil', [TransportirMobilController::class, 'store']);
@@ -526,6 +527,7 @@ Route::middleware(['auth:sanctum', 'auth.token.idle'])->group(function () {
         Route::get('purchase-order/{id}/history', [PurchaseOrderInventoryController::class, 'history']);
         Route::post('purchase-order/{id}/cancel', [PurchaseOrderInventoryController::class, 'cancel']);
         Route::post('purchase-order/{id}/close', [PurchaseOrderInventoryController::class, 'close']);
+        Route::post('purchase-order/{id}/changePrice', [PurchaseOrderInventoryController::class, 'changePrice']);
 
         //Goods Receipt
         Route::apiResource('goods-receipt', GoodsReceiptInventoryController::class);

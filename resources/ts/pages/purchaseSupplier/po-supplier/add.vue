@@ -12,6 +12,7 @@ import { getApiErrorMessage } from '@/utils/apiHelper'
 import {
   showConfirmAlert,
   showErrorAlert,
+  showErrorToast,
   showLoadingAlert,
   showSuccessAlert,
   showWarningAlert,
@@ -49,6 +50,7 @@ const form = reactive({
   jenis_harga: 0,
   jenis_kirim: 0,
 
+  nilai_pbbkb:0,
   harga_tebus: 0,
   kategori_oa: 1,
   jenis_oa: 0,
@@ -97,6 +99,8 @@ const form = reactive({
   keterangan_migas: '',
   alokasi_migas: false,
 
+  total_ri: 0,
+  total_bl: 0,
   total_order: 0,
   catatan_po: '',
   internal_notes: '',
@@ -104,6 +108,7 @@ const form = reactive({
 
   // approval
   disposisi_po : 0,
+  ceo_result:0,
   revert_cfo:0,
   revert_ceo:0,
   revert_cfo_summary:'',
@@ -111,6 +116,7 @@ const form = reactive({
 })
 const produkAccList = ref<any[]>([])
 const akunAccList = ref<any[]>([])
+const pbbkbList = ref<any[]>([])
 const produkList = ref<any[]>([])
 const vendorList = ref<any[]>([])
 const terminalList = ref<any[]>([])
@@ -163,7 +169,13 @@ const pph22 = computed(() => {
 })
 
 const pbbkbval = computed(() => {
-  return totalHD.value* (form.pbbkb/100)
+  const selected = pbbkbList.value.find(
+    (p: any) => p.id === form.pbbkb
+  )
+
+  const nilaiPbbkb = selected?.nilai ?? 0
+
+  return totalHD.value * (nilaiPbbkb / 100)
 })
 const totalPO = computed(() => {
   return safe(subtotal.value)+safe(ppn.value)+safe(pph22.value)+safe(pbbkbval.value)
@@ -260,6 +272,14 @@ const onSearchAkun = debounce((val: string) => {
   getAccAkun(val, true)
 }, 300)
 
+const getPbbkb = async () => {
+  const res = await axios.get('/pbbkb')
+  pbbkbList.value = res.data.map((p: any) => ({
+    id: p.id,
+    label: `${p.nilai_pbbkb}%`,
+    nilai: p.nilai_pbbkb,
+  }))
+}
 const getProduk = async () => {
   const res = await axios.get('/produk')
   produkList.value = res.data.map((p: any) => ({
@@ -278,10 +298,20 @@ const getTerminal = async () => {
 }
 const getVendor = async () => {
   const res = await axios.get('/master/vendor/dropdown-select')
-  vendorList.value = res.data.data.map((p: any) => ({
-    id: p.id,
-    nama_vendor: p.nama_vendor,
-  }))
+   vendorList.value = res.data.data
+    .filter((p: any) => p.kategori_vendor === 'TRADING')
+    .map((p: any) => ({
+      id: p.id,
+      nama_vendor: p.nama_vendor,
+    }))
+}
+
+const setNilaiPbbkb = (id: any) => {
+  const selected = pbbkbList.value.find(
+    (p: any) => p.id === id
+  )
+
+  form.nilai_pbbkb = selected?.nilai ?? 0
 }
 
 const onScroll = (e: any) => {
@@ -309,6 +339,14 @@ const onScroll = (e: any) => {
 //   })
 // }, 300)
 
+
+// data lama sebelum diubah
+const oldPo = reactive({
+  harga_tebus: 0,
+  ongkos_angkut: 0,
+  total: 0,
+})
+
   // EDIT
   const fetchPO = async (id: any) => {
   try {
@@ -316,6 +354,11 @@ const onScroll = (e: any) => {
 
     const data = res.data
 
+    const selected = pbbkbList.value.find(
+      (p: any) => p.nilai === res.data.nilai_pbbkb
+    )
+
+   
     Object.assign(form, {
       id_accurate: data.id_accurate,
       tanggal_inven: data.tanggal_inven,
@@ -339,13 +382,23 @@ const onScroll = (e: any) => {
       nominal_migas: data.nominal_migas,
       catatan_po: data.keterangan,
       internal_notes: data.internal_notes,
+      pbbkb : selected?.id ?? null,
+      nilai_pbbkb : data.nilai_pbbkb,
       disposisi_po: Number(data.disposisi_po),
+      ceo_result: data.ceo_result,
       revert_cfo: data.revert_cfo,
       revert_ceo: data.revert_ceo,
       revert_ceo_summary: data.revert_ceo_summary,
       revert_cfo_summary: data.revert_cfo_summary,
+      total_ri: data.total_ri,
+      total_bl: data.total_bl,
     })
 
+     Object.assign(oldPo, {
+      harga_tebus: data.harga_tebus,
+      ongkos_angkut: data.ongkos_angkut,
+      total: data.total_order,
+     })
        // DETAIL ACCURATE
       if (data.id_accurate) {
 
@@ -382,6 +435,7 @@ onMounted(async () => {
       getProduk(),
       getTerminal(),
       getVendor(),
+      getPbbkb()
     ])
 
     // minimal loading 700ms
@@ -569,10 +623,51 @@ const resolveLabelById = (
   return item ? item[labelKey] : '-'
 }
 
+
+const changePrice = async () => {
+  const confirm = await showConfirmAlert({
+    icon: 'question',
+    title: 'Ubah menjadi harga sementara?',
+    text: 'PO akan diubah menjadi harga sementara',
+    confirmButtonText: 'Ya, simpan',
+    cancelButtonText: 'Batal',
+  })
+
+  if (!confirm.isConfirmed) return
+
+  isSaving.value = true
+
+  try {
+    showLoadingAlert('Menyimpan data...', 'Mohon tunggu sebentar')
+
+    await axios.post(`/inventory/purchase-order/${id.value}/changePrice`)
+    await fetchPO(id)
+    closeAlert()
+  }catch (err: any) {
+
+    console.error(err)
+    isSaving.value = false
+
+    await showErrorAlert({
+      title: 'Error',
+      text: getApiErrorMessage(err, 'gagal menyimpan data'),
+    })
+
+  } finally {
+
+    isSaving.value = false
+  }
+}
 const goToReview = async () => {
   const { valid } = await formRef.value.validate()
 
-  if (!valid) return
+  if (!valid){
+      showErrorToast({
+      title: 'Form belum lengkap',
+      text: 'Lengkapi data yang diwajibkan',
+    })
+    return
+  }
 
   step.value = 'review'
 }
@@ -658,8 +753,26 @@ const submit = async () => {
   }
 }
 
+const canResubmitPrice = computed(() => {
+  return (
+    form.disposisi_po === 4 &&
+    form.ceo_result === 1 &&
+    form.jenis_harga === 2 // Sementara
+  )
+})
 
+const canChangePrice = computed(() => {
+    return Number(form.jenis_harga) === 2 // Sementara
+})
 
+const canChange = computed(() => {
+    return Number(form.total_ri)==0 
+})
+
+const isPriceChanged = computed(() => {
+    return form.harga_tebus != oldPo.harga_tebus && form.disposisi_po === 4 &&
+    form.ceo_result === 1
+})
 
 </script>
 <template>
@@ -704,7 +817,6 @@ const submit = async () => {
                   <VCardText class="pa-6">
     
                     <div class="d-flex justify-space-between align-center flex-wrap ga-4">
-    
                       <div>
                         <div class="d-flex align-center ga-3 mb-2">
                           
@@ -748,7 +860,7 @@ const submit = async () => {
             <!-- ===================================================== -->
             <!-- ALERT -->
             <!-- ===================================================== -->
-          <section class="mb-6" v-if="form.jenis_harga==2">
+          <section class="mb-6" v-if="canResubmitPrice">
             <VAlert
               type="warning"
               variant="tonal"
@@ -758,21 +870,22 @@ const submit = async () => {
               <div class="d-flex justify-space-between align-center w-100">
                 
                 <div>
-                  <div class="font-weight-bold mb-1">
-                    Harga PO Memerlukan Update
-                  </div>
-    
-                  Harga masih menggunakan harga sementara.
-                  Silakan lakukan perubahan harga PO untuk melanjutkan proses transaksi.
+                   <div class="font-weight-bold">
+                      Pengajuan Ulang Perubahan Harga
+                    </div>
+
+                    PO ini sudah disetujui CEO.
+                    Karena menggunakan <b>Jenis Harga Sementara</b>,
+                    perubahan harga akan mengulang proses approval.
                 </div>
     
-                <VBtn
+                <!-- <VBtn
                   color="warning"
                   variant="flat"
                   class="ml-4"
                 >
                   Ubah Harga
-                </VBtn>
+                </VBtn> -->
     
               </div>
             </VAlert>
@@ -986,12 +1099,18 @@ const submit = async () => {
                     </VCol>
           
                     <VCol cols="12" md="6">
-                        <VSelect
+                        <VAutocomplete
                           v-model="form.vendor"
                           :items="vendorList"
                           item-title="nama_vendor"
                           item-value="id"
                           label="Vendor *"
+                          density="comfortable"
+                          :menu-props="{  maxHeight: 300,
+                          attach: 'body' }"
+                          action-refresh
+                          @refresh="getVendor"
+                          placeholder="Pilih Vendor"
                           clearable
                           variant="outlined"
                           :rules="[required('Vendor')]"
@@ -1142,16 +1261,13 @@ const submit = async () => {
                         <VCol cols="12" md="3">
                             <VSelect
                               v-model="form.pbbkb"
-                              :items="[
-                                { title: '0%', value: 0 },
-                                { title: '7.5%', value: 7.5 },
-                                { title: '10%', value: 10 }
-                              ]"
-                              item-title="title"
-                              item-value="value"
+                              :items="pbbkbList"
+                              item-title="label"
+                              item-value="id"
                               label="PBBKB *"
                               clearable
                               :rules="[required('PBBKB')]"
+                               @update:modelValue="setNilaiPbbkb"
                             />
                           </VCol>
                           <VCol cols="12" md="3">
@@ -1866,11 +1982,12 @@ const submit = async () => {
                   />
 
                   <VTextarea
-                    v-if="form.disposisi_po==4"
+                    v-if="form.disposisi_po==4 && canChange"
                     v-model="form.catatan_resubmit"
-                    label="Catatan Pengajuan Ulang"
+                    label="Catatan Pengajuan Ulang *"
                     rows="4"
                     variant="outlined"
+                    :rules="[required('Catatan Pengajuan Ulang')]"
                   />
     
                 </VCardText>
@@ -1884,8 +2001,11 @@ const submit = async () => {
     
               <div class="d-flex justify-end flex-wrap gap-3">
     
+                <VBtn color="warning" size="large" @click="changePrice" v-if="!canChangePrice && !canChange">
+                  Perubahan Harga
+                </VBtn>
                 <!-- <VBtn color="primary" size="large" @click="step = 'review'"> -->
-                <VBtn color="primary" size="large" @click="goToReview">
+                <VBtn color="primary" size="large" @click="goToReview" v-if="canChange || canChangePrice">
                   Review
                 </VBtn>
     
@@ -1945,10 +2065,55 @@ const submit = async () => {
           Pastikan semua informasi sudah sesuai.
         </VAlert>
 
+        <VCard
+            v-if="isPriceChanged"
+            class="mb-6"
+            color="warning"
+            variant="tonal"
+          >
+            <VCardTitle>Perubahan Harga</VCardTitle>
+
+            <VCardText>
+
+              <div class="d-flex justify-space-between mb-2">
+                <span>Harga Dasar</span>
+
+                <strong>
+                  Rp {{ formatMoney(oldPo.harga_tebus) }}
+                  →
+                  Rp {{ formatMoney(form.harga_tebus) }}
+                </strong>
+              </div>
+
+              <div class="d-flex justify-space-between mb-2" v-if="showBiayaOA">
+                <span>Ongkos Angkut</span>
+
+                <strong>
+                  Rp {{ formatMoney(oldPo.ongkos_angkut) }}
+                  →
+                  Rp {{ formatMoney(form.ongkos_angkut) }}
+                </strong>
+              </div>
+
+              <VDivider class="my-2"/>
+
+              <div class="d-flex justify-space-between font-weight-bold">
+                <span>Total</span>
+
+                <span>
+                  Rp {{ formatMoney(oldPo.total) }}
+                  →
+                  Rp {{ formatMoney(totalPO) }}
+                </span>
+              </div>
+
+            </VCardText>
+        </VCard>
+
         <!-- ================= INFORMASI DASAR ================= -->
-        <div class="text-h6 font-weight-bold">
-          Informasi Dasar
-        </div>
+      <div class="text-h6 font-weight-bold">
+        Informasi Dasar
+      </div>
       <div class="bg-var-theme-background rounded pa-5 mt-2">
         <VRow>
             <VCol cols="12" md="6">

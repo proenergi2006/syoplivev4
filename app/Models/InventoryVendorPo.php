@@ -72,6 +72,8 @@ class InventoryVendorPo extends Model
         'is_resubmission',
         'resubmission_count',
         'jenis_kirim',
+        'jenis_harga',
+        'is_price_changed',
         'internal_notes',
     ];
 

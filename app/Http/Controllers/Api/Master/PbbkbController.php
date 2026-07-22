@@ -9,6 +9,11 @@ use Illuminate\Validation\Rule;
 
 class PbbkbController extends Controller
 {
+    public function pbbkb() {
+        return response()->json(Pbbkb::all(['id', 'nilai_pbbkb',
+        'ket_pbbkb',
+        'is_active']));
+    }
     /**
      * Display a listing of the resource.
      *

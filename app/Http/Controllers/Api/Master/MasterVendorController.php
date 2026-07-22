@@ -2279,6 +2279,7 @@ class MasterVendorController extends Controller
                     'id_department' => $vendor->id_department,
 
                     'nama_vendor' => $vendor->nama_vendor,
+                    'kategori_vendor' => $vendor->kategori_vendor,
                     'status_pkp' => $vendor->status_pkp ?? 'NON_PKP',
 
                     'jenis_pembayaran' => $vendor->jenis_pembayaran,

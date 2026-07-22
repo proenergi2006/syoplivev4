@@ -16,6 +16,7 @@ import { usePermissionStore } from '@/stores/permission'
 import {
   onlyNumberKeypress,
 } from '@/utils/textFormatter'
+import { formatDate } from '@/utils/textFormatter'
 
 const router = useRouter()
 const onEdit = (item: any) => {
@@ -99,12 +100,6 @@ const paginationData = computed(() => {
   const end = Math.min(currentPage.value * rowPerPage.value, totalData.value)
   return `${start}-${end} of ${totalData.value}`
 })
-
-// FORMAT DATE
-const formatDate = (date: string) => {
-  if (!date) return '-'
-  return new Date(date).toLocaleDateString('id-ID')
-}
 
 // FETCH DATA
 const getData = async () => {
@@ -235,7 +230,6 @@ const fetchHistory = async (id: any) => {
 
   try {
     const res = await axios.get(`/inventory/purchase-order/${id}/history`)
-    console.log(res)
     histories.value = res.data.history || []
   } finally {
     loadingHistory.value = false
@@ -754,6 +748,14 @@ const requiredNotZero = (label: string)=> {
 
             <td class="text-right text-no-wrap">PO: {{ formatNumber(v.harga_po) }}
               <br> RI: {{ formatNumber(v.harga_tebus) }}
+              <br>
+                <VChip v-if="v.jenis_harga == 2"
+                  size="x-small"
+                  color="secondary"
+                  class="mb-0"
+                >
+                 Harga Sementara
+                </VChip>
             </td>
 
             <td>
@@ -834,9 +836,9 @@ const requiredNotZero = (label: string)=> {
                       </VListItem>
                       <VListItem @click="onEdit(v.id_master)" v-if="canUpdate" >
                         <template #prepend>
-                          <VIcon icon="mdi-pencil-outline" :size="20" class="me-3" />
+                          <VIcon :icon="Number(v.total_ri) > 0 ?'mdi-magnify-plus' :'mdi-pencil-outline'" :size="20" class="me-3" />
                         </template>
-                        <VListItemTitle class="text-sm">Edit</VListItemTitle>
+                        <VListItemTitle class="text-sm">  {{ Number(v.total_ri) > 0 ? 'Detail' : 'Edit' }}</VListItemTitle>
                       </VListItem>
                       <VListItem @click="openCloseDialog(v.id_master)" v-if="canClosePO(v)">
                         <template #prepend>
