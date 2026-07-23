@@ -1036,6 +1036,7 @@ const isPriceChanged = computed(() => {
                               attach: 'body' }"
                               placeholder="Pilih Kode Item Accurate"
                               @update:search="onSearch"
+                              @update:model-value="val => setSelectedAccText(produkAccList, val, 'kode_item')"
                               :rules="[required('Kode Item Accurate')]"
                             >
                              <template #prepend-item>
@@ -1776,6 +1777,7 @@ const isPriceChanged = computed(() => {
                             attach: 'body' }"
                             placeholder="Pilih akun pph 22 Accurate"
                             @update:search="onSearchAkun"
+                            @update:model-value="val => setSelectedAccText(akunAccList, val, 'biaya_pph22')"
                             :rules="[required('akun pph 22 Accurate')]"
                           >
                           <template #prepend-item>
@@ -1917,6 +1919,7 @@ const isPriceChanged = computed(() => {
                           attach: 'body' }"
                           placeholder="Pilih akun Iuran Migas Accurate"
                           @update:search="onSearchAkun"
+                          @update:model-value="val => setSelectedAccText(akunAccList, val, 'biaya_migas')"
                           :rules="[required('akun Iuran Migas Accurate')]"
                         >
                         <template #prepend-item>
@@ -2004,7 +2007,7 @@ const isPriceChanged = computed(() => {
                   />
 
                   <VTextarea
-                    v-if="canChange"
+                    v-if="Number(form.disposisi_po)==4"
                     v-model="form.catatan_resubmit"
                     label="Catatan Pengajuan Ulang *"
                     rows="4"
@@ -2233,7 +2236,7 @@ const isPriceChanged = computed(() => {
           <VCol cols="12" md="4">
             <div class="text-caption text-medium-emphasis">Kode Item Accurate</div>
             <div class="text-body-2 font-weight-medium">
-              {{ form.kode_item || '-' }}
+              {{ form.kode_item +' -'+selectedAccText.kode_item|| '-' }}
             </div>
           </VCol>
 
@@ -2260,7 +2263,7 @@ const isPriceChanged = computed(() => {
           <VRow dense>
             <VCol cols="12" md="4">
               <div class="text-caption">Kode Item OA Accurate</div>
-              <div class="text-body-2">{{ form.kode_item_oa || '-' }}</div>
+              <div class="text-body-2">{{ form.kode_item_oa +' -'+selectedAccText.kode_item_oa || '-' }}</div>
             </VCol>
 
             <VCol cols="12" md="4">
@@ -2324,7 +2327,7 @@ const isPriceChanged = computed(() => {
             <VRow dense>
               <VCol cols="12" md="4">
                 <div class="text-caption">Kode PPH 22 Accurate</div>
-                <div class="text-body-2">{{ form.biaya_pph22 || '-' }}</div>
+                <div class="text-body-2">{{ form.biaya_pph22+' -'+selectedAccText.biaya_pph22 || '-' }}</div>
               </VCol>
 
               <VCol cols="12" md="4">
@@ -2367,8 +2370,8 @@ const isPriceChanged = computed(() => {
           <div v-if="showMigas" class="mt-2">
             <VRow dense>
               <VCol cols="12" md="4">
-                <div class="text-caption">Kode PBBKB Accurate</div>
-                <div class="text-body-2">{{ form.biaya_migas || '-' }}</div>
+                <div class="text-caption">Kode Iuran Migas Accurate</div>
+                <div class="text-body-2">{{ form.biaya_migas +' -'+selectedAccText.biaya_migas|| '-' }}</div>
               </VCol>
 
               <VCol cols="12" md="4">
