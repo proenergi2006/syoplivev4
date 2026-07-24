@@ -3605,44 +3605,64 @@ class PurchaseRequestController extends Controller
                 strtoupper($lang),
             );
 
-            /*
-        |--------------------------------------------------------------------------
-        | Render PDF
-        |--------------------------------------------------------------------------
-        */
             $pdfOutput = $pdf->output();
 
-            /*
-        |--------------------------------------------------------------------------
-        | Inline PDF response
-        |--------------------------------------------------------------------------
-        */
-            return response(
+            $response = response(
                 $pdfOutput,
                 200,
-                [
-                    'Content-Type'
-                    => 'application/pdf',
-
-                    'Content-Disposition'
-                    => 'inline; filename="' . $downloadFileName . '"',
-
-                    'Content-Length'
-                    => (string) strlen($pdfOutput),
-
-                    'Cache-Control'
-                    => 'private, no-store, no-cache, must-revalidate, max-age=0',
-
-                    'Pragma'
-                    => 'no-cache',
-
-                    'Expires'
-                    => '0',
-
-                    'X-Content-Type-Options'
-                    => 'nosniff',
-                ],
             );
+
+            $response->headers->set(
+                'Content-Type',
+                'application/pdf',
+            );
+
+            $response->headers->set(
+                'Content-Disposition',
+                'inline; filename="' . $downloadFileName . '"',
+            );
+
+            $response->headers->set(
+                'Content-Length',
+                (string) strlen($pdfOutput),
+            );
+
+            $response->headers->set(
+                'Cache-Control',
+                'private, no-store, no-cache, must-revalidate, max-age=0',
+            );
+
+            $response->headers->set(
+                'Pragma',
+                'no-cache',
+            );
+
+            $response->headers->set(
+                'Expires',
+                '0',
+            );
+
+            $response->headers->set(
+                'X-Content-Type-Options',
+                'nosniff',
+            );
+
+            /*
+|--------------------------------------------------------------------------
+| Debug sementara
+|--------------------------------------------------------------------------
+*/
+            $response->headers->set(
+                'X-PDF-Debug',
+                'pr-controller-v3',
+            );
+
+            Log::info(
+                '[PR PDF RESPONSE HEADERS]',
+                $response->headers->all(),
+            );
+
+            return $response;
         } catch (
             DecryptException |
             ModelNotFoundException $e
