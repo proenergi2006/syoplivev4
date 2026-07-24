@@ -3605,9 +3605,19 @@ class PurchaseRequestController extends Controller
                 strtoupper($lang),
             );
 
+            /*
+        |--------------------------------------------------------------------------
+        | Render PDF
+        |--------------------------------------------------------------------------
+        */
             $pdfOutput = $pdf->output();
 
-            $response = response(
+            /*
+        |--------------------------------------------------------------------------
+        | Buat response PDF
+        |--------------------------------------------------------------------------
+        */
+            $response = response()->make(
                 $pdfOutput,
                 200,
             );
@@ -3648,18 +3658,62 @@ class PurchaseRequestController extends Controller
             );
 
             /*
-|--------------------------------------------------------------------------
-| Debug sementara
-|--------------------------------------------------------------------------
-*/
+        |--------------------------------------------------------------------------
+        | Debug sementara
+        |--------------------------------------------------------------------------
+        | Digunakan untuk memastikan request menjalankan controller terbaru.
+        */
             $response->headers->set(
                 'X-PDF-Debug',
-                'pr-controller-v3',
+                'pr-controller-v4',
+            );
+
+            /*
+        |--------------------------------------------------------------------------
+        | Cek apakah PHP sudah mengirim output/header lebih dahulu
+        |--------------------------------------------------------------------------
+        */
+            $headersSentFile = '';
+            $headersSentLine = 0;
+
+            $headersAlreadySent = headers_sent(
+                $headersSentFile,
+                $headersSentLine,
             );
 
             Log::info(
-                '[PR PDF RESPONSE HEADERS]',
-                $response->headers->all(),
+                '[PR PDF HEADERS SENT CHECK]',
+                [
+                    'public_id' => $publicId,
+                    'pr_id' => $pr->id,
+                    'nomor_pr' => $pr->nomor_pr,
+
+                    'headers_sent' => $headersAlreadySent,
+
+                    'headers_sent_file' => $headersAlreadySent
+                        ? $headersSentFile
+                        : null,
+
+                    'headers_sent_line' => $headersAlreadySent
+                        ? $headersSentLine
+                        : null,
+
+                    'response_class' => get_class($response),
+
+                    'response_headers' => $response
+                        ->headers
+                        ->all(),
+
+                    /*
+                |--------------------------------------------------------------------------
+                | Header native PHP sebelum Symfony mengirim response
+                |--------------------------------------------------------------------------
+                | Biasanya belum berisi seluruh header response Laravel.
+                */
+                    'native_headers_before_return' => headers_list(),
+
+                    'pdf_size_bytes' => strlen($pdfOutput),
+                ],
             );
 
             return $response;
